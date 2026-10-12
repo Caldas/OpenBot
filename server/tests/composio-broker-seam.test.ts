@@ -198,3 +198,25 @@ describe("grantIsLocal", () => {
     }
   });
 });
+
+/**
+ * `authProviderOf` is the third declared value on this seam, and Composio's answer is a REAL one.
+ *
+ * A Composio connection is made against an auth config, and an auth config is per toolkit — so the
+ * toolkit IS its own auth provider there, and the set of apps sharing a connection with it is
+ * consequently always empty. That is the truth about Composio rather than a degradation of it, the
+ * same "degenerate is not absent" `grantsFor` already turns on. A throw would be the alternative,
+ * and it would force a presence test into every consumer and a provider branch into a disconnect
+ * path.
+ */
+describe("authProviderOf", () => {
+  test("Composio answers the toolkit itself, dialling nothing", async () => {
+    const { broker } = createComposioClient("never-dialled");
+
+    expect(await broker.authProviderOf("gmail")).toBe("gmail");
+    // Case carried through untouched, as every toolkit spelling on this seam is.
+    expect(await broker.authProviderOf("GoogleCalendar")).toBe(
+      "GoogleCalendar",
+    );
+  });
+});

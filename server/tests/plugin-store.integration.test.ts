@@ -6614,6 +6614,8 @@ test("enabling an app writes a brokered row, and asks for its auth config first"
   const broker: ComposioBroker = {
     // This stub stands in for Composio, whose grant is held locally; see `ConnectedAppBroker.grantIsLocal`.
     grantIsLocal: true,
+    // Nothing here asks what auth provider a connection is held under.
+    authProviderOf: async () => null,
     // Nothing here reads either member; both are declared because the seam requires a
     // broker to SAY what it runs — see `ConnectedAppBroker.authorizations`.
     authorizations: null,
@@ -6793,6 +6795,8 @@ function brokerSpy(answers: {
     broker: {
       // This stub stands in for Composio, whose grant is held locally; see `ConnectedAppBroker.grantIsLocal`.
       grantIsLocal: true,
+      // Nothing here asks what auth provider a connection is held under.
+      authProviderOf: async () => null,
       // Nothing here reads either member; both are declared because the seam requires a
       // broker to SAY what it runs — see `ConnectedAppBroker.authorizations`.
       authorizations: null,

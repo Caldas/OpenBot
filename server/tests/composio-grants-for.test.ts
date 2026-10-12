@@ -216,6 +216,8 @@ describe("the declared sub-surface", () => {
   test("a broker literal omitting authorizations does not compile", () => {
     const members = {
       grantIsLocal: true,
+      // Nothing here asks what auth provider a connection is held under.
+      authProviderOf: async () => null,
       grantsFor: async (): Promise<GrantState[]> => [],
       listApps: async () => [],
       ensureAuthConfig: async () => "not-needed" as const,

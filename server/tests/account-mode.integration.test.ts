@@ -35,6 +35,8 @@ const broker = {
   // This stub stands in for Composio, whose grant is held locally and which runs no
   // correlated authorization flow; see `ConnectedAppBroker.grantIsLocal` and `.authorizations`.
   grantIsLocal: true,
+  // Nothing here asks what auth provider a connection is held under.
+  authProviderOf: async () => null,
   authorizations: null,
   grantsFor: async () => [],
   listApps: async () => [],

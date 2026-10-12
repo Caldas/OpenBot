@@ -364,6 +364,51 @@ async function grantsFor(
 }
 
 /**
+ * The auth provider a toolkit's connections are held under, read off the LISTING ITSELF.
+ *
+ * READ, NEVER DERIVED FROM THE TOOLKIT NAME. `requirements.authorization.provider_id` is the field
+ * the fixture already carries beside the auth-config `id`, and it names an auth-provider
+ * configuration rather than a toolkit — one Google provider serves `Gmail` and `GoogleCalendar`
+ * both. Reading it is correct under BOTH readings of the field: if it did turn out to equal the
+ * toolkit slug, the listing would simply say so. Comparing it to the toolkit name is correct under
+ * only one, and would be invisible against every fixture in this tree, where `Github`, `Asana` and
+ * `Attio` all happen to be named after themselves. There is NO FALLBACK to the toolkit name.
+ *
+ * ONE PAGE AND NO PAGING, which is what makes this free: every tool in a toolkit shares its auth
+ * provider — that is what makes it a toolkit. `listApps` pages to the end because it is COUNTING
+ * actions; this is reading a per-toolkit fact off any of them.
+ *
+ * AND IT GUARDS RATHER THAN ASSUMES. The DISTINCT non-null provider ids on the page are collected
+ * and anything other than exactly one answers `null`, so a toolkit that disagrees with itself is
+ * UNANSWERED rather than silently resolved to whichever action came first. Case is carried through
+ * untouched, so two spellings of one provider count as two and are likewise unanswered; whether
+ * they are the same provider is the caller's comparison, and `connectionSiblings` folds case for
+ * the one caller that makes it.
+ *
+ * `requirements.met` IS NOT READ HERE EITHER, for `grantStateOf`'s reason: this reads a DIFFERENT
+ * field of the same `requirements.authorization` object.
+ */
+async function authProviderOf(
+  client: Arcade,
+  toolkit: string,
+): Promise<string | null> {
+  const page = await client.tools.list({ toolkit });
+  const items = page?.items;
+  if (!Array.isArray(items)) {
+    throw new Error(
+      `Arcade did not answer with an action list for ${toolkit}, so the auth provider its connections are held under could not be read.`,
+    );
+  }
+  const named = new Set<string>();
+  for (const item of items) {
+    const authorization = record(record(item)?.requirements)?.authorization;
+    const provider = textOf(record(authorization)?.provider_id);
+    if (provider) named.add(provider);
+  }
+  return named.size === 1 ? [...named][0] : null;
+}
+
+/**
  * The Arcade client, in the shape `createComposioClient` returns. `new Arcade({ apiKey })` opens no
  * socket and sends no request, so tests replace the SDK's PROTOTYPE methods before calling this.
  *
@@ -494,6 +539,9 @@ export function createArcadeClient(apiKey: string): {
     // person's full profile.
     grantsFor: ({ account, toolkit }) =>
       grantsFor(client, account.vendorUserId, toolkit),
+    // Read off the listing's own `requirements.authorization.provider_id`, never derived from the
+    // toolkit name and never falling back to it. See `authProviderOf` above.
+    authProviderOf: (toolkit) => authProviderOf(client, toolkit),
     authorizations: {
       /**
        * Where one minted authorization has got to — THREE FIELDS READ OUT AND THE RESPONSE OBJECT

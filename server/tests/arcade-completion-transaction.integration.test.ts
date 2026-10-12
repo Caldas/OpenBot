@@ -29,6 +29,8 @@ const serverId = `arcade-completion-${suite}`;
 const broker: ConnectedAppBroker = {
   // Arcade holds the grant at the vendor, not locally; see `ConnectedAppBroker.grantIsLocal`.
   grantIsLocal: false,
+  // Nothing here asks what auth provider a connection is held under.
+  authProviderOf: async () => null,
   // Arcade runs the correlated, pollable flow, so this stub DECLARES the sub-surface rather
   // than a null; nothing here reaches either member. See `ConnectedAppBroker.authorizations`.
   authorizations: {

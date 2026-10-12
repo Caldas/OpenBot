@@ -60,6 +60,8 @@ const unasked = (what: string) => async (): Promise<never> => {
 function storeFor(provider: BrokerProvider) {
   const broker: ComposioBroker = {
     grantIsLocal: true,
+    // Nothing here asks what auth provider a connection is held under.
+    authProviderOf: async () => null,
     // Nothing here reads either member; both are declared because the seam requires a broker to
     // SAY what it runs — see `ConnectedAppBroker.authorizations`.
     authorizations: null,

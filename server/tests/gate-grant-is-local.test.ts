@@ -37,6 +37,8 @@ const brokerStub: Omit<ConnectedAppBroker, "grantIsLocal"> = {
   // Nothing here reads either member; both are declared because the seam requires a broker to
   // SAY what it runs — see `ConnectedAppBroker.authorizations`.
   authorizations: null,
+  // Nothing here asks what auth provider a connection is held under.
+  authProviderOf: async () => null,
   grantsFor: async () => [],
   listApps: async () => [],
   ensureAuthConfig: async () => "standing",

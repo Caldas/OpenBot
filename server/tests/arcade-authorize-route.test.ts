@@ -37,6 +37,8 @@ let beforeMint: (() => Promise<void>) | null = null;
 
 const arcadeBroker: ConnectedAppBroker = {
   grantIsLocal: false,
+  // Nothing here asks what auth provider a connection is held under.
+  authProviderOf: async () => null,
   authorizations: {
     status: async () => {
       throw new Error("nothing here polls an authorization");
@@ -65,6 +67,8 @@ const arcadeBroker: ConnectedAppBroker = {
 const composioBroker: ConnectedAppBroker = {
   ...arcadeBroker,
   grantIsLocal: true,
+  // Nothing here asks what auth provider a connection is held under.
+  authProviderOf: async () => null,
   authorizations: null,
   authorize: async ({ account, toolkit, action }) => {
     mints.push({ vendorUserId: account.vendorUserId, action, toolkit });

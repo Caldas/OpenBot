@@ -56,6 +56,8 @@ let confirmAnswer: () => Promise<
  */
 const broker: ConnectedAppBroker = {
   grantIsLocal: false,
+  // Nothing here asks what auth provider a connection is held under.
+  authProviderOf: async () => null,
   authorizations: {
     status: async () => {
       throw new Error("the refusal half polls no authorization");

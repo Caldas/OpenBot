@@ -498,6 +498,35 @@ export type ConnectedAppBroker = {
    * is copied across from a provider's listing; see that type.
    */
   grantsFor(q: { toolkit: string; account: AccountRef }): Promise<GrantState[]>;
+  /**
+   * The VENDOR'S OWN AUTH PROVIDER a connection for this toolkit is held under, or null where the
+   * vendor does not say.
+   *
+   * IT IS NOT THE TOOLKIT NAME, AND THE COINCIDENCE IS NOT THE RULE. Arcade keys a connection on
+   * `(user_id, provider_id)`, and `provider_id` names an auth-provider CONFIGURATION rather than a
+   * toolkit: one Google connection serves `Gmail` and `GoogleCalendar` both, and a measured refusal
+   * envelope carries `"provider_id": "cpk-poc"`, which is an operator's name for a provider they
+   * registered. It equals the toolkit slug only where an operator named it that way — which
+   * `Github`, `Asana` and `Attio` all happen to do, and those are every toolkit in this tree's
+   * fixtures and stubs. So a derivation from the toolkit name, or a fallback to it where the vendor
+   * is silent, would pass every test here and be wrong about the deployment it was written for.
+   * `null` is the honest answer, and its callers leave such an app out rather than guess.
+   *
+   * NAMED `authProviderOf` AND NEVER `providerIdOf`. In this codebase `provider` means the BROKER —
+   * {@link BrokerProvider}, `brokered_connections.provider` — and that collision has already been
+   * paid for once, when an audit key `provider` was renamed `authProvider` because it meant the auth
+   * provider while a column fifty lines away meant the broker.
+   *
+   * TOP-LEVEL RATHER THAN ON {@link ConnectedAppBroker.authorizations}, because it is not a step in
+   * a flow and it is not a question only one provider can answer. Both answer it; see
+   * {@link ConnectedAppBroker.grantsFor} for the same line drawn one member along, and for why a
+   * DEGENERATE answer — a vendor whose connections are per toolkit, so a toolkit is its own auth
+   * provider and the shared set is always empty — is an answer rather than an absence.
+   *
+   * CASE IS CARRIED THROUGH UNTOUCHED. Whether two providers are the same provider is the caller's
+   * comparison to make, and Arcade's toolkit and action case is never normalised here.
+   */
+  authProviderOf(toolkit: string): Promise<string | null>;
   /** Every app the catalogue offers, which is what an administrator chooses from. */
   listApps(): Promise<BrokerApp[]>;
   /**

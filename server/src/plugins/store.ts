@@ -1255,13 +1255,20 @@ export type ConnectionFootprint = {
   app: string;
   /** The identity the connection is held under at the vendor. */
   vendorUserId: string;
-  /** The vendor's own provider the connection is with (`google`), not the broker's name. */
-  providerId: string;
+  /**
+   * The vendor's own AUTH PROVIDER the connection is held under (`google`), not the broker's name.
+   *
+   * NAMED `authProvider` AND NEVER `providerId`, because `provider` in this file means the BROKER —
+   * `brokered_connections.provider` is read a few lines below this one — and that collision has
+   * already been paid for once in an audit payload. See {@link ConnectedAppBroker.authProviderOf},
+   * which is where this value comes from and which is likewise not the toolkit name.
+   */
+  authProvider: string;
 };
 
 /**
  * The apps that share `of`'s connection, which are the apps sharing BOTH its vendor identity AND
- * its `provider_id`. NEVER THE PROVIDER ALONE (spec D26).
+ * its AUTH PROVIDER. NEVER THE PROVIDER ALONE (spec D26).
  *
  * REASON. An Arcade connection is keyed `(user_id, provider_id)`, and this deployment holds MANY
  * vendor identities: each person's own, PLUS ONE RANDOM IDENTITY PER SHARED APP, minted by
@@ -1270,7 +1277,7 @@ export type ConnectionFootprint = {
  * about apps that WILL NOT BE TOUCHED, which trains people to dismiss the warning that matters.
  * Silently ending two connections when somebody asked to end one is the failure to avoid.
  *
- * `provider_id` is compared case-insensitively, as the adapter's `connectionsFor` does; the app
+ * The auth provider is compared case-insensitively, as the adapter's `connectionsFor` does; the app
  * name is not, because Arcade toolkit case is never normalised. The answer never contains `of`
  * itself, and is sorted so two callers see the same list. This function ACTS ON NOTHING.
  */
@@ -1278,12 +1285,12 @@ export function connectionSiblings(
   of: ConnectionFootprint,
   among: readonly ConnectionFootprint[],
 ): string[] {
-  const provider = of.providerId.toLowerCase();
+  const provider = of.authProvider.toLowerCase();
   const found = new Set<string>();
   for (const other of among) {
     if (other.app === of.app) continue;
     if (other.vendorUserId !== of.vendorUserId) continue;
-    if (other.providerId.toLowerCase() !== provider) continue;
+    if (other.authProvider.toLowerCase() !== provider) continue;
     found.add(other.app);
   }
   return [...found].sort();
@@ -6057,14 +6064,27 @@ export function createPluginStore(options: PluginStoreOptions) {
 
     /**
      * The other apps this deployment holds a connection for that share THIS app's connection: the
-     * apps on the same vendor identity AND the same `provider_id`, never the provider alone. The
+     * apps on the same vendor identity AND the same AUTH PROVIDER, never the provider alone. The
      * reason is written out on {@link connectionSiblings}; this is that computation over the rows
      * this deployment actually holds under the active provider.
      *
-     * `providerIdOf` IS PASSED IN because `provider_id` is the vendor's fact, read off its own
-     * listing by the adapter, and this store keeps no copy of it. An app it cannot answer for
-     * (`null`) is left out rather than guessed at: claiming a sibling that is not one is the failure
-     * D26 exists to prevent. If the asking app itself is unanswered the list is empty.
+     * THE BROKER THIS STORE WAS BUILT WITH ANSWERS IT, AND NO CALLER SUPPLIES A RESOLVER. The auth
+     * provider is the vendor's fact and this store keeps no copy of it, so it is asked for — of
+     * {@link ConnectedAppBroker.authProviderOf}, which both providers implement. A resolver taken as
+     * a parameter would be a question every caller had to answer identically or see a different
+     * sibling set; with the store calling its own broker there is ONE answer by construction and
+     * nothing to keep in step. A deployment with no broker answers `[]` — a presence test on a
+     * declared value, and correct, because such a deployment holds no brokered rows at all.
+     *
+     * THE SCAN IS PRE-FILTERED ON THE ASKING IDENTITY, IN THE `WHERE`. Resolving the auth provider
+     * is a vendor call per app, on a screen somebody is waiting on; resolving it for every brokered
+     * row of the whole deployment and only then discarding the rows on other identities is unbounded
+     * in the one dimension that grows. `vendor_user_id` is a column, so the filter is free — and
+     * semantically identical, because {@link connectionSiblings} discards exactly those rows.
+     *
+     * An app the broker cannot answer for (`null`) is left out rather than guessed at: claiming a
+     * sibling that is not one is the failure D26 exists to prevent. If the asking app itself is
+     * unanswered the list is empty.
      *
      * IT ANSWERS A FACT AND ACTS ON NOTHING: no revocation, no deletion, no audit write. Returns the
      * sibling toolkits, sorted, never including `toolkit`.
@@ -6072,27 +6092,32 @@ export function createPluginStore(options: PluginStoreOptions) {
     async siblingApps(input: {
       toolkit: string;
       account: AccountRef;
-      providerIdOf: (toolkit: string) => Promise<string | null>;
     }): Promise<string[]> {
-      const providerId = await input.providerIdOf(input.toolkit);
-      if (!providerId) return [];
+      if (!broker) return [];
+      const authProvider = await broker.authProviderOf(input.toolkit);
+      if (!authProvider) return [];
       const held = await database
         .select({
           app: brokeredConnections.app,
           vendorUserId: brokeredConnections.vendorUserId,
         })
         .from(brokeredConnections)
-        .where(eq(brokeredConnections.provider, brokerProvider));
+        .where(
+          and(
+            eq(brokeredConnections.provider, brokerProvider),
+            eq(brokeredConnections.vendorUserId, input.account.vendorUserId),
+          ),
+        );
       const footprints: ConnectionFootprint[] = [];
       for (const row of held) {
-        const rowProvider = await input.providerIdOf(row.app);
-        if (rowProvider) footprints.push({ ...row, providerId: rowProvider });
+        const rowProvider = await broker.authProviderOf(row.app);
+        if (rowProvider) footprints.push({ ...row, authProvider: rowProvider });
       }
       return connectionSiblings(
         {
           app: input.toolkit,
           vendorUserId: input.account.vendorUserId,
-          providerId,
+          authProvider,
         },
         footprints,
       );

@@ -3065,6 +3065,24 @@ export function buildComposioClient(
     // seam. Declared rather than omitted; see {@link ConnectedAppBroker.authorizations}.
     authorizations: null,
     /**
+     * The toolkit itself, WHICH IS AN ANSWER AND NOT A STUB.
+     *
+     * A Composio connection is made against an auth config, and an auth config is per toolkit. So
+     * there is no auth provider standing behind several toolkits here the way Arcade's `google`
+     * stands behind `Gmail` and `GoogleCalendar`: the toolkit IS its own auth provider, and the set
+     * of apps sharing a connection with it is consequently ALWAYS EMPTY. That is the truth about
+     * Composio rather than a degradation of it — {@link ConnectedAppBroker.grantsFor}'s "degenerate
+     * is not absent", one member along.
+     *
+     * SO IT DOES NOT THROW, and the reason is what a throw would cost the callers: every consumer
+     * of the sibling computation would need a presence test around this call, and the disconnect
+     * path would carry a provider branch — which is the vendor-name comparison this seam exists to
+     * keep out of permission and revocation code.
+     *
+     * No network: the answer is a property of how Composio is shaped, so nothing is asked.
+     */
+    authProviderOf: async (toolkit) => toolkit,
+    /**
      * What this person holds at this app, said once per action because that is what Composio knows.
      *
      * DEGENERATE AND NOT ABSENT, which is why this is implemented rather than thrown. An auth

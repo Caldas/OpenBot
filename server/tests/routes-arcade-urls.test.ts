@@ -99,6 +99,8 @@ function deployment(provider: BrokerProvider) {
 
   const broker = {
     grantIsLocal: true,
+    // Nothing here asks what auth provider a connection is held under.
+    authProviderOf: async () => null,
     authorizations: null,
     listApps: async () => [directoryApp(row.toolkit)],
     authorize: async (input: { toolkit: string }) => {

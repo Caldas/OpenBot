@@ -3124,6 +3124,20 @@ describe("what a vendor failure becomes on its way out of the seam", () => {
   );
 
   /**
+   * The seam methods that REACH NO VENDOR, named here rather than quietly filtered.
+   *
+   * `authProviderOf` answers from the shape of Composio itself — a connection is made against an
+   * auth config and an auth config is per toolkit, so a toolkit IS its own auth provider — and it
+   * therefore asks nobody anything. A row in the table below would have to invent a vendor call for
+   * it to break on, which would assert something about the fake and nothing about the method.
+   *
+   * NAMING IT IS WHAT KEEPS THE COMPLETENESS TEST HONEST IN BOTH DIRECTIONS: the next method added
+   * to this seam is covered by the table or appears on this list on purpose, and the test below
+   * then checks that what is on this list genuinely dials nothing.
+   */
+  const DIALS_NOTHING = new Set<SeamMethod>(["authProviderOf"]);
+
+  /**
    * Every method of the seam, with the vendor call that decides its answer aimed at the throw.
    *
    * THE CALL THAT DECIDES RATHER THAN THE FIRST ONE. Several of these read a listing before they
@@ -3318,7 +3332,9 @@ describe("what a vendor failure becomes on its way out of the seam", () => {
         .filter(([, member]) => typeof member === "function")
         .map(([name]) => name);
     expect(
-      [...methodsOf(seam.broker), ...methodsOf(seam.actions)].sort(),
+      [...methodsOf(seam.broker), ...methodsOf(seam.actions)]
+        .filter((name) => !DIALS_NOTHING.has(name as SeamMethod))
+        .sort(),
     ).toEqual(SEAM_CASES.map((seamCase) => seamCase.method).sort());
     // Whatever is not a method must be acknowledged by name, so a new non-function member of the
     // broker is a decision somebody makes rather than a thing the filter above silently drops.
@@ -3327,6 +3343,18 @@ describe("what a vendor failure becomes on its way out of the seam", () => {
         .filter(([, member]) => typeof member !== "function")
         .map(([name]) => name),
     ).toEqual(["grantIsLocal", "authorizations"]);
+  });
+
+  /**
+   * The other direction of {@link DIALS_NOTHING}: what is excused from the table must genuinely
+   * have nothing to fail at. The vendor here has no methods at all, so any call out of this seam
+   * would raise rather than answer.
+   */
+  test("a method excused from the table reaches no vendor at all", async () => {
+    const { broker } = buildComposioClient(fakeVendor({}));
+
+    expect([...DIALS_NOTHING]).toEqual(["authProviderOf"]);
+    expect(await broker.authProviderOf("gmail")).toBe("gmail");
   });
 
   for (const seamCase of SEAM_CASES) {
