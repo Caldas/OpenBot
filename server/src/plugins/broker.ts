@@ -785,3 +785,26 @@ export function activeProvider(c: {
   if (named !== undefined) return configured.includes(named) ? named : null;
   return configured.length === 1 ? configured[0] : null;
 }
+
+/**
+ * Activating a provider is refused while the OTHER provider still holds `brokered_connections` rows.
+ *
+ * KEYED ON ROWS, NOT ON KEYS, AND THAT IS THE WHOLE POINT. Both keys set is a legal and expected
+ * state, because ending an account at the old vendor needs its key, so a deployment holding both is
+ * never misconfigured. What a deployment must not be able to do is switch by editing its environment:
+ * `DELETE /servers/:id/connection` revokes at the vendor before it deletes anything local, and a
+ * deployment that swapped keys would hold rows for accounts it could no longer end.
+ *
+ * TAKES A COUNT, NOT A DATABASE. The caller counts the rows belonging to the provider that is not
+ * `candidate`; this reads no key, never calls {@link activeProvider} and imports no vendor package.
+ */
+export function assertActivatable(
+  candidate: BrokerProvider,
+  otherProviderRows: number,
+): void {
+  if (otherProviderRows <= 0) return;
+  const other = candidate === "arcade" ? "Composio" : "Arcade";
+  throw new BrokerRefusalError(
+    `${candidate === "arcade" ? "Arcade" : "Composio"} cannot be activated while ${otherProviderRows} brokered connection${otherProviderRows === 1 ? "" : "s"} still belong${otherProviderRows === 1 ? "s" : ""} to ${other}. Keep both API keys set, and end those connections through the ${other} sunset flow first; switching providers by changing the environment would leave accounts nobody can revoke.`,
+  );
+}
