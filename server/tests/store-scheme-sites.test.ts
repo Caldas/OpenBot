@@ -60,6 +60,10 @@ const unasked = (what: string) => async (): Promise<never> => {
 function storeFor(provider: BrokerProvider) {
   const broker: ComposioBroker = {
     grantIsLocal: true,
+    // Nothing here reads either member; both are declared because the seam requires a broker to
+    // SAY what it runs — see `ConnectedAppBroker.authorizations`.
+    authorizations: null,
+    grantsFor: unasked("read grants"),
     listApps: unasked("list"),
     ensureAuthConfig: async () => "created",
     deleteAuthConfig: unasked("delete"),

@@ -157,6 +157,19 @@ describe("grantIsLocal", () => {
     );
   });
 
+  /**
+   * `authorizations` is the same kind of value one field along: a DECLARED capability, read with a
+   * presence test — `if (!broker.authorizations)` — and never with a vendor name. Composio runs no
+   * correlated, pollable authorization flow, and saying so is not the same as leaving the field
+   * out: an omission would make the field optional in practice, which is the failed-open shape
+   * `grantIsLocal` exists to close.
+   */
+  test("Composio declares no correlated authorization flow", () => {
+    expect(createComposioClient("never-dialled").broker.authorizations).toBe(
+      null,
+    );
+  });
+
   test("a broker handed an action it cannot use ignores it rather than throwing", async () => {
     const { broker } = createComposioClient("never-dialled");
     const original = globalThis.fetch;

@@ -198,10 +198,17 @@ export function createArcadeClient(apiKey: string): {
     isConnected: notYet("micro-task 6.2", "isConnected"),
     revoke: notYet("micro-task 6.2", "revoke"),
     revokeAccount: notYet("micro-task 6.2", "revokeAccount"),
-    // 6.3: grantsFor and authorizationStatus (the read-only status pair; neither is on this seam
-    // yet, so there is no stub to throw). `authorizationStatus` must narrow to
-    // `{ status, userId, scopes }` and nothing else: the raw `auth.status` response carries
-    // `context.token`, a live provider access token, plus the person's full profile.
+    // 6.3: the read-only status pair. Both are DECLARED here because the seam requires them —
+    // `grantsFor` is a member every broker answers, and `authorizations` is the sub-surface Arcade
+    // alone runs, so a null here would say Arcade mints nothing to poll, which is false. The
+    // bodies are 6.3's. `status` must narrow to `{ status, userId, scopes }` and nothing else: the
+    // raw `auth.status` response carries `context.token`, a live provider access token, plus the
+    // person's full profile.
+    grantsFor: notYet("micro-task 6.3", "grantsFor"),
+    authorizations: {
+      status: notYet("micro-task 6.3", "authorizations.status"),
+      confirmReturn: notYet("micro-task 6.3", "authorizations.confirmReturn"),
+    },
   };
   return { actions, broker };
 }

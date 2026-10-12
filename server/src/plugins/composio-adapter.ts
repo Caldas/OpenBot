@@ -8,6 +8,7 @@ import {
   type ComposioBroker,
   type ConnectedAppBroker,
   type FieldScheme,
+  type GrantState,
   flagOf,
   isFieldScheme,
 } from "./broker";
@@ -223,6 +224,15 @@ type VendorAuthConfig = {
   id?: unknown;
   name?: unknown;
   status?: unknown;
+  /**
+   * What the config was created to ask for, where Composio publishes it, and `unknown` because it
+   * is copied across verbatim like the three above.
+   *
+   * IT IS A PROPERTY OF THE CONFIG RATHER THAN OF AN ACCOUNT, which is the whole of why
+   * {@link ComposioBroker.grantsFor}'s answer is one state for a toolkit: the scope set is fixed
+   * when the config is created and every account connected against it holds exactly that set.
+   */
+  scopes?: unknown;
 };
 
 /**
@@ -1097,7 +1107,34 @@ type CheckedAuthConfig = {
   id: string;
   name: string;
   status: unknown;
+  /** The scope set this config was created with, as {@link scopesOf} could read it. */
+  scopes: string[];
 };
+
+/**
+ * The scope names on an auth config row, and the EMPTY LIST for everything else.
+ *
+ * NOT A REFUSAL, BECAUSE ITS ONE READER REPORTS RATHER THAN ACTS. Every other field this file
+ * reads off a config decides something destructive or something a person is sent through — which
+ * id to delete, which config to mint a consent against — so a shape that cannot be read is a thing
+ * to stop on. Scopes are carried on a {@link GrantState}, which is a description handed to a page:
+ * Composio publishes none at all for a key-scheme config, so "no scope set published" is the
+ * ordinary case and not a fault, and an app somebody is plainly connected to must not become
+ * unreportable because the field arrived as a string.
+ *
+ * ONE PASS, AND THE NON-STRINGS ARE DROPPED RATHER THAN RENDERED. A scope is a name sent to a
+ * provider; `String({})` is not one, and a list half of whose entries were invented here is worse
+ * than a shorter list.
+ */
+function scopesOf(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const names: string[] = [];
+  for (const entry of value) {
+    const name = textOf(entry);
+    if (name !== null) names.push(name);
+  }
+  return names;
+}
 
 /**
  * That status as the WORD it is, so the test and the sentence about it are about the same value.
@@ -1240,7 +1277,12 @@ function readableConfigs(
       return;
     }
 
-    const config: CheckedAuthConfig = { id, name, status: row.status };
+    const config: CheckedAuthConfig = {
+      id,
+      name,
+      status: row.status,
+      scopes: scopesOf(row.scopes),
+    };
     if (slot === undefined) {
       slotOf.set(id, settled.length);
       settled.push(config);
@@ -3008,6 +3050,54 @@ export function buildComposioClient(
     // Composio's grant is held by this deployment. Its existing behaviour, declared; see
     // {@link ConnectedAppBroker.grantIsLocal} for why this is a property and not a comparison.
     grantIsLocal: true,
+    // Composio runs no correlated, pollable authorization flow: it mints nothing to poll, and its
+    // return leg is an OAuth callback with state, handled in `oauth.ts` and never through this
+    // seam. Declared rather than omitted; see {@link ConnectedAppBroker.authorizations}.
+    authorizations: null,
+    /**
+     * What this person holds at this app, said once per action because that is what Composio knows.
+     *
+     * DEGENERATE AND NOT ABSENT, which is why this is implemented rather than thrown. An auth
+     * config fixes its scope set when it is created and a connection is made against the config,
+     * so there is exactly one answer for the toolkit: either this person has an account on it or
+     * they have not, and the scopes are the config's. Reporting that answer once per action is the
+     * honest rendering of a toolkit-wide grant through {@link GrantState}, which is this
+     * deployment's vocabulary rather than any vendor's row shape. The alternative — a throw —
+     * would make one seam member answer two different questions depending on who implemented it,
+     * which is the defect this file already carried at {@link ComposioBroker.accountName}.
+     *
+     * THE ACCOUNT LISTING GOES FIRST, AND THE ORDER IS THE CHEAP QUESTION BEFORE THE DEAR ONES. It
+     * is the one call that can settle on a single row — see `accountsFor`'s `enough` — while the
+     * config listing and the action listing both read every page.
+     *
+     * SCOPES COME FROM THIS DEPLOYMENT'S OWN CONFIGS AND FROM NO OTHER. `configsFor` returns the
+     * operator's hand-made configs beside ours, and a scope set nobody here chose is not what this
+     * person's connection was minted against — the same distinction {@link madeHere} draws for
+     * every destructive caller, drawn here for a descriptive one. The names are deduplicated and
+     * ordered so that two readings of one unchanged deployment are one answer.
+     */
+    async grantsFor({ toolkit, account }): Promise<GrantState[]> {
+      const held = await accountsFor(account.vendorUserId, toolkit, CONNECTED, {
+        enough: (found) => found.length > 0,
+      });
+      const state = held.length > 0 ? "authorized" : "needs-consent";
+
+      const { ours } = await configsFor(toolkit);
+      const scopes = [
+        ...new Set(ours.flatMap((config) => config.scopes)),
+      ].sort();
+
+      const published = await actions.listActions(toolkit, {
+        limit: LISTING_LIMIT,
+      });
+      // A fresh array per entry: one shared list would let a caller mutating its first grant's
+      // scopes rewrite every other grant in the answer.
+      return published.map((action) => ({
+        action: action.slug,
+        state,
+        scopes: [...scopes],
+      }));
+    },
     /**
      * The catalogue, from memory where this process asked for it less than ten minutes ago.
      *

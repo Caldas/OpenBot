@@ -3039,6 +3039,12 @@ describe("what a vendor failure becomes on its way out of the seam", () => {
         "Minting the link failed with nothing said. Nobody was sent anywhere and nothing was attached, so trying again is the whole of the advice.",
     },
     {
+      method: "grantsFor",
+      kind: "an outage",
+      because:
+        "The account listing did not answer. Nothing is granted or spent by asking what somebody holds, and the page this fills in has the route's own advice — the deployment's key, the vendor's status page — to show instead.",
+    },
+    {
       method: "isConnected",
       kind: "an outage",
       because:
@@ -3143,6 +3149,21 @@ describe("what a vendor failure becomes on its way out of the seam", () => {
           },
           toolkit: "linear",
           returnUrl: RETURN_URL,
+        }),
+    },
+    {
+      // The account listing is the first of the three `grantsFor` reads, and the only one a
+      // failure here can reach: the config listing and the action listing come after it.
+      method: "grantsFor",
+      vendor: (raise) => ({ connectedAccounts: { list: raise } }),
+      ask: ({ broker }) =>
+        broker.grantsFor({
+          account: {
+            holder: "person",
+            userId: "user_1",
+            vendorUserId: "user_1",
+          },
+          toolkit: "gmail",
         }),
     },
     {
@@ -3278,7 +3299,7 @@ describe("what a vendor failure becomes on its way out of the seam", () => {
       Object.entries(seam.broker)
         .filter(([, member]) => typeof member !== "function")
         .map(([name]) => name),
-    ).toEqual(["grantIsLocal"]);
+    ).toEqual(["grantIsLocal", "authorizations"]);
   });
 
   for (const seamCase of SEAM_CASES) {

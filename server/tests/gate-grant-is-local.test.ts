@@ -34,6 +34,10 @@ const VENDOR_ID = `openbot-deployment:acme-${suite}:R`;
  * name is identical in all three tests.
  */
 const brokerStub: Omit<ConnectedAppBroker, "grantIsLocal"> = {
+  // Nothing here reads either member; both are declared because the seam requires a broker to
+  // SAY what it runs — see `ConnectedAppBroker.authorizations`.
+  authorizations: null,
+  grantsFor: async () => [],
   listApps: async () => [],
   ensureAuthConfig: async () => "standing",
   deleteAuthConfig: async () => {},

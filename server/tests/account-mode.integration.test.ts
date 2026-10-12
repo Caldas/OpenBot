@@ -32,6 +32,11 @@ const rules: {
 }[] = [];
 
 const broker = {
+  // This stub stands in for Composio, whose grant is held locally and which runs no
+  // correlated authorization flow; see `ConnectedAppBroker.grantIsLocal` and `.authorizations`.
+  grantIsLocal: true,
+  authorizations: null,
+  grantsFor: async () => [],
   listApps: async () => [],
   ensureAuthConfig: async () => "standing",
   deleteAuthConfig: async () => {},

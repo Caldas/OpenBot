@@ -329,6 +329,76 @@ export type BrokerApp = {
 export type AuthConfigOutcome = "created" | "standing" | "not-needed";
 
 /**
+ * What one account holds at one app, in THIS DEPLOYMENT'S OWN VOCABULARY rather than a vendor's row.
+ *
+ * `action` PLUS A STATE PLUS `scopes` IS OPENBOT'S SHAPE AND NOT ARCADE'S. A provider that grants
+ * per action answers one of these per action because that is what it knows; a provider that grants
+ * per app answers the same state once per action because that is what IT knows, and neither is
+ * reading the other's rows. The four states are what a caller can act on — run it, send them to a
+ * consent, tell an operator to set something up, say that nothing could be read — and `unknown`
+ * carries its own reason because a state nobody could read is a real answer and not a defensive one.
+ *
+ * A DEGENERATE ANSWER IS NOT AN ABSENT ONE, which is why {@link ConnectedAppBroker.grantsFor} is on
+ * the seam rather than behind a nullable sub-surface. Composio's auth config fixes the scope set
+ * when it is created, so every action in a toolkit shares one state and one scope list; N identical
+ * entries is the honest rendering of a toolkit-wide grant, not a stub standing in for a missing
+ * answer.
+ */
+export type GrantState =
+  | { action: string; state: "authorized"; scopes: string[] }
+  | { action: string; state: "needs-consent"; scopes: string[] }
+  | { action: string; state: "needs-operator"; missing: string[] }
+  | { action: string; state: "unknown"; reason: string };
+
+/**
+ * The CORRELATED, POLLABLE AUTHORIZATION FLOW one provider runs and the other does not.
+ *
+ * THE LINE THIS SUB-SURFACE FALLS ON IS "THIS BROKER RUNS A CORRELATED, POLLABLE AUTHORIZATION
+ * FLOW" — NOT "THIS BROKER CAN START A CONSENT", WHICH BOTH DO. {@link ConnectedAppBroker.authorize}
+ * therefore stays top-level and must not be tidied in here: its caller is the Composio connect flow
+ * in `routes.ts`, and moving it would either break that route or force Composio to declare this
+ * sub-surface, which would make the nullability mean nothing.
+ *
+ * ASKING THE OTHER PROVIDER FOR THE STATUS OF A MINT IS A CATEGORY ERROR RATHER THAN A HARD
+ * QUESTION. Composio mints no correlated authorization to poll, and its return leg is an OAuth
+ * callback with state handled in `oauth.ts` and never through the broker. A member that existed only
+ * to throw would be a provider branch wearing a type's clothes — which is the charge this seam
+ * already met once at `accountName`, two implementations of one member answering different
+ * questions. That charge does NOT apply to {@link ConnectedAppBroker.grantsFor}, which does not
+ * throw.
+ *
+ * `status` IS NAMED `status` AND NOT `authorizationStatus`: the sub-surface supplies the noun.
+ */
+export type AuthorizationFlow = {
+  /**
+   * Where one minted authorization has got to, by the id the mint answered with.
+   *
+   * NARROWED TO THESE THREE FIELDS AND NOTHING ELSE. A provider's own status reply carries the live
+   * access token it issued and the person's full profile beside it, and neither is something a seam
+   * this deployment reads in routes and stores should be able to hand on by accident.
+   */
+  status(
+    id: string,
+  ): Promise<{ status: string; userId: string | null; scopes: string[] }>;
+  /**
+   * Match somebody coming back from the provider's screen to the authorization they left through.
+   *
+   * `handle` IS AN OPAQUE STRING THIS SEAM DOES NOT INTERPRET. It is minted by the adapter, carried
+   * by the return leg and handed back here to be recognised; `flow_id` is Arcade's word for it and
+   * stops at the adapter. Nothing here parses it, compares it to a scheme or reads a provider out of
+   * it.
+   *
+   * `{ mismatch: true }` RATHER THAN A THROW, because a handle that belongs to somebody else is an
+   * ANSWER: it is exactly the case a return leg has to be able to refuse quietly, and a caller
+   * cannot tell it from an outage if both arrive as exceptions.
+   */
+  confirmReturn(q: {
+    handle: string;
+    vendorUserId: string;
+  }): Promise<{ authorizationId: string } | { mismatch: true }>;
+};
+
+/**
  * What this deployment needs of Composio's broker, and nothing more.
  *
  * A NARROW PROJECTION RATHER THAN THEIR CLIENT, for the reason the transport's `ComposioActions` is
@@ -355,6 +425,42 @@ export type ConnectedAppBroker = {
    * is the behaviour it always had, made explicit here rather than changed.
    */
   grantIsLocal: boolean;
+  /**
+   * The correlated authorization flow, or a DECLARED `null` where this broker runs none.
+   *
+   * THE FIELD IS REQUIRED AND THE `null` IS A STATEMENT RATHER THAN AN INFERRED ABSENCE. A broker
+   * literal that omits it fails to type-check, which is the whole of what this costs and the whole
+   * of what it buys. {@link ConnectedAppBroker.grantIsLocal} is the shape being copied and its
+   * docblock argues for it in its own words: an optional-shaped capability read with `?.` or
+   * `=== undefined` answers for a broker that never declared anything, which is how a gate and its
+   * exemption came to key on different things at `store.ts:1631` and the exemption failed OPEN —
+   * a call ran for somebody who had connected nothing. Nine stubs omitting `grantIsLocal` were the
+   * evidence; an optional member here would reopen that exact shape one field along.
+   *
+   * SO A ROUTE REACHES IT WITH `if (!broker.authorizations)` — A PRESENCE TEST ON A VALUE THE
+   * BROKER DECLARED, and never a vendor name. Which flow a provider runs is the provider's own
+   * answer, stated once on the object it hands over.
+   *
+   * WHAT IT IS AND IS NOT ABOUT: see {@link AuthorizationFlow}. The line is "this broker runs a
+   * correlated, pollable authorization flow", NOT "this broker can start a consent" — both do that,
+   * through {@link ConnectedAppBroker.authorize}, which stays top-level.
+   */
+  authorizations: AuthorizationFlow | null;
+  /**
+   * What this account holds at this app, action by action.
+   *
+   * THE NEUTRAL SEAM BOTH PROVIDERS ANSWER, and it is one question rather than two: what does this
+   * account hold at this app. A provider that grants per action answers from its own rows; a
+   * provider whose auth config fixes the scope set when it is created answers the same state once
+   * per action, carrying that config's scopes. The second answer is DEGENERATE AND DEGENERATE IS
+   * NOT ABSENT — it is what a toolkit-wide grant honestly looks like through this vocabulary, and
+   * an implementation that threw instead would be two implementations of one member answering
+   * different questions, which is the real bug this seam already found at `accountName`.
+   *
+   * {@link GrantState} IS THIS DEPLOYMENT'S VOCABULARY AND NOT A VENDOR'S ROW SHAPE. Nothing here
+   * is copied across from a provider's listing; see that type.
+   */
+  grantsFor(q: { toolkit: string; account: AccountRef }): Promise<GrantState[]>;
   /** Every app the catalogue offers, which is what an administrator chooses from. */
   listApps(): Promise<BrokerApp[]>;
   /**

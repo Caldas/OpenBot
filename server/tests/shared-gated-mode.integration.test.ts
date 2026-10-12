@@ -26,6 +26,10 @@ const VENDOR_ID = `openbot-deployment:acme-${suite}:R`;
 const broker: ConnectedAppBroker = {
   // This stub stands in for Composio, whose grant is held locally; see `ConnectedAppBroker.grantIsLocal`.
   grantIsLocal: true,
+  // Nothing here reads either member; both are declared because the seam requires a broker to
+  // SAY what it runs — see `ConnectedAppBroker.authorizations`.
+  authorizations: null,
+  grantsFor: async () => [],
   listApps: async () => [],
   ensureAuthConfig: async () => "standing",
   deleteAuthConfig: async () => {},
