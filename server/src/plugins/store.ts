@@ -1639,7 +1639,7 @@ export function createPluginStore(options: PluginStoreOptions) {
    */
   const closeAuthorizationAttempt = async (
     input: { actorId: string; authId: string },
-    outcome: "failed" | "unreconciled",
+    outcome: "failed" | "unreconciled" | "withdrawn",
   ) => {
     const written = await database
       .update(pendingAuthorizations)
@@ -6454,6 +6454,19 @@ export function createPluginStore(options: PluginStoreOptions) {
       authId: string;
     }): Promise<boolean> {
       return await closeAuthorizationAttempt(input, "unreconciled");
+    },
+
+    /**
+     * Mark an attempt whose consent completed at the vendor and which this deployment then refused
+     * and ended by withdrawing the grant — neither a decline nor an unknown. An operator seeing a
+     * run of these is seeing apps whose mode is being switched inside a consent window, which is a
+     * different problem from people declining.
+     */
+    async markAuthorizationWithdrawn(input: {
+      actorId: string;
+      authId: string;
+    }): Promise<boolean> {
+      return await closeAuthorizationAttempt(input, "withdrawn");
     },
 
     /**

@@ -473,7 +473,8 @@ export const pendingAuthorizations = pgTable("pending_authorizations", {
   authId: text("auth_id"),
   createdAt: createdAt(),
   completedAt: timestamp("completed_at", { withTimezone: true }),
-  outcome: text("outcome").$type<"completed" | "failed" | "unreconciled">(),
+  outcome: text("outcome")
+    .$type<"completed" | "failed" | "unreconciled" | "withdrawn">(),
 });
 
 /**

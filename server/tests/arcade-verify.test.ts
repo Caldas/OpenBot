@@ -695,9 +695,32 @@ describe("a consent whose account context has moved on", () => {
     expect(connections[0]?.vendorUserId).toBe(SHARED_IDENTITY);
     expect(events.length).toBe(0);
 
+    // THE CONSENT COMPLETED AND THIS DEPLOYMENT ENDED IT: neither a decline nor an unknown.
     const row = await attemptRow();
-    expect(row?.outcome).toBe("failed");
+    expect(row?.outcome).toBe("withdrawn");
     expect(row?.completedAt).not.toBeNull();
+    expect(row?.authId).toBe(MINTED);
+  });
+
+  test("a revoke that answers false, which an unresolved auth provider does, is not a withdrawal", async () => {
+    await giveAttempt({ authId: MINTED, ageMinutes: 1 });
+    await switchToShared();
+    revokeAnswer = async () => false;
+
+    await expectRefusal(
+      await verify(ACTOR, "?flow_id=flow-abc"),
+      "context-changed",
+    );
+
+    // `false` is "nothing found OR could not work out what to withdraw"; a possibly-live grant
+    // reads that as "we do not know". Scoped to this test: the row is keyed on ACTOR, which
+    // beforeEach clears, and TOOLKIT is unique per test.
+    const row = await attemptRow();
+    expect(revokeCalls.length).toBe(1);
+    expect(row?.outcome).toBe("unreconciled");
+    expect(row?.completedAt).not.toBeNull();
+    expect(row?.authId).toBe(MINTED);
+    await expectNothingWritten();
   });
 
   test("a withdrawal this deployment could not make keeps the attempt as unreconciled", async () => {
@@ -716,6 +739,7 @@ describe("a consent whose account context has moved on", () => {
     const row = await attemptRow();
     expect(row?.outcome).toBe("unreconciled");
     expect(row?.completedAt).not.toBeNull();
+    expect(row?.authId).toBe(MINTED);
     await expectNothingWritten();
   });
 });

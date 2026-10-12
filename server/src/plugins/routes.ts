@@ -2767,7 +2767,8 @@ export function createPluginRoutes(
        * before this deployment looked. So the RETIRED identity's connection is withdrawn — keyed on
        * that identity and on this app, which CANNOT TOUCH THE CURRENT ACCOUNT: a connection is keyed
        * `(user_id, provider_id)` and the retired identity is not the current one. Where that
-       * withdrawal fails the attempt is kept as `unreconciled` rather than closed, because a grant
+       * withdrawal succeeds the attempt is marked `withdrawn`; where it fails, is not attempted or
+       * answers `false` it is kept as `unreconciled` rather than closed, because a grant
        * we know about and could not end is worth a row somebody can act on.
        */
       const retired: AccountRef =
@@ -2785,18 +2786,23 @@ export function createPluginRoutes(
         let withdrawn = false;
         if (retiredApp) {
           try {
-            await composio.broker.revoke({
+            /*
+             * THE BOOLEAN IS READ, NOT DROPPED. `false` used to mean only "nothing there", but the
+             * lifecycle trio filters on the RESOLVED auth provider, so it now also means "we could
+             * not work out what to withdraw". Over a possibly-live grant the safe reading of that
+             * ambiguity is "we do not know": it takes the not-withdrawn branch, as a throw does.
+             */
+            withdrawn = await composio.broker.revoke({
               account: retired,
               toolkit: retiredApp,
             });
-            withdrawn = true;
           } catch {
             // Nothing from the vendor's answer travels with this, here as everywhere on this leg.
             withdrawn = false;
           }
         }
         if (withdrawn)
-          await store.failAuthorizationAttempt({ actorId, authId });
+          await store.markAuthorizationWithdrawn({ actorId, authId });
         else await store.markAuthorizationUnreconciled({ actorId, authId });
         return refusedWith("context-changed");
       }
