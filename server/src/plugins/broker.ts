@@ -10,9 +10,22 @@
  * schema. Everything below is a name for a shape, so the vendor's package stays confined to the
  * adapter that implements {@link ConnectedAppBroker} — one file, replaceable, and the only place a
  * version bump can reach. A module that named the vendor's types here would put their package on
- * the import graph of every test that touches enablement. `AccountRef` and `BrokerProvider`, below, are the only imports
- * that cross this file's boundary, and both are types this deployment names, never the vendor's.
+ * the import graph of every test that touches enablement. `AccountRef`, `BrokerProvider` and
+ * `BROKERED_PROFILE`, below, are the only imports that cross this file's boundary, and all three are
+ * names this deployment owns, never the vendor's. Two are types; `BROKERED_PROFILE` is a value, and
+ * the comment on its import says what that costs.
  */
+// This import closes a runtime cycle: `./access` imports `schemeKind` from this file. It is safe
+// for two reasons, and the reasons are the rule. `access.ts` reads `schemeKind` only inside a
+// function body, and this file reads `BROKERED_PROFILE` only inside the `BrokerUnconfiguredError`
+// constructor, so whichever module evaluates first, the other's half-initialised bindings are never
+// touched while either is still evaluating. Nothing may call across this cycle at module scope.
+// Hoisting the `BROKERED_PROFILE[provider]` destructure out of that constructor, or deriving a
+// top-level constant in `access.ts` from `schemeKind`, would read a lexical binding the other module
+// has not yet initialised: it throws under one evaluation order and not the other, so it can pass
+// every test and still fail at boot. The cycle is deliberate: passing `vendor` and `envVar` in
+// would scatter the vocabulary across every call site, which is what keeping `BROKERED_PROFILE` in
+// `access.ts` exists to prevent.
 import { BROKERED_PROFILE, type BrokerProvider } from "./access";
 import type { AccountRef } from "./shared-accounts";
 
