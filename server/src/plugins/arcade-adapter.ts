@@ -1,6 +1,10 @@
 import Arcade, { APIError } from "@arcadeai/arcadejs";
 import type { ArcadeActions, ArcadeFailure } from "./arcade";
-import type { BrokerApp, ConnectedAppBroker } from "./broker";
+import {
+  BrokerRefusalError,
+  type BrokerApp,
+  type ConnectedAppBroker,
+} from "./broker";
 
 /**
  * THE VENDOR'S ONLY DOOR INTO THE SERVER. This is the one file under `server/src` that imports
@@ -119,6 +123,9 @@ async function listApps(client: Arcade): Promise<BrokerApp[]> {
   return [...counts.values()];
 }
 
+const FIELDS_REFUSAL =
+  "Arcade has no per-person field entry: what it asks for is a deployment-wide secret (admin.secrets, e.g. GITHUB_SERVER_URL) that an operator sets once for everybody, so a form asking a person to type one would collect a value that is not theirs and share it with everyone. Set it in the Arcade dashboard instead.";
+
 const notYet = (task: string, member: string) => () =>
   Promise.reject(new Error(`${member} is not implemented yet (${task}).`));
 
@@ -160,20 +167,39 @@ export function createArcadeClient(apiKey: string): {
   const broker: ConnectedAppBroker = {
     grantIsLocal: false,
     listApps: () => listApps(client),
-    // The members below are filled by later micro-tasks; they throw until then.
-    // 5.3: ensureAuthConfig, deleteAuthConfig, authorize
-    ensureAuthConfig: notYet("micro-task 5.3", "ensureAuthConfig"),
-    deleteAuthConfig: notYet("micro-task 5.3", "deleteAuthConfig"),
-    authorize: notYet("micro-task 5.3", "authorize"),
-    // 6.1: isConnected, revoke, revokeAccount
-    isConnected: notYet("micro-task 6.1", "isConnected"),
-    revoke: notYet("micro-task 6.1", "revoke"),
-    revokeAccount: notYet("micro-task 6.1", "revokeAccount"),
-    // 6.2: connectionFields, connectWithFields
-    connectionFields: notYet("micro-task 6.2", "connectionFields"),
-    connectWithFields: notYet("micro-task 6.2", "connectWithFields"),
-    // 6.3: accountName
-    accountName: notYet("micro-task 6.3", "accountName"),
+    // 5.3: no auth config per app. Arcade's equivalent is an auth provider registered once in the
+    // dashboard for the whole project, so there is nothing to create or delete here.
+    ensureAuthConfig: async () => "not-needed",
+    deleteAuthConfig: async () => {},
+    // The field-entry pair REFUSES. Composio's field schemes are a person typing their own API key;
+    // `admin.secrets` is a deployment-wide secret an operator sets once for everybody.
+    connectionFields: () =>
+      Promise.reject(new BrokerRefusalError(FIELDS_REFUSAL)),
+    connectWithFields: () =>
+      Promise.reject(new BrokerRefusalError(FIELDS_REFUSAL)),
+    accountName: async ({ account }) => {
+      for await (const row of client.admin.userConnections.list({
+        user_id: account.vendorUserId,
+      })) {
+        const info = row.provider_user_info as
+          { name?: unknown; login?: unknown } | null | undefined;
+        const name = textOf(info?.name) ?? textOf(info?.login);
+        if (name) return name;
+      }
+      return null;
+    },
+    // 6.1: authorize, and confirm_user (the mint pair; confirm_user is not on this seam yet)
+    authorize: notYet("micro-task 6.1", "authorize"),
+    // 6.2: isConnected, revoke, revokeAccount (the connection-lifecycle trio).
+    // `admin.userConnections.delete` takes `connection_id` (`ac_...`), NOT the `id` (`at_...`) the
+    // listing prints first: measured, `at_...` answers 500 and `ac_...` answers 204.
+    isConnected: notYet("micro-task 6.2", "isConnected"),
+    revoke: notYet("micro-task 6.2", "revoke"),
+    revokeAccount: notYet("micro-task 6.2", "revokeAccount"),
+    // 6.3: grantsFor and authorizationStatus (the read-only status pair; neither is on this seam
+    // yet, so there is no stub to throw). `authorizationStatus` must narrow to
+    // `{ status, userId, scopes }` and nothing else: the raw `auth.status` response carries
+    // `context.token`, a live provider access token, plus the person's full profile.
   };
   return { actions, broker };
 }

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import Arcade, { APIError } from "@arcadeai/arcadejs";
 import { callTool, useArcadeClient } from "../src/plugins/arcade";
+import { BrokerRefusalError } from "../src/plugins/broker";
 import { createArcadeClient } from "../src/plugins/arcade-adapter";
 
 /**
@@ -124,5 +125,77 @@ describe("createArcadeClient", () => {
     await expect(
       actions.execute({ tool_name: "X.Y", input: {}, user_id: "u" }),
     ).rejects.toBe(boom);
+  });
+
+  const connectionsProto = (): Methods =>
+    Object.getPrototypeOf(
+      new Arcade({ apiKey: "never-dialled" }).admin.userConnections,
+    ) as Methods;
+  const account = { vendorUserId: "u1" } as never;
+
+  test("ensureAuthConfig answers not-needed in every case", async () => {
+    const { broker } = createArcadeClient("never-dialled");
+    for (const toolkit of ["Github", "Gmail", "GithubApi"])
+      expect(
+        await broker.ensureAuthConfig({
+          toolkit,
+          connection: { kind: "consent" },
+        } as never),
+      ).toBe("not-needed");
+  });
+
+  test("deleteAuthConfig is a no-op", async () => {
+    const { broker } = createArcadeClient("never-dialled");
+    expect(await broker.deleteAuthConfig("Github")).toBeUndefined();
+  });
+
+  test("connectionFields and connectWithFields refuse, naming the deployment-wide secret", async () => {
+    const { broker } = createArcadeClient("never-dialled");
+    const a = broker.connectionFields({
+      toolkit: "Github",
+      authScheme: "API_KEY",
+    } as never);
+    await expect(a).rejects.toBeInstanceOf(BrokerRefusalError);
+    await expect(a).rejects.toThrow(/deployment-wide secret/);
+    const b = broker.connectWithFields({
+      account,
+      toolkit: "Github",
+      authScheme: "API_KEY",
+      values: { k: "v" },
+    } as never);
+    await expect(b).rejects.toBeInstanceOf(BrokerRefusalError);
+    await expect(b).rejects.toThrow(/deployment-wide secret/);
+  });
+
+  test("accountName reads provider_user_info.name, then .login, else null", async () => {
+    const rows: unknown[] = [];
+    stub(connectionsProto(), "list", () =>
+      (async function* () {
+        for (const r of rows) yield r;
+      })(),
+    );
+    const { broker } = createArcadeClient("never-dialled");
+    const ask = () => broker.accountName({ account, toolkit: "Github" });
+    rows.push({ provider_user_info: { name: "Ada", login: "ada1" } });
+    expect(await ask()).toBe("Ada");
+    rows.length = 0;
+    rows.push({ provider_user_info: { login: "ada1" } });
+    expect(await ask()).toBe("ada1");
+    rows.length = 0;
+    rows.push({ provider_user_info: {} });
+    expect(await ask()).toBeNull();
+  });
+
+  test("no app resolves to a fields connection", async () => {
+    stub(toolsProto(), "list", () =>
+      Promise.resolve({
+        items: [toolOf("Github", 0), toolOf("Gmail", 0)],
+        total_count: 2,
+      }),
+    );
+    const apps = await createArcadeClient("never-dialled").broker.listApps();
+    expect(apps.length).toBeGreaterThan(0);
+    for (const app of apps)
+      expect(["consent", "unsupported"]).toContain(app.connection.kind);
   });
 });
