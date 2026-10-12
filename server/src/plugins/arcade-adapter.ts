@@ -182,7 +182,9 @@ export function createArcadeClient(apiKey: string): {
         user_id: account.vendorUserId,
       })) {
         const info = row.provider_user_info as
-          { name?: unknown; login?: unknown } | null | undefined;
+          | { name?: unknown; login?: unknown }
+          | null
+          | undefined;
         const name = textOf(info?.name) ?? textOf(info?.login);
         if (name) return name;
       }
