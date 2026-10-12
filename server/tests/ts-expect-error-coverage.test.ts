@@ -93,5 +93,7 @@ test("the directive pattern takes both comment forms and leaves prose", () => {
   const d = "@ts-expect" + "-error";
   expect(DIRECTIVE.test(`    // ${d} the call`)).toBe(true);
   expect(DIRECTIVE.test(`x(); /* ${d} */`)).toBe(true);
-  expect(DIRECTIVE.test(" * the ts-expect-error directive is checked by tsc")).toBe(false);
+  expect(
+    DIRECTIVE.test(" * the ts-expect-error directive is checked by tsc"),
+  ).toBe(false);
 });
