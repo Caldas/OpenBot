@@ -6,7 +6,7 @@ import type { AppVariables } from "../auth/guards";
 import { requireAdmin } from "../auth/guards";
 import { reasonWithoutStatement } from "../db/query-failure";
 import type { AccountModeSwitch } from "./account-mode";
-import type { BrokerProvider } from "./access";
+import { type BrokerProvider, toolkitOfFor } from "./access";
 import {
   type BrokerApp,
   type BrokerField,
@@ -20,7 +20,7 @@ import {
   schemeKind,
 } from "./broker";
 import { CATALOGUE, catalogueEntry } from "./catalogue";
-import { toolkitOf, vendorSentence } from "./composio";
+import { vendorSentence } from "./composio";
 import {
   authorizationUrlFor,
   type ConnectOrigin,
@@ -214,6 +214,49 @@ export function createPluginRoutes(
 ) {
   const routes = new Hono<{ Variables: AppVariables }>();
 
+  /**
+   * WHICH broker this deployment's rows are reached through, as a name, read once for the whole
+   * layer.
+   *
+   * HANDED IN WITH THE BROKER AND NEVER SNIFFED OFF IT. The broker declares what it can DO —
+   * `grantIsLocal`, `authorizations` — deliberately not who it is, so a vendor name derived from it
+   * would be the comparison `store.ts` argues against, made against a capability that two providers
+   * are free to share.
+   *
+   * THE `??` IS NOT A SECOND FALLBACK: IT IS THE PAGE PAYLOAD'S, MOVED UP ONE LINE SO THERE IS ONE.
+   * The payload below already answered `composio` for a deployment with no broker, and the four
+   * brokered reads below have always parsed with Composio's own parser whether or not a key was
+   * set. Spelling it in both places is how two readings of "which provider" come apart; spelled
+   * here, the name the page shows and the parser the routes use cannot disagree.
+   *
+   * AND NO BROKER IS NOT THE CASE THIS DECIDES. A deployment with no key reaches no broker, so no
+   * row of its own can be brokered — but rows outlive a key being unset, and the Personal ⇄ Shared
+   * switch is wired from the shared bag rather than from the broker, so it answers for such a row
+   * today. Reading `null` for it instead would turn that 200 into a 400 in the name of a provider
+   * question nobody asked. The deployment boundary is where "which provider" genuinely has no
+   * answer, and `server/src/index.ts` is where the system says so.
+   */
+  const activeProvider: BrokerProvider = composio?.provider ?? "composio";
+
+  /**
+   * Which app a brokered row is, read by the parser belonging to the broker this deployment runs.
+   *
+   * ONE PARSER PER PROVIDER, AND THEY ARE NOT INTERCHANGEABLE — the argument is {@link toolkitOfFor}'s
+   * and is not repeated here. What this layer adds is that all four reads below used to call
+   * Composio's parser by name, and that parser answers null for `arcade://Gmail` by design. Four
+   * reads, four different wrong answers on an Arcade deployment, and not one of them a failure or a
+   * log line: the account-mode switch refused a brokered app as "not reached through a broker", the
+   * directory reported every enabled app as not enabled, the connect route fell past its brokered
+   * branch in silence, and `brokeredAccountFor` — step one of confirm, re-check and disconnect —
+   * refused a connected app before any account was resolved.
+   *
+   * A CLOSURE RATHER THAN THE DISPATCH SPELLED FOUR TIMES, which is how `shared-use-store.ts` holds
+   * the same thing: the provider is read in one place, so a fifth read added below cannot be the one
+   * that forgets to pass it.
+   */
+  const appOfUrl = (url: string): string | null =>
+    toolkitOfFor(activeProvider, url);
+
   const actorEmail = (context: { var: AppVariables }) =>
     context.var.actor?.email ?? "unknown";
 
@@ -293,9 +336,11 @@ export function createPluginRoutes(
        *
        * A NAME, never a key and never a capability. The Plugins page is reachable by any signed-in
        * person, so nothing about the vendor key (its presence, shape or anything derived from it)
-       * travels with this. Composio when no broker is configured, so that deployment is unchanged.
+       * travels with this. Composio when no broker is configured, so that deployment is unchanged —
+       * read from {@link activeProvider}, which is also what the brokered reads below parse with, so
+       * the name this page shows and the parser those routes use cannot come apart.
        */
-      provider: composio?.provider ?? "composio",
+      provider: activeProvider,
       servers: await store.listServers(),
       // Scoped: the deployment's skills plus this person's own. An administrator sees them all.
       skills: await store.listSkills(skillActor(context)),
@@ -633,7 +678,7 @@ export function createPluginRoutes(
       return context.json({ error: "Choose personal or shared." }, 400);
     const serverId = context.req.param("id");
     const row = await store.serverAddress(serverId);
-    if (!row || !toolkitOf(row.url)) {
+    if (!row || !appOfUrl(row.url)) {
       return context.json(
         { error: "That app is not reached through a broker." },
         400,
@@ -754,8 +799,9 @@ export function createPluginRoutes(
    * {@link BrokerUnconfiguredError}'s own message is what is sent rather than a sentence written
    * here.
    *
-   * `enabled` comes off `toolkitOf(url)` and never off the row's id. The url is where the
-   * transport reads which app a call is against, so it is the only reading that decides anything;
+   * `enabled` comes off `appOfUrl(url)` — the active broker's own parser — and never off the
+   * row's id. The url is where the transport reads which app a call is against, so it is the only
+   * reading that decides anything;
    * the id names the row — `composio-linear` — and reading one as the other would quietly work
    * until somebody renamed a row. `serverUrls` hands over the urls and nothing else, which is that
    * property made structural: there is no id here to read by mistake.
@@ -831,7 +877,7 @@ export function createPluginRoutes(
 
     const enabled = new Set(
       urls
-        .map((url) => toolkitOf(url))
+        .map((url) => appOfUrl(url))
         .filter((toolkit): toolkit is string => toolkit !== null),
     );
     return context.json({
@@ -1148,7 +1194,7 @@ export function createPluginRoutes(
      * person. On a deployment with no `OPENBOT_PUBLIC_URL` it failed one step earlier still,
      * refusing for want of a setting that has no bearing on a flow it does not enter.
      *
-     * The app comes off the row's url via `toolkitOf` rather than off its id, for the reason the
+     * The app comes off the row's url via `appOfUrl` rather than off its id, for the reason the
      * directory route says: the url is where the transport reads which app a call is against, and
      * the id is a row name that happens to look similar.
      *
@@ -1159,7 +1205,7 @@ export function createPluginRoutes(
      * a missing row did when this was a `.find`.
      */
     const row = await store.serverAddress(serverId);
-    const toolkit = row ? toolkitOf(row.url) : null;
+    const toolkit = row ? appOfUrl(row.url) : null;
     if (row && toolkit) {
       /*
        * AN APP THAT NEEDS NO CREDENTIAL IS ANSWERED HERE, BEFORE `brokeredAccountFor` IS EVER
@@ -1864,7 +1910,7 @@ export function createPluginRoutes(
    *
    * A ROW THAT IS NOT BROKERED IS REFUSED IN SO MANY WORDS. The id may well name a server this
    * deployment really has — what is wrong is that its connection does not live at Composio, and
-   * there is nothing for either route to confirm or to end. `null` from `toolkitOf` also covers an
+   * there is nothing for either route to confirm or to end. `null` from `appOfUrl` also covers an
    * id naming no row at all, which is the same answer from the caller's side.
    *
    * NO BROKER IS A 503 NAMING THE SETTING, as it is on the directory and on connect, and it is
@@ -1877,7 +1923,7 @@ export function createPluginRoutes(
    * actor who is not an administrator is refused here, once, instead of in four routes below.
    *
    * THE CONNECT ROUTE'S BROKERED BRANCH IS THE FOURTH, CALLED ONLY ONCE IT ALREADY KNOWS THE
-   * BRANCH IS TAKEN. That route still asks `toolkitOf` itself before this function is ever reached
+   * BRANCH IS TAKEN. That route still asks `appOfUrl` itself before this function is ever reached
    * — a row that is not brokered has an OAuth flow below it to fall through to, and refusing it
    * here, where there is no such flow to fall through to, would be wrong. Once that question is
    * settled and the answer is yes, whose account the connection is for is exactly the question
@@ -1902,7 +1948,7 @@ export function createPluginRoutes(
       }
   > => {
     const row = await store.serverAddress(serverId);
-    const toolkit = row ? toolkitOf(row.url) : null;
+    const toolkit = row ? appOfUrl(row.url) : null;
     if (!toolkit) {
       return {
         refusal: {

@@ -24,25 +24,21 @@
  * The offenders are collected into a list and compared against `[]` rather than asserted one file at
  * a time, so a new site has to be argued for here rather than quietly allowed.
  *
- * THE OTHER HALF OF THIS GUARD IS NOT ARMED YET, and this is the record of why. A direct call to a
- * vendor module's own parser — `toolkitOf(url)` rather than `toolkitOfFor(provider, url)` — is the
- * same mistake as a spelled scheme, and the pattern for it is `/\btoolkitOf\s*\(/`. Run today it
- * names eight lines:
+ * THE FOURTH PATTERN FAMILY IS THE PARSER CALL, AND IT IS ARMED. A direct call to a vendor module's
+ * own parser — `toolkitOf(url)` rather than `toolkitOfFor(provider, url)` — is the same mistake as a
+ * spelled scheme, reached one step further in: it does not name a vendor, it IS one, and it answers
+ * null for every url the other broker mints rather than failing. What that bought on an Arcade
+ * deployment was four different wrong answers from one wrong parser, none of which read as a parser
+ * problem — an app refused as "not reached through a broker", a directory offering to enable what
+ * was already enabled, a connect route falling past its own brokered branch, and an authorize,
+ * grants and disconnect that all refused a connected app.
  *
- *   `routes.ts` 617, 815, 1143, 1886 — genuine. That module imports `toolkitOf` from `./composio`
- *   and parses every brokered url with Composio's parser, so on any other broker each of these
- *   answers null and the route refuses an app that is perfectly well connected. It cannot be fixed
- *   here: `routes.ts` holds no provider at all (`grep -n 'provider' server/src/plugins/routes.ts`
- *   is empty), so routing these through `toolkitOfFor` means wiring the active broker into the
- *   routes layer, which is a change of its own.
- *
- *   `shared-use-store.ts` 154, 427, 484, 492 — false positives. Those call a LOCAL closure that
- *   happens to be named `toolkitOf` and whose body is `toolkitOfFor(provider, url)`: the dispatch
- *   itself, read by the pattern as the thing it dispatches to.
- *
- * Arming it now would mean exempting a fourth and fifth module, which is exactly the hatch the
- * paragraph above refuses. So it waits for the routes layer to learn its provider and for that
- * closure to be renamed, and this comment is what stops the pattern being quietly dropped instead.
+ * WHAT THE ARMED PATTERN NOW GUARANTEES: outside the three vocabulary modules, no plugin module
+ * calls `toolkitOf` at all. Every brokered url in `src/plugins` is parsed through
+ * `toolkitOfFor(provider, url)`, with the provider handed in rather than sniffed — so adding a
+ * broker changes the dispatch table in `access.ts` and nothing else, and a module that reaches past
+ * the dispatch for one vendor's parser is named here before it ships. The only lines the pattern
+ * still matches are the definitions themselves, in the three exempt modules it does not scan.
  */
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
@@ -65,6 +61,10 @@ const PATTERNS: RegExp[] = [
   // is what dropped every Arcade connection off the settings page and what sent an Arcade
   // deployment's probe to Composio; the scheme comes out of `BROKERED_PROFILE` now.
   /["'`](composio|arcade):\/\//,
+  // A vendor module's own parser called directly, not the dispatch. `toolkitOf(url)` reads one
+  // broker's scheme and answers null for the other's, so a module holding the active provider must
+  // ask `toolkitOfFor(provider, url)` instead.
+  /\btoolkitOf\s*\(/,
 ];
 
 /** A line of prose rather than a line of code. See the docblock: the skip is narrow on purpose. */
@@ -107,12 +107,14 @@ test("the comment skip takes prose and leaves every expression", () => {
     '    return { url: "composio://gmail" };',
     '\tif (row.provenance === "arcade") return null;',
     'const u = "composio://" + toolkit; /* trailing block */',
+    "    const toolkit = row ? toolkitOf(row.url) : null;",
   ];
   const prose = [
     " * a row called `gmail` at `composio://slack` would decide a Slack confirm",
     "// `arcade://Gmail` and `arcade://gmail` are distinct apps.",
     "/* `composio://` is the scheme the rows are minted at. */",
     '  * `provenance === "composio"` was the comparison this replaced.',
+    " * `enabled` comes off `toolkitOf(url)` and never off the row's id.",
   ];
   for (const line of code) {
     expect(isComment(line)).toBe(false);
