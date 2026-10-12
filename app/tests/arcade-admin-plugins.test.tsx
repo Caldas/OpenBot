@@ -43,6 +43,11 @@ test("a Composio deployment keeps today's exact wording", () => {
     directoryLabel: "Browse Composio",
     envVar: "COMPOSIO_API_KEY",
     directoryPath: "/admin/plugins/composio",
+    // Composio's configured-branch sentence, verbatim: it used to be a literal inside a
+    // `provider === "composio"` branch in `moreAppsRow`, and moving it here is what let that
+    // branch go.
+    directoryDescription:
+      "A few hundred apps, reached as whoever is asking. Each person connects their own account.",
   });
   expect(moreAppsSectionDescription("composio")).toBe(
     "A directory this deployment has not reviewed, reached through Composio.",
@@ -77,7 +82,35 @@ test("the vocabulary follows the provider rather than being hard-coded", () => {
   expect(moreAppsRow("arcade", false).description).toContain("ARCADE_API_KEY");
   expect(brokeredReach("arcade").badge).toBe("Through Arcade");
   expect(brokeredDisconnectNote("arcade")).toContain("Arcade");
-  expect(moreAppsRow("arcade", true).linked).toBe(false);
+});
+
+/*
+ * THE ROW GOES SOMEWHERE ON BOTH DEPLOYMENTS. It used to link only on Composio, because only
+ * Composio had a directory screen — so on an Arcade deployment the one route that draws the D8
+ * coverage warning and the D32 breadth line was unreachable, and two measured warnings rendered
+ * nowhere. `linked` now follows the configuration and never the vendor.
+ */
+test("a configured deployment links to its own directory, whichever provider it is", () => {
+  expect(moreAppsRow("arcade", true)).toEqual({
+    title: "Browse Arcade",
+    // Arcade's own sentence: it claims no app count, because nobody here has counted Arcade's.
+    description:
+      "A directory this deployment has not reviewed, reached as whoever is asking. Each person connects their own account.",
+    linked: true,
+  });
+  expect(moreAppsRow("composio", true).linked).toBe(true);
+  // And an unconfigured row still goes nowhere, because there is nowhere to go until the key is set.
+  expect(moreAppsRow("arcade", false).linked).toBe(false);
+  expect(moreAppsRow("composio", false).linked).toBe(false);
+});
+
+test("each provider's directory path is its own route", () => {
+  expect(providerVocabulary("composio").directoryPath).toBe(
+    "/admin/plugins/composio",
+  );
+  expect(providerVocabulary("arcade").directoryPath).toBe(
+    "/admin/plugins/arcade",
+  );
 });
 
 test("brokered-ness is read off the row and needs no provider", () => {

@@ -26,8 +26,23 @@ export type ProviderVocabulary = {
   directoryLabel: string;
   /** The environment variable an operator sets to turn the broker on. */
   envVar: string;
-  /** The route path of the vendor's directory screen. */
-  directoryPath: string;
+  /**
+   * The route path of the vendor's directory screen.
+   *
+   * A LITERAL UNION AND NEVER `string`, because that union is TanStack Router's generated route
+   * tree: a path that no route file answers stops compiling here rather than 404ing in somebody's
+   * browser. That is exactly how an earlier draft named a screen that did not exist, so a `as const`
+   * cast at the `<Link to=…>` call site would be casting away the only check there is.
+   */
+  directoryPath: "/admin/plugins/composio" | "/admin/plugins/arcade";
+  /**
+   * What the "More apps" row says once the key is set.
+   *
+   * A FIELD rather than a `provider === "composio"` branch. Composio's sentence counts its
+   * directory ("a few hundred apps") and that count is Composio's, measured by nobody here; Arcade's
+   * says the same thing about reach without claiming a size this deployment has not counted.
+   */
+  directoryDescription: string;
 };
 
 const VOCABULARY: Record<PluginsProvider, ProviderVocabulary> = {
@@ -36,12 +51,16 @@ const VOCABULARY: Record<PluginsProvider, ProviderVocabulary> = {
     directoryLabel: "Browse Composio",
     envVar: "COMPOSIO_API_KEY",
     directoryPath: "/admin/plugins/composio",
+    directoryDescription:
+      "A few hundred apps, reached as whoever is asking. Each person connects their own account.",
   },
   arcade: {
     name: "Arcade",
     directoryLabel: "Browse Arcade",
     envVar: "ARCADE_API_KEY",
     directoryPath: "/admin/plugins/arcade",
+    directoryDescription:
+      "A directory this deployment has not reviewed, reached as whoever is asking. Each person connects their own account.",
   },
 };
 
@@ -59,8 +78,10 @@ export function moreAppsSectionDescription(provider: PluginsProvider): string {
 /**
  * The one row under "More apps".
  *
- * `linked` is whether the row goes anywhere. Only Composio has a directory screen today, so an
- * Arcade row states its setting and links nowhere; a Composio row links exactly when configured.
+ * `linked` is whether the row goes anywhere. Both providers have a directory screen, so the row
+ * links exactly when the key is configured — and the function tests the configuration and never the
+ * vendor. An unconfigured row states its setting and links nowhere, because there is nowhere to go
+ * until the key is set.
  */
 export type MoreAppsRow = {
   title: string;
@@ -72,7 +93,8 @@ export function moreAppsRow(
   provider: PluginsProvider,
   configured: boolean,
 ): MoreAppsRow {
-  const { name, directoryLabel, envVar } = VOCABULARY[provider];
+  const { name, directoryLabel, envVar, directoryDescription } =
+    VOCABULARY[provider];
   if (!configured) {
     return {
       title: name,
@@ -80,18 +102,10 @@ export function moreAppsRow(
       linked: false,
     };
   }
-  if (provider === "composio") {
-    return {
-      title: directoryLabel,
-      description:
-        "A few hundred apps, reached as whoever is asking. Each person connects their own account.",
-      linked: true,
-    };
-  }
   return {
-    title: name,
-    description: `${name} is configured on this deployment. Each person connects their own account.`,
-    linked: false,
+    title: directoryLabel,
+    description: directoryDescription,
+    linked: true,
   };
 }
 

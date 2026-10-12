@@ -2,10 +2,8 @@ import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import fixture from "../../server/tests/fixtures/arcade-catalogue.json";
 import type { ComposioApp } from "@/lib/plugins/queries";
-import {
-  BreadthNote,
-  consentBreadth,
-} from "@/routes/_authed/admin/plugins/composio";
+import { BreadthNote } from "@/components/plugins/broker-directory";
+import { consentBreadth } from "@/lib/plugins/enablement-notes";
 
 /**
  * The D32 consent-breadth line on the enablement screen. Derived from the three measured counts and
@@ -49,10 +47,19 @@ function app(overrides: Partial<ComposioApp> = {}): ComposioApp {
   };
 }
 
-test("Apollo (no permissions) says approving any action approves all of them", () => {
+/*
+ * THE SINGULAR OF THE NO-PERMISSION CASE, which is the only branch that had none while its siblings
+ * all did. Apollo is the fixture's one `permissionCount: 0` toolkit and it has exactly one action,
+ * so the sentence that shipped read "approving any action in this app approves all 1 of them" — a
+ * grammatical error on the single shape a real catalogue actually produces. Pinned to the exact
+ * string, because `/approves/` is what let it through.
+ */
+test("Apollo (no permissions, one action) says the app is the action", () => {
   const apollo = fromFixture("Apollo");
   expect([apollo.permissionCount, apollo.actionCount]).toEqual([0, 1]);
-  expect(consentBreadth(apollo)).toMatch(/approves/);
+  expect(consentBreadth(apollo)).toBe(
+    "This app has a single action, and approving it approves the app.",
+  );
 });
 
 test("the plural wholly-unscoped case says all N of them", () => {
@@ -128,6 +135,7 @@ test("it renders on the enablement step, before enabling", () => {
 
 test("no copy promises confinement", () => {
   const shapes = [
+    app({ actionCount: 1, permissionCount: 0, scopedActionCount: 0 }),
     app({ actionCount: 3, permissionCount: 0, scopedActionCount: 0 }),
     app({ actionCount: 3, permissionCount: 2, scopedActionCount: 3 }),
     app({ actionCount: 3, permissionCount: 2, scopedActionCount: 1 }),

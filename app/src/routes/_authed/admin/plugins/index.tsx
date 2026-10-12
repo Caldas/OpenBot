@@ -33,6 +33,7 @@ import {
 import {
   moreAppsRow,
   moreAppsSectionDescription,
+  providerVocabulary,
 } from "@/lib/plugins/provider-vocabulary";
 
 /**
@@ -266,7 +267,14 @@ function RouteComponent() {
               {moreApps.linked ? (
                 <Item
                   data-testid="plugin-directory"
-                  render={<Link to="/admin/plugins/composio" />}
+                  /* The ACTIVE provider's own directory. Read from the vocabulary rather than
+                     written here: a hard-coded path is the lowercase spelling of a vendor name,
+                     which is how this row pointed every Arcade deployment at a screen that
+                     redirected it straight back. The field is a literal union over the generated
+                     route tree, so a path no route answers does not compile. */
+                  render={
+                    <Link to={providerVocabulary(provider).directoryPath} />
+                  }
                   size="sm"
                 >
                   <RowMark>
