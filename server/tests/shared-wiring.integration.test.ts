@@ -25,6 +25,8 @@ const suite = randomUUID().slice(0, 8);
 const app = `wired-${suite}`;
 
 const broker: ConnectedAppBroker = {
+  // This stub stands in for Composio, whose grant is held locally; see `ConnectedAppBroker.grantIsLocal`.
+  grantIsLocal: true,
   listApps: async () => [],
   ensureAuthConfig: async () => "standing",
   deleteAuthConfig: async () => {},
@@ -49,7 +51,7 @@ function build(options: { shared: boolean }) {
     broker,
     deploymentId: `acme-${suite}`,
   });
-  const use = createSharedUseStore(database);
+  const use = createSharedUseStore(database, "composio");
   const modes = createAccountModeSwitch({
     store: pluginStore,
     sharedUse: use,

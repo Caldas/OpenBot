@@ -734,7 +734,16 @@ const signInService = computerGateway
  * module scope because the publication, assignment and grant routes below also need to reapprove
  * or refile against it when a Bot's exposure changes.
  */
-const sharedUseStore = createSharedUseStore(database);
+/*
+ * `activeProvider` answers `null` only when this deployment has no broker at all: no key is set,
+ * so no broker reaches the store, no brokered row exists, and the value merely names which empty
+ * slice an unreachable query would read. That is why the one `??` in the system is HERE and only
+ * here — the single place where "which provider" has no answer, visible at the deployment boundary
+ * instead of asserted forty times over inside a constructor. The shared-use store and the plugin
+ * store below are both given this one value, so the gate and the approvals it reads agree.
+ */
+const brokerProvider = activeProvider(config) ?? "composio";
+const sharedUseStore = createSharedUseStore(database, brokerProvider);
 
 const pluginStore = createPluginStore({
   database,
@@ -766,14 +775,7 @@ const pluginStore = createPluginStore({
    * attempted.
    */
   broker: composio?.broker,
-  /*
-   * `activeProvider` answers `null` only when this deployment has no broker at all: no key is set,
-   * so no broker reaches the store, no brokered row exists, and the value merely names which empty
-   * slice an unreachable query would read. That is why the one `??` in the system is HERE and only
-   * here — the single place where "which provider" has no answer, visible at the deployment boundary
-   * instead of asserted forty times over inside a constructor.
-   */
-  brokerProvider: activeProvider(config) ?? "composio",
+  brokerProvider,
 });
 
 /*

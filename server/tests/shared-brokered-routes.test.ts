@@ -39,6 +39,8 @@ const rules: {
 }[] = [];
 
 const broker: ConnectedAppBroker = {
+  // This stub stands in for Composio, whose grant is held locally; see `ConnectedAppBroker.grantIsLocal`.
+  grantIsLocal: true,
   listApps: async () => [],
   ensureAuthConfig: async () => "standing",
   deleteAuthConfig: async () => {},
@@ -72,7 +74,7 @@ function appAs(role: "admin" | "user", id = `${role}-${suite}`) {
     broker,
     deploymentId: `acme-${suite}`,
   });
-  const sharedUseStore = createSharedUseStore(database);
+  const sharedUseStore = createSharedUseStore(database, "composio");
   const modes = createAccountModeSwitch({
     store,
     sharedUse: sharedUseStore,
@@ -376,7 +378,7 @@ describe("granting a shared app's action", () => {
     });
     expect(response.status).toBe(200);
     expect(
-      await createSharedUseStore(database).approvalFor(botId, app),
+      await createSharedUseStore(database, "composio").approvalFor(botId, app),
     ).toEqual({ audience: "team", outsideInput: false, members: [] });
   });
 
@@ -392,7 +394,7 @@ describe("granting a shared app's action", () => {
       }),
     });
     expect(
-      await createSharedUseStore(database).approvalFor(botId, app),
+      await createSharedUseStore(database, "composio").approvalFor(botId, app),
     ).toEqual({ audience: "owner", outsideInput: false, members: [] });
   });
 

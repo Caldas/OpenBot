@@ -60,7 +60,7 @@ const store = createPluginStore({
   deploymentId: "acme",
   sharedUse: async () => ({ allowed: true }),
 });
-const sharedUse = createSharedUseStore(database);
+const sharedUse = createSharedUseStore(database, "composio");
 const modes = createAccountModeSwitch({
   store,
   sharedUse,
