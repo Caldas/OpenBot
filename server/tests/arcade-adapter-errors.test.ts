@@ -22,7 +22,9 @@ describe("normalizeArcadeError", () => {
   });
 
   test("the same error wrapped in cause still normalizes", () => {
-    const wrapped = new Error("outer", { cause: new Error("middle", { cause: refusal() }) });
+    const wrapped = new Error("outer", {
+      cause: new Error("middle", { cause: refusal() }),
+    });
     expect(normalizeArcadeError(wrapped)).toEqual({
       status: 403,
       name: "tool_authorization_required",
@@ -46,7 +48,11 @@ describe("normalizeArcadeError", () => {
   });
 
   test("an error with no body leaves name and message undefined", () => {
-    expect(normalizeArcadeError(new APIError(500, undefined, undefined, new Headers()))).toEqual({
+    expect(
+      normalizeArcadeError(
+        new APIError(500, undefined, undefined, new Headers()),
+      ),
+    ).toEqual({
       status: 500,
       name: undefined,
       message: undefined,
@@ -54,6 +60,8 @@ describe("normalizeArcadeError", () => {
   });
 
   test("a connection failure keeps status undefined", () => {
-    expect(normalizeArcadeError(new APIConnectionError({ message: "down" }))?.status).toBeUndefined();
+    expect(
+      normalizeArcadeError(new APIConnectionError({ message: "down" }))?.status,
+    ).toBeUndefined();
   });
 });

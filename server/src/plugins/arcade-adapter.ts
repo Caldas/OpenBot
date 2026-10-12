@@ -28,11 +28,15 @@ export function normalizeArcadeError(error: unknown): ArcadeFailure | null {
   const seen = new Set<unknown>();
   let current: unknown = error;
   for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth += 1) {
-    if (current === null || typeof current !== "object" || seen.has(current)) return null;
+    if (current === null || typeof current !== "object" || seen.has(current))
+      return null;
     seen.add(current);
     if (current instanceof APIError) {
       const body = current.error;
-      const record = body !== null && typeof body === "object" ? (body as Record<string, unknown>) : {};
+      const record =
+        body !== null && typeof body === "object"
+          ? (body as Record<string, unknown>)
+          : {};
       return {
         status: typeof current.status === "number" ? current.status : undefined,
         name: textOf(record.name),
