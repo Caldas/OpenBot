@@ -748,6 +748,9 @@ const DIRECTORY: BrokerApp[] = [
     logo: "https://example.com/slack.svg",
     categories: ["communication"],
     actionCount: 63,
+    classifiedCount: null,
+    permissionCount: null,
+    scopedActionCount: null,
     connection: { kind: "consent" },
   },
   {
@@ -757,6 +760,9 @@ const DIRECTORY: BrokerApp[] = [
     logo: null,
     categories: ["communication"],
     actionCount: 24,
+    classifiedCount: null,
+    permissionCount: null,
+    scopedActionCount: null,
     connection: { kind: "consent" },
   },
   {
@@ -766,6 +772,9 @@ const DIRECTORY: BrokerApp[] = [
     logo: null,
     categories: ["project-management"],
     actionCount: 18,
+    classifiedCount: null,
+    permissionCount: null,
+    scopedActionCount: null,
     connection: { kind: "consent" },
   },
   {
@@ -781,6 +790,9 @@ const DIRECTORY: BrokerApp[] = [
     logo: null,
     categories: ["documents"],
     actionCount: 31,
+    classifiedCount: null,
+    permissionCount: null,
+    scopedActionCount: null,
     connection: {
       kind: "unsupported",
       reason:

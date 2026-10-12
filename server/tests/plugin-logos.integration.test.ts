@@ -43,6 +43,9 @@ function app(slug: string): BrokerApp {
     logo: "https://example.com/logo.svg",
     categories: [],
     actionCount: 0,
+    classifiedCount: null,
+    permissionCount: null,
+    scopedActionCount: null,
     connection: { kind: "fields", authScheme: "API_KEY" },
   };
 }

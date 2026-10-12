@@ -46,6 +46,9 @@ function directoryApp(slug: string): BrokerApp {
     logo: null,
     categories: [],
     actionCount: 3,
+    classifiedCount: null,
+    permissionCount: null,
+    scopedActionCount: null,
     connection: { kind: "consent" },
   };
 }
@@ -244,7 +247,7 @@ describe("a Composio deployment answers byte for byte what it did", () => {
     confirm: '{"connected":true}',
     accountMode: '{"ended":[],"approved":[]}',
     directory:
-      '{"apps":[{"slug":"gmail","name":"Gmail","description":"Mail","logo":null,"categories":[],"actionCount":3,"connection":{"kind":"consent"},"enabled":true}]}',
+      '{"apps":[{"slug":"gmail","name":"Gmail","description":"Mail","logo":null,"categories":[],"actionCount":3,"classifiedCount":null,"permissionCount":null,"scopedActionCount":null,"connection":{"kind":"consent"},"enabled":true}]}',
     connect: '{"authorizationUrl":"https://vendor.example/consent"}',
   };
 
