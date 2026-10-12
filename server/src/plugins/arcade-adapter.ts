@@ -4,6 +4,7 @@ import {
   BrokerRefusalError,
   type BrokerApp,
   type ConnectedAppBroker,
+  type GrantState,
 } from "./broker";
 
 /**
@@ -164,8 +165,116 @@ async function deleteConnection(
   await client.admin.userConnections.delete(connectionId);
 }
 
-const notYet = (task: string, member: string) => () =>
-  Promise.reject(new Error(`${member} is not implemented yet (${task}).`));
+const record = (value: unknown): Record<string, unknown> | null =>
+  value !== null && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : null;
+
+/**
+ * One listed action read into this deployment's vocabulary, or nothing when it has no name.
+ *
+ * `requirements.met` IS A BOOLEAN WITH TWO UNRELATED CAUSES AND IS NEVER READ HERE. It is false
+ * both when the person has not consented and when a deployment-wide secret is unset — the live
+ * listing shows `Github` requiring `GITHUB_SERVER_URL`, which an operator sets once for everybody
+ * and which no amount of consenting moves. Sending somebody to a consent screen over that one
+ * sends them somewhere that cannot help them, so the secrets are read FIRST and answer
+ * `needs-operator` with the keys they name.
+ *
+ * `unknown` IS ITS OWN STATE RATHER THAN A PESSIMISTIC `needs-consent`, because not knowing is not
+ * the same as not connected: telling somebody to authorize something they already authorized sends
+ * them round twice. So anything the listing does not say clearly answers `unknown` with the reason.
+ */
+function grantStateOf(item: unknown): GrantState[] {
+  const tool = record(item);
+  const action = textOf(tool?.qualified_name);
+  if (!action) return [];
+  const requirements = record(tool?.requirements);
+
+  const rawSecrets = requirements?.secrets;
+  const missing: string[] = [];
+  let secretUnreadable = false;
+  for (const raw of Array.isArray(rawSecrets) ? rawSecrets : []) {
+    const secret = record(raw);
+    const key = textOf(secret?.key);
+    if (!key) {
+      secretUnreadable = true;
+      continue;
+    }
+    if (secret?.met === false) missing.push(key);
+    else if (secret?.met !== true) secretUnreadable = true;
+  }
+  if (missing.length > 0) return [{ action, state: "needs-operator", missing }];
+  if (secretUnreadable) {
+    return [
+      {
+        action,
+        state: "unknown",
+        reason:
+          "Arcade listed a deployment secret for this action without saying whether it is set.",
+      },
+    ];
+  }
+
+  const authorization = record(requirements?.authorization);
+  if (!authorization) {
+    return [
+      {
+        action,
+        state: "unknown",
+        reason:
+          "Arcade's listing named no authorization for this action, so what this account holds could not be read.",
+      },
+    ];
+  }
+  const oauth2 = record(authorization.oauth2)?.scopes;
+  const scopes = Array.isArray(oauth2)
+    ? oauth2.filter((s): s is string => typeof s === "string")
+    : [];
+  const tokenStatus = textOf(authorization.token_status);
+  const status = textOf(authorization.status);
+  if (tokenStatus === "completed" || (!tokenStatus && status === "active")) {
+    return [{ action, state: "authorized", scopes }];
+  }
+  if (
+    tokenStatus === "not_started" ||
+    tokenStatus === "pending" ||
+    tokenStatus === "failed" ||
+    status === "inactive"
+  ) {
+    return [{ action, state: "needs-consent", scopes }];
+  }
+  return [
+    {
+      action,
+      state: "unknown",
+      reason:
+        "Arcade's listing gave this action's authorization neither a status nor a token status.",
+    },
+  ];
+}
+
+/**
+ * What one account holds at one app, action by action.
+ *
+ * THIS IS THE ONE PLACE A `user_id` IS SENT ON A LISTING. The transport's `listTools` sends none
+ * and reads no per-person state off the answer, because a catalogue is the same for everybody and a
+ * per-person listing would make it one person's. Here the question IS about a person, so the
+ * account's vendor id goes out with it.
+ */
+async function grantsFor(
+  client: Arcade,
+  vendorUserId: string,
+  toolkit: string,
+): Promise<GrantState[]> {
+  const page = await client.tools.list({ toolkit, user_id: vendorUserId });
+  const items = page?.items;
+  if (!Array.isArray(items)) {
+    throw new Error(
+      `Arcade did not answer with an action list for ${toolkit}, so what this account holds there could not be read.`,
+    );
+  }
+  return items.flatMap(grantStateOf);
+}
 
 /**
  * The Arcade client, in the shape `createComposioClient` returns. `new Arcade({ apiKey })` opens no
@@ -289,9 +398,36 @@ export function createArcadeClient(apiKey: string): {
     // bodies are 6.3's. `status` must narrow to `{ status, userId, scopes }` and nothing else: the
     // raw `auth.status` response carries `context.token`, a live provider access token, plus the
     // person's full profile.
-    grantsFor: notYet("micro-task 6.3", "grantsFor"),
+    grantsFor: ({ account, toolkit }) =>
+      grantsFor(client, account.vendorUserId, toolkit),
     authorizations: {
-      status: notYet("micro-task 6.3", "authorizations.status"),
+      /**
+       * Where one minted authorization has got to — THREE FIELDS READ OUT AND THE RESPONSE OBJECT
+       * DROPPED HERE, inside the adapter, so nothing outside this file ever holds it.
+       *
+       * THIS DELIBERATELY INVERTS THIS CODEBASE'S CARRY-THE-VENDOR-ERROR-AS-`cause` CONVENTION.
+       * That convention is right everywhere else: a vendor's own words are what a maintainer needs
+       * when a call fails. It is wrong here, because `auth.status` answers with `context.token` — a
+       * LIVE, WORKING provider access token for the person who just consented — and their full
+       * `user_info` profile beside it, while `url` is a bearer capability of its own. A status
+       * response LOOKS LIKE METADATA, which is exactly how the throwaway harness that proved this
+       * flow came to write the token to a file on its first run.
+       *
+       * So the protection is the RETURN TYPE and not a comment asking the next person to remember:
+       * what is not returned cannot be logged, attached as a `cause`, or written into an audit
+       * payload by code that never sees it. Do not widen this, and do not add `url`.
+       */
+      status: async (id) => {
+        const answer = await client.auth.status({ id });
+        const scopes = answer.scopes;
+        return {
+          status: textOf(answer.status) ?? "unknown",
+          userId: textOf(answer.user_id) ?? null,
+          scopes: Array.isArray(scopes)
+            ? scopes.filter((s): s is string => typeof s === "string")
+            : [],
+        };
+      },
       // `handle` is opaque to the seam; `flow_id` is Arcade's word for it and stops in this file.
       // A `user_mismatch` answer is an ANSWER, so it surfaces as `{ mismatch: true }`; any other
       // failure is an outage or a bug and is rethrown untouched.
