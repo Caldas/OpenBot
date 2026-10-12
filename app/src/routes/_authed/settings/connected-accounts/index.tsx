@@ -69,6 +69,13 @@ const MARKS: Record<string, React.ComponentType<{ className?: string }>> = {
 const markFor = (key: string) => MARKS[key] ?? IconPlug;
 
 /**
+ * Whether a row came through a broker. A deployment only ever holds rows from one provider, so the
+ * page needs to recognise "brokered", not to know which broker.
+ */
+const isBrokered = (server: PluginServer): boolean =>
+  server.provenance === "composio" || server.provenance === "arcade";
+
+/**
  * The brokered apps this page lists, which is not every brokered row.
  *
  * Exported as a function rather than left inline in the render, for the reason `matchingApps` on the
@@ -80,7 +87,7 @@ export function brokeredAccountsListedOn(
 ): PluginServer[] {
   return servers.filter(
     (server) =>
-      server.provenance === "composio" &&
+      isBrokered(server) &&
       server.authScheme !== "NO_AUTH" &&
       server.accountMode !== "shared",
   );
@@ -92,7 +99,7 @@ export function sharedAccountsListedOn(
 ): PluginServer[] {
   return servers.filter(
     (server) =>
-      server.provenance === "composio" && server.accountMode === "shared",
+      isBrokered(server) && server.accountMode === "shared",
   );
 }
 
