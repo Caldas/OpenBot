@@ -268,6 +268,18 @@ const TOOLKIT_OF: Record<BrokerProvider, (url: string) => string | null> = {
 };
 
 /**
+ * {@link TOOLKIT_OF}, reachable. A function so a caller cannot index the table with a widened
+ * string, and so the table stays private to the one module that argues for it: a second dispatch
+ * anywhere else is a second place for a provider to be missed.
+ */
+export function toolkitOfFor(
+  provider: BrokerProvider,
+  url: string,
+): string | null {
+  return TOOLKIT_OF[provider](url);
+}
+
+/**
  * The transport kind a broker is dialled over, which is the provider's own name.
  *
  * It is a function rather than the bare value only because {@link TransportKind} does not list

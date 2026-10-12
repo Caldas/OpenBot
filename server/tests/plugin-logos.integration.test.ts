@@ -88,6 +88,7 @@ test("an arcade-provenanced row is filled when the call passes arcade", async ()
   expect((await row(id))?.logo).toBe("https://example.com/logo.svg");
 });
 
+// This is what fails if the backfill is ever made provider-agnostic by widening the slice and trying both parsers; see `access.ts`'s `TOOLKIT_OF`.
 test("the same arcade row is left untouched when the call passes composio", async () => {
   const id = await server(null, "arcade", () => "arcade://Gmail");
   await backfillBrokeredLogos(database, "composio", {

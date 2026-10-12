@@ -49,6 +49,7 @@ import {
   type BrokerProvider,
   type ServerAccess,
   ServerUnresolvableError,
+  toolkitOfFor,
 } from "./access";
 import {
   type BrokerConnection,
@@ -72,7 +73,6 @@ import {
 import {
   asksForArguments,
   askAction as composioAskAction,
-  toolkitOf,
   VERSION_ARG,
 } from "./composio";
 import { inspectToolArguments } from "./content-governance";
@@ -1468,7 +1468,9 @@ export function createPluginStore(options: PluginStoreOptions) {
      * so only a removal racing this read gets here, and it is refused as the missing row is above.
      */
     const toolkit =
-      dialled.provenance === brokerProvider ? toolkitOf(dialled.url) : null;
+      dialled.provenance === brokerProvider
+        ? toolkitOfFor(brokerProvider, dialled.url)
+        : null;
     const app = toolkit ? await brokeredAppRow(toolkit) : null;
     if (toolkit && !app)
       return {
@@ -2643,7 +2645,9 @@ export function createPluginStore(options: PluginStoreOptions) {
      * than the one that was dialled. Null for every row that is not a brokered app.
      */
     const toolkit =
-      row.provenance === brokerProvider ? toolkitOf(row.url) : null;
+      row.provenance === brokerProvider
+        ? toolkitOfFor(brokerProvider, row.url)
+        : null;
     const app = toolkit ? await brokeredAppRow(toolkit) : null;
     const access = accessFor(
       app
@@ -3153,7 +3157,7 @@ export function createPluginStore(options: PluginStoreOptions) {
      * would then be spent at; this one composes `composio://<slug>` itself, and a brokered row is
      * never dialled at a host at all — the transport reads the app off that url and asks Composio,
      * over the deployment's own key. So the only thing left to check about the url is that it says
-     * what this call meant, and {@link toolkitOf} is what checks it: the slug goes in, the url comes
+     * what this call meant, and {@link toolkitOfFor} is what checks it: the slug goes in, the url comes
      * back out through the very function `accessFor` will read it with, and a slug those two
      * disagree about is refused rather than stored. A pattern written here instead would be a second
      * opinion about the shape of an app name, and the reading that decides which app a call runs
@@ -3195,7 +3199,7 @@ export function createPluginStore(options: PluginStoreOptions) {
       if (!broker) throw new BrokerUnconfiguredError();
 
       const url = `composio://${input.slug}`;
-      if (toolkitOf(url) !== input.slug) {
+      if (toolkitOfFor(brokerProvider, url) !== input.slug) {
         throw new CustomServerRefusedError(
           `${input.slug} is not a name a Composio app can have. An app is named in letters, numbers, underscores and hyphens, because that name is read back out of this row's url to decide which app a call is against.`,
         );
@@ -4372,7 +4376,9 @@ export function createPluginStore(options: PluginStoreOptions) {
        * ONE EXTRA READ FOR THE WHOLE LIST, and none where the deployment has enabled no apps.
        */
       const brokeredApps = await brokeredAppRowsAt(
-        rows.filter((row) => toolkitOf(row.url) !== null).map((row) => row.url),
+        rows
+          .filter((row) => toolkitOfFor(brokerProvider, row.url) !== null)
+          .map((row) => row.url),
       );
 
       /*
@@ -4396,7 +4402,7 @@ export function createPluginStore(options: PluginStoreOptions) {
 
       return rows.map((row) => {
         const entry = catalogueEntry(row.id);
-        const toolkit = toolkitOf(row.url);
+        const toolkit = toolkitOfFor(brokerProvider, row.url);
         return {
           id: row.id,
           title: row.title,
@@ -4519,7 +4525,7 @@ export function createPluginStore(options: PluginStoreOptions) {
         .where(eq(mcpServers.id, serverId))
         .limit(1);
       if (!row) return undefined;
-      const toolkit = toolkitOf(row.url);
+      const toolkit = toolkitOfFor(brokerProvider, row.url);
       if (!toolkit) return { ...row, accountMode: null };
       const app = await brokeredAppRow(toolkit);
       return {
@@ -4559,7 +4565,7 @@ export function createPluginStore(options: PluginStoreOptions) {
         .from(mcpServers)
         .where(eq(mcpServers.id, serverId))
         .limit(1);
-      const toolkit = row ? toolkitOf(row.url) : null;
+      const toolkit = row ? toolkitOfFor(brokerProvider, row.url) : null;
       if (!toolkit) return null;
       const held = await database
         .select({
@@ -4608,7 +4614,9 @@ export function createPluginStore(options: PluginStoreOptions) {
         .from(mcpServers)
         .where(eq(mcpServers.id, serverId))
         .limit(1);
-      const toolkit = dialled ? toolkitOf(dialled.url) : null;
+      const toolkit = dialled
+        ? toolkitOfFor(brokerProvider, dialled.url)
+        : null;
       const app = toolkit ? await brokeredAppRow(toolkit) : null;
       await database
         .update(mcpServers)
@@ -5448,7 +5456,7 @@ export function createPluginStore(options: PluginStoreOptions) {
         .from(mcpServers)
         .where(eq(mcpServers.id, serverId))
         .limit(1);
-      const toolkit = server ? toolkitOf(server.url) : null;
+      const toolkit = server ? toolkitOfFor(brokerProvider, server.url) : null;
       if (!toolkit) return null;
 
       const [row] = await database
@@ -5532,7 +5540,7 @@ export function createPluginStore(options: PluginStoreOptions) {
         .orderBy(asc(mcpServers.id));
       const answering = await brokeredAppRowsAt(
         marked
-          .filter((row) => toolkitOf(row.url) !== null)
+          .filter((row) => toolkitOfFor(brokerProvider, row.url) !== null)
           .map((row) => row.url),
       );
       const shared = marked.filter(
@@ -5541,7 +5549,7 @@ export function createPluginStore(options: PluginStoreOptions) {
 
       return await Promise.all(
         shared.map(async (server) => {
-          const toolkit = toolkitOf(server.url);
+          const toolkit = toolkitOfFor(brokerProvider, server.url);
           const [connection, kind] = await Promise.all([
             this.deploymentConnectionFor(server.id),
             toolkit ? brokeredAppKind(toolkit) : null,
