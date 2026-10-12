@@ -56,9 +56,67 @@ export const Route = createFileRoute("/_authed/settings/connected-accounts/")({
    * The key is omitted rather than set to undefined. Present-but-undefined makes `search` a required
    * prop on every Link to this route, which is a lot of ripple for a parameter only the callback sets.
    */
-  validateSearch: (search: Record<string, unknown>): { connected?: string } =>
-    typeof search.connected === "string" ? { connected: search.connected } : {},
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { connected?: string; authorized?: string } => ({
+    ...(typeof search.connected === "string"
+      ? { connected: search.connected }
+      : {}),
+    /*
+     * A CHANNEL OF ITS OWN, BESIDE `?connected=` AND NEVER FOLDED INTO IT. That one is the Composio
+     * OAuth callback's and carries a server key or `failed`; this one is the brokered per-action
+     * verifier's and carries a reason code. Two senders answering different questions on one
+     * parameter is how a notice comes to be drawn for the wrong thing.
+     */
+    ...(typeof search.authorized === "string"
+      ? { authorized: search.authorized }
+      : {}),
+  }),
 });
+
+/**
+ * WHAT THE VERIFIER REFUSED, IN WORDS — AND THE WORDS LIVE HERE AND NOWHERE ELSE.
+ *
+ * THE SENTENCE NEVER TRAVELS IN THE URL. A message rendered from a query string is a message
+ * anybody can author on this deployment's own origin: a link could be sent around carrying whatever
+ * sentence its author liked, shown in this page's own voice under this deployment's own address.
+ * What travels is an opaque code the server chose from a closed set, and this map is the only place
+ * it becomes something a person reads — which is also what keeps one sentence from being maintained
+ * in two places that drift apart.
+ *
+ * AN UNRECOGNISED CODE DRAWS NOTHING, deliberately. A code this build does not know is either
+ * somebody probing the parameter or a deployment mid-upgrade, and a generic "something went wrong"
+ * for both would be a sentence that tells a person nothing and an invitation to keep trying.
+ */
+export const AUTHORIZATION_NOTICES: Record<string, string> = {
+  "no-broker":
+    "This deployment is not set up to connect apps, so nothing was recorded. Ask an administrator to set it up.",
+  "not-supported":
+    "This deployment's apps are connected once for the whole app, with the Connect button on the app's page; they are not authorized one action at a time.",
+  "missing-handle":
+    "That link is missing the part that says which authorization it finishes, so nothing was done. Start the authorization again from the app's page.",
+  "no-attempt":
+    "There is no authorization in progress for you to finish — it may have expired, or it may have been started by somebody else or in another session. Start it again from the app's page.",
+  "vendor-unavailable":
+    "The app's vendor did not answer when this deployment tried to finish that authorization, so nothing was recorded. Try the link again in a moment.",
+  "not-your-authorization":
+    "That link does not finish the authorization you have in progress, so nothing was recorded and it is still waiting. Finish it from the tab it was started in, or start it again from the app's page.",
+  "not-finished":
+    "That authorization has not finished yet, so nothing was recorded. Finish it at the app's vendor, then open the link again — it is still waiting.",
+  "authorization-failed":
+    "The app's vendor did not complete that authorization, so nothing was recorded. Start it again from the app's page.",
+  "context-changed":
+    "That app's account changed while the authorization was open, so nothing was recorded and anything granted for the old account was withdrawn. Start it again from the app's page.",
+  "not-recorded":
+    "This deployment could not record that authorization, so none of it was saved. Start it again from the app's page, and tell an administrator if it persists.",
+};
+
+/** The sentence for a code the verifier sent back, or null for one this build does not know. */
+export function authorizationNoticeFor(
+  authorized: string | undefined,
+): string | null {
+  return authorized ? (AUTHORIZATION_NOTICES[authorized] ?? null) : null;
+}
 
 /** The same marks the admin connector list uses: these are the same vendors seen from your side. */
 const MARKS: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -131,7 +189,8 @@ export function connectedAccountSections(
 }
 
 function RouteComponent() {
-  const { connected: outcome } = Route.useSearch();
+  const { connected: outcome, authorized } = Route.useSearch();
+  const authorizationNotice = authorizationNoticeFor(authorized);
   const [search, setSearch] = React.useState("");
   const plugins = useQuery(pluginsPageQueryOptions());
   const connections = useQuery(connectionsQueryOptions());
@@ -238,6 +297,16 @@ function RouteComponent() {
       {outcome === "failed" ? (
         <p className="text-destructive text-sm" role="alert">
           That account could not be connected. Nothing was saved — try again.
+        </p>
+      ) : null}
+      {/*
+       * The brokered per-action verifier's own channel. It lands here rather than on an app's page
+       * because three of its refusals have no app to name, and a notice that sometimes appears one
+       * level in and sometimes here would be a notice people learn to look for in two places.
+       */}
+      {authorizationNotice ? (
+        <p className="text-destructive text-sm" role="alert">
+          {authorizationNotice}
         </p>
       ) : null}
       {/*

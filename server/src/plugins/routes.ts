@@ -9,6 +9,7 @@ import type { AccountModeSwitch } from "./account-mode";
 import { type BrokerProvider, toolkitOfFor } from "./access";
 import { normalizeArcadeError } from "./arcade-adapter";
 import {
+  type AuthorizationFlow,
   type BrokerApp,
   type BrokerField,
   BrokerUnconfiguredError,
@@ -137,6 +138,84 @@ const DIRECTORY_UNAVAILABLE =
 function signInUrlFor(appUrl: string | undefined, flowId: string): string {
   const base = `${appUrl?.replace(/\/+$/, "") ?? ""}/sign`;
   return flowId ? `${base}?flow_id=${encodeURIComponent(flowId)}` : base;
+}
+
+/**
+ * WHY THE VERIFIER REFUSED, AS AN OPAQUE CODE — and the CLOSED SET of them.
+ *
+ * THE CODE TRAVELS AND THE SENTENCE DOES NOT. Each of these is rendered by the connected-accounts
+ * list, which holds the words; a message rendered from a query string is a message anybody can
+ * author on this deployment's own origin, and the code is also what keeps the copy in ONE place
+ * rather than in two that drift. The parameter is `?authorized=`, a channel of its own: `?connected=`
+ * belongs to the Composio OAuth callback and is neither reused nor widened here.
+ *
+ * ASSERTED AS A SET so a seventh cannot be added without a test going red, and so the app's own map
+ * can be held to exactly the same list.
+ */
+export const AUTHORIZATION_REFUSALS = [
+  // This deployment reaches no broker at all, so there is no return leg to verify.
+  "no-broker",
+  // The broker it reaches declares no correlated authorization flow.
+  "not-supported",
+  // The link arrived without the part that says which authorization it finishes.
+  "missing-handle",
+  // Nothing of this person's is waiting: never started, expired, or another session's.
+  "no-attempt",
+  // The vendor was asked and did not answer.
+  "vendor-unavailable",
+  // The link, or the authorization behind it, is not the one this person is holding.
+  "not-your-authorization",
+  // The consent has not finished at the vendor yet. The attempt is LEFT STANDING for a retry.
+  "not-finished",
+  // The vendor says the authorization did not complete.
+  "authorization-failed",
+  // The app's account context moved on while the consent was open (D28).
+  "context-changed",
+  // This deployment could not write what it had, so it wrote none of it.
+  "not-recorded",
+] as const;
+
+export type AuthorizationRefusal = (typeof AUTHORIZATION_REFUSALS)[number];
+
+/** Whether two account references name the same account, holder included. */
+function sameAccount(left: AccountRef, right: AccountRef): boolean {
+  if (left.vendorUserId !== right.vendorUserId) return false;
+  if (left.holder === "person") {
+    return right.holder === "person" && left.userId === right.userId;
+  }
+  return right.holder === "deployment";
+}
+
+/** At most five polls over about five seconds. NEVER the SDK's unbounded `waitForCompletion`. */
+const STATUS_POLLS = 5;
+const STATUS_PAUSE_MS = 1000;
+
+/**
+ * Where one authorization has got to, waited for with a BOUND.
+ *
+ * `pending` is the only state worth asking again about, and asking five times over five seconds is
+ * the whole of the patience this has. A timeout is neither a success nor a failure, so what comes
+ * back is the last answer read and the caller decides; nothing here writes, retries forever or
+ * blocks a browser on a vendor that has stopped answering.
+ *
+ * WHAT COMES BACK IS THE SEAM'S THREE FIELDS AND NOTHING MORE (D31). The vendor's own status reply
+ * carries a live provider access token and the person's full profile; the adapter drops them, and
+ * this function must never widen what it hands on, log it, or attach it as a `cause`.
+ */
+async function settledStatus(
+  flow: AuthorizationFlow,
+  id: string,
+): Promise<Awaited<ReturnType<AuthorizationFlow["status"]>>> {
+  let answer = await flow.status(id);
+  for (
+    let poll = 1;
+    poll < STATUS_POLLS && answer.status === "pending";
+    poll += 1
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, STATUS_PAUSE_MS));
+    answer = await flow.status(id);
+  }
+  return answer;
 }
 
 /**
@@ -2473,12 +2552,37 @@ export function createPluginRoutes(
    * signed-in person. Signing in as somebody else finds no attempt and refuses, which is correct and
    * occasionally annoying.
    *
-   * THIS HALF REFUSES AND NOTHING MORE. The bounded `auth.status` wait, the identity check, the
-   * freshness re-resolution, the completion transaction and the 303 landing are a separate step and
-   * are deliberately absent: nothing below polls an authorization, completes an attempt or writes a
-   * connection row. Every exit from this handler leaves the database exactly as it found it.
+   * CRITERION: NO REQUEST TO THIS ENDPOINT ENDS WITHOUT A `Location`, WITH ONE STATED EXCEPTION.
+   * That is the criterion `/oauth/callback` below already holds itself to in as many words, and this
+   * is the file's second browser-navigation return leg — so a refusal here ends the same way that
+   * one does: back at the connected-accounts LIST, with a word about what happened and nothing
+   * written. The reason travels as an opaque code on `?authorized=`
+   * ({@link AUTHORIZATION_REFUSALS}); the sentence belongs to the app, which is the only place it is
+   * written down. THE LIST AND NOT AN APP PAGE, uniformly: three of the refusals have no attempt row
+   * to build an app address from, and {@link connectedAccountsUrlFor} already argues that picking
+   * one would be a guess about what somebody had been doing.
+   *
+   * THE EXCEPTION IS THE 403, AND IT IS STATED RATHER THAN INHERITED. The guard that refuses a
+   * session with no role is the same guard `/api/me` answers from, so such a session cannot reliably
+   * load the landing page either — it is sent to `/sign` or into an error boundary, which is the
+   * dead end that branch exists to avoid. It keeps its JSON body.
    */
   routes.get("/arcade/verify", async (context) => {
+    /**
+     * Where a refusal lands, which is the LIST screen with the reason beside it.
+     *
+     * Built from {@link connectedAccountsUrlFor}'s failure address with its query dropped, so the
+     * one place that knows how to address the app's origin stays the one place that knows — and so
+     * that `?connected=failed`, which belongs to the Composio callback, is NOT carried along beside
+     * `?authorized=` and drawn as a second notice about something that did not happen.
+     */
+    const refusedWith = (reason: AuthorizationRefusal) => {
+      const [screen] = connectedAccountsUrlFor(connect?.appUrl, {
+        failed: true,
+      }).split("?");
+      return context.redirect(`${screen}?authorized=${reason}`, 303);
+    };
+
     /*
      * Read, not yet judged. The redirect below has to carry it, and that redirect happens before
      * the value is validated — reading a query string calls nobody and writes nothing.
@@ -2515,22 +2619,9 @@ export function createPluginRoutes(
      * different things and the exemption failed OPEN. A deployment whose broker runs no correlated
      * authorization flow has no return leg for this route to verify.
      */
-    if (!composio) {
-      return context.json(
-        { error: new BrokerUnconfiguredError().message },
-        503,
-      );
-    }
+    if (!composio) return refusedWith("no-broker");
     const flow = composio.broker.authorizations;
-    if (!flow) {
-      return context.json(
-        {
-          error:
-            "This deployment's apps are connected once for the whole app, with the Connect button on the app's page; they are not authorized one action at a time.",
-        },
-        503,
-      );
-    }
+    if (!flow) return refusedWith("not-supported");
 
     /*
      * A HANDLE THIS DEPLOYMENT CANNOT USE IS REFUSED WITHOUT ASKING THE VENDOR ANYTHING. Empty,
@@ -2538,15 +2629,7 @@ export function createPluginRoutes(
      * return leg carries — and spending a vendor call on it would be an unauthenticated-shaped
      * request reaching another company's API.
      */
-    if (!flowId) {
-      return context.json(
-        {
-          error:
-            "That link is missing the part that says which authorization it finishes, so nothing was done. Start the authorization again from the app's page.",
-        },
-        400,
-      );
-    }
+    if (!flowId) return refusedWith("missing-handle");
 
     /*
      * THE ATTEMPT COMES FROM THE SIGNED-IN ACTOR AND NEVER FROM THE HANDLE. The vendor's return-leg
@@ -2562,15 +2645,8 @@ export function createPluginRoutes(
      */
     const actorId = context.var.actor.id;
     const attempt = await store.authorizationAttemptFor(actorId);
-    if (!attempt || attempt.authId === null) {
-      return context.json(
-        {
-          error:
-            "There is no authorization in progress for you to finish — it may have expired, or it may have been started by somebody else or in another session. Start it again from the app's page.",
-        },
-        400,
-      );
-    }
+    if (!attempt || attempt.authId === null) return refusedWith("no-attempt");
+    const authId = attempt.authId;
 
     /*
      * THE BINDING. `handle` IS AN OPAQUE STRING THE SEAM DOES NOT INTERPRET — the vendor's word for
@@ -2598,13 +2674,7 @@ export function createPluginRoutes(
        * the error. A reply on this leg can carry an authorization url, which is a bearer capability,
        * and an outage is not worth a person's consent being quotable out of an error body.
        */
-      return context.json(
-        {
-          error:
-            "The app's vendor did not answer when this deployment tried to finish that authorization, so nothing was recorded. Try the link again in a moment.",
-        },
-        502,
-      );
+      return refusedWith("vendor-unavailable");
     }
 
     /*
@@ -2622,34 +2692,150 @@ export function createPluginRoutes(
      * NOTHING IS WRITTEN AND NOTHING IS CLOSED. A late callback must never consume or ALTER the
      * replacement it arrived behind, so the row is not deleted, not completed and not marked.
      */
-    if (
-      "mismatch" in confirmed ||
-      confirmed.authorizationId !== attempt.authId
-    ) {
-      return context.json(
-        {
-          error:
-            "That link does not finish the authorization you have in progress, so nothing was recorded and it is still waiting. Finish it from the tab it was started in, or start it again from the app's page.",
-        },
-        400,
-      );
+    if ("mismatch" in confirmed || confirmed.authorizationId !== authId) {
+      return refusedWith("not-your-authorization");
     }
 
     /*
-     * EVERYTHING PAST THE BINDING BELONGS TO THE OTHER HALF OF THIS VERIFIER: the bounded wait on
-     * the authorization's status, the identity check against it, the freshness re-resolution, the
-     * one transaction that writes the connection row and its audit entry, and the 303 that lands the
-     * person back on the page they left from. Until that half lands, a return leg that binds
-     * correctly is answered as a capability this deployment does not yet have — which keeps the
-     * promise this half makes: NOTHING IS WRITTEN HERE, on any path.
+     * THE BOUNDED WAIT. `pending` is polled a few times over a few seconds and never with the SDK's
+     * unbounded `waitForCompletion`: a browser is held open on this request, and a vendor that has
+     * stopped answering must not hold it open forever. See {@link settledStatus}.
+     *
+     * NOTHING FROM THAT ANSWER TRAVELS ANYWHERE (D31). The vendor's own status reply carries a LIVE
+     * PROVIDER ACCESS TOKEN and the person's full profile; the seam narrows it to three fields
+     * inside the adapter, and the three are read here into a decision, a comparison and the scope
+     * list the completion writes. Not one of them is logged, attached as a `cause` or put in an
+     * error body, and the status object itself reaches none of those either. A status response
+     * LOOKS LIKE METADATA, which is how the throwaway harness that proved this flow came to write
+     * the token to a file on its first run.
      */
-    return context.json(
-      {
-        error:
-          "This deployment cannot finish that authorization yet, so nothing was recorded. The authorization is still waiting, and nothing at the app's vendor was changed.",
-      },
-      503,
-    );
+    let settled: Awaited<ReturnType<typeof flow.status>>;
+    try {
+      settled = await settledStatus(flow, authId);
+    } catch {
+      return refusedWith("vendor-unavailable");
+    }
+
+    /*
+     * EVERYTHING FROM HERE IS IN ONE `try`, FOR THE REASON `/oauth/callback` BELOW GIVES FOR ITS
+     * OWN: the criterion is that no request to this endpoint ends without a `Location`, and a store
+     * call that throws would otherwise put somebody who has just consented at another company on a
+     * bodyless 500 on an origin that serves no pages. The completion transaction is all-or-nothing,
+     * so a throw out of it has written neither the connection row nor its audit entry.
+     */
+    try {
+      /*
+       * WHAT EACH OUTCOME DOES TO THE ATTEMPT ROW, AND THE TIMEOUT IS THE ONE THAT LEAVES IT ALONE.
+       * `failed` and an identity that is not the attempt's are verdicts, so the row is consumed and
+       * marked. STILL `pending` AT THE BOUND IS NEITHER A SUCCESS NOR A FAILURE: the consent may be
+       * finished a second later, and a row closed here would mean a person who came back to the
+       * link found nothing to finish. It stands until its TTL.
+       */
+      if (settled.status === "failed") {
+        await store.failAuthorizationAttempt({ actorId, authId });
+        return refusedWith("authorization-failed");
+      }
+      if (settled.status !== "completed") return refusedWith("not-finished");
+      if (settled.userId !== attempt.vendorUserId) {
+        await store.failAuthorizationAttempt({ actorId, authId });
+        return refusedWith("not-your-authorization");
+      }
+
+      /*
+       * FRESHNESS (D28): A CONSENT WHOSE CONTEXT HAS MOVED ON IS NOT COMPLETED INTO THE PRESENT.
+       *
+       * The app's CURRENT account, its mode, the active provider and this actor's current authority
+       * are all re-resolved through the same resolver the mint used, and all of them have to still
+       * be the attempt's. The window is one consent's TTL and it needs an administrator to switch an
+       * app's mode twice inside it — which is rare, and silent: writing it would create a live grant
+       * bound to a retired identity that nothing will ever call with, and on an app somebody
+       * disconnected in between it would quietly resurrect the account.
+       *
+       * AND THE GRANT MAY ALREADY BE LIVE AT THE VENDOR, because the person completed it there
+       * before this deployment looked. So the RETIRED identity's connection is withdrawn — keyed on
+       * that identity and on this app, which CANNOT TOUCH THE CURRENT ACCOUNT: a connection is keyed
+       * `(user_id, provider_id)` and the retired identity is not the current one. Where that
+       * withdrawal fails the attempt is kept as `unreconciled` rather than closed, because a grant
+       * we know about and could not end is worth a row somebody can act on.
+       */
+      const retired: AccountRef =
+        attempt.holder === "person" && attempt.userId
+          ? {
+              holder: "person",
+              userId: attempt.userId,
+              vendorUserId: attempt.vendorUserId,
+            }
+          : { holder: "deployment", vendorUserId: attempt.vendorUserId };
+      const fresh = await brokeredAccountFor(context, attempt.serverId);
+      if (fresh.refusal || !sameAccount(fresh.account, retired)) {
+        const row = await store.serverAddress(attempt.serverId);
+        const retiredApp = row ? appOfUrl(row.url) : null;
+        let withdrawn = false;
+        if (retiredApp) {
+          try {
+            await composio.broker.revoke({
+              account: retired,
+              toolkit: retiredApp,
+            });
+            withdrawn = true;
+          } catch {
+            // Nothing from the vendor's answer travels with this, here as everywhere on this leg.
+            withdrawn = false;
+          }
+        }
+        if (withdrawn)
+          await store.failAuthorizationAttempt({ actorId, authId });
+        else await store.markAuthorizationUnreconciled({ actorId, authId });
+        return refusedWith("context-changed");
+      }
+
+      /*
+       * ONE TRANSACTION, AND A REPLAY IS A NO-OP RATHER THAN AN ERROR. The attempt row is the
+       * serialization point: zero rows updated means somebody else completed this attempt first, and
+       * the loser is answered exactly as the winner is and writes nothing. See
+       * {@link PluginStore.completeAuthorizationAttempt}.
+       *
+       * `authProvider` IS ASKED OF THE BROKER AND NEVER DERIVED FROM THE TOOLKIT NAME. The two
+       * coincide only where an operator happened to name their provider configuration after the
+       * app, which {@link ConnectedAppBroker.authProviderOf} sets out at length — so a derivation
+       * would pass every test in this tree and be wrong about the deployment it shipped to. A
+       * vendor that does not say is recorded as not saying, and a vendor that cannot be reached for
+       * it costs nobody their completed consent: this is an audit label, and the grant is already
+       * live. It is never read back out of a status reply, which D31's narrowing makes
+       * structurally impossible anyway.
+       */
+      const authProvider = await composio.broker
+        .authProviderOf(fresh.toolkit)
+        .catch(() => null);
+      await store.completeAuthorizationAttempt({
+        actorId,
+        authId,
+        toolkit: fresh.toolkit,
+        account: fresh.account,
+        action: attempt.action,
+        scopes: settled.scopes,
+        authProvider: authProvider ?? "",
+      });
+
+      /*
+       * AND THE LANDING COMES FROM THE ATTEMPT ROW (D18), NEVER FROM `next_uri`. The vendor refuses
+       * every `next_uri` at mint, and what `confirm_user` answers is the vendor's OWN success page
+       * rather than ours. The row holds the app and the action this consent was for, and it cannot
+       * be missing here — this handler refused long before it needed an address — so there is no
+       * fallback to specify. An account the deployment holds goes back to the admin screen it was
+       * started from, as the mint's own return address does.
+       */
+      return context.redirect(
+        connectedAccountsUrlFor(
+          connect?.appUrl,
+          { serverId: attempt.serverId },
+          fresh.account.holder === "deployment" ? "admin" : "settings",
+        ),
+        303,
+      );
+    } catch {
+      return refusedWith("not-recorded");
+    }
   });
 
   /**
