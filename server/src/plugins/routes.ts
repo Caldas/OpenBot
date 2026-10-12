@@ -2408,6 +2408,52 @@ export function createPluginRoutes(
   });
 
   /**
+   * WHAT DISCONNECTING THIS APP WOULD END BESIDES IT, for the confirmation to show before the
+   * press. Answers `{ siblings, unanswered }`: the other apps' toolkits, sorted, and how many apps
+   * on the same vendor identity could not be asked about and so are left out (a count, never
+   * names). It acts on nothing: no revoke, no delete, no audit row.
+   *
+   * THE SET IS THE STORE'S, KEYED ON THE PAIR `(vendor identity, auth provider)` AND NEVER ON THE
+   * PROVIDER ALONE — see `siblingApps`. Nothing is derived here, so this route and the cascade
+   * `DELETE /servers/:id/connection` runs cannot disagree about which apps are named. On Composio
+   * an app is its own auth provider, so the answer is always empty.
+   *
+   * THE ACCOUNT COMES FROM `brokeredAccountFor`, exactly as on the DELETE it previews: the list is
+   * about the account that press would end, so it is asked of the same resolution and is refused
+   * to the same callers.
+   */
+  routes.get(
+    "/servers/:id/connection/siblings",
+    requireUser,
+    async (context) => {
+      const resolved = await brokeredAccountFor(
+        context,
+        context.req.param("id"),
+      );
+      if (resolved.refusal) {
+        return context.json(
+          { error: resolved.refusal.error },
+          resolved.refusal.status,
+        );
+      }
+      try {
+        return context.json(
+          await store.siblingApps({
+            toolkit: resolved.toolkit,
+            account: resolved.account,
+          }),
+        );
+      } catch (error) {
+        const refusal = brokerRefusal(
+          error,
+          "This deployment could not work out which other apps share this connection, and the vendor said nothing about why. Try again.",
+        );
+        return context.json({ error: refusal.error }, refusal.status);
+      }
+    },
+  );
+
+  /**
    * Begin authorizing ONE ACTION of a brokered app, for a provider that grants action by action.
    * Answers `{ authorizationUrl }` and nothing else.
    *
