@@ -98,8 +98,7 @@ export function sharedAccountsListedOn(
   servers: PluginServer[],
 ): PluginServer[] {
   return servers.filter(
-    (server) =>
-      isBrokered(server) && server.accountMode === "shared",
+    (server) => isBrokered(server) && server.accountMode === "shared",
   );
 }
 
