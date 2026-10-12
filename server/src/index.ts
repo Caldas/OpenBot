@@ -194,6 +194,7 @@ import { createOnboardingStore } from "./people/onboarding";
 import { createPeopleStore } from "./people/store";
 import { createAccountModeSwitch } from "./plugins/account-mode";
 import { activeProvider, assertActivatable } from "./plugins/broker";
+import { BROKERED_PROFILE } from "./plugins/access";
 import { useRoutineTools } from "./plugins/builtin-routines";
 import { useArcadeClient } from "./plugins/arcade";
 import { createArcadeClient } from "./plugins/arcade-adapter";
@@ -827,7 +828,7 @@ if (composio) {
     composio.broker,
   ).catch(() => {
     console.warn(
-      "Composio app logos could not be updated. Existing icons remain available; missing logos will be retried on the next restart.",
+      `${BROKERED_PROFILE[composio.provider].vendor} app logos could not be updated. Existing icons remain available; missing logos will be retried on the next restart.`,
     );
   });
 }
