@@ -10,11 +10,15 @@
  */
 export const listNeedsCredential = false;
 
+const TOOLKIT_NAME = /^[A-Za-z0-9_-]+$/;
+
 /**
  * Which toolkit this connection is about, from `arcade://Toolkit`.
  *
- * CASE IS PRESERVED AND NOTHING IS NORMALIZED. Arcade's toolkit and action names are case-sensitive
- * and dotted, where Composio's slugs are neither, so a lowercased toolkit reaches nothing:
+ * CASE IS PRESERVED AND NOTHING IS NORMALIZED. Arcade's toolkit and action names are case-sensitive,
+ * and action names are dotted (`Apollo.EnrichOrganization`: the dot separates toolkit from action,
+ * so a toolkit name never contains one and `TOOLKIT_NAME` rightly rejects it), where Composio's
+ * slugs are neither, so a lowercased toolkit reaches nothing:
  * `arcade://Gmail` and `arcade://gmail` are distinct apps.
  *
  * ONE TOOLKIT OR NOTHING. This answer is the name the brokered gate looks a person's row up by, so a
@@ -24,8 +28,6 @@ export const listNeedsCredential = false;
  * TRIMMED BEFORE THE SLASHES COME OFF, as `composio.ts` does: the other order leaves a space as the
  * last character, so the slash is not at the end and nothing matches.
  */
-const TOOLKIT_NAME = /^[A-Za-z0-9_-]+$/;
-
 export function toolkitOf(url: string): string | null {
   const prefix = "arcade://";
   if (!url.startsWith(prefix)) return null;

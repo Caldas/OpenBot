@@ -3272,6 +3272,13 @@ describe("what a vendor failure becomes on its way out of the seam", () => {
     expect(
       [...methodsOf(seam.broker), ...methodsOf(seam.actions)].sort(),
     ).toEqual(SEAM_CASES.map((seamCase) => seamCase.method).sort());
+    // Whatever is not a method must be acknowledged by name, so a new non-function member of the
+    // broker is a decision somebody makes rather than a thing the filter above silently drops.
+    expect(
+      Object.entries(seam.broker)
+        .filter(([, member]) => typeof member !== "function")
+        .map(([name]) => name),
+    ).toEqual(["grantIsLocal"]);
   });
 
   for (const seamCase of SEAM_CASES) {
