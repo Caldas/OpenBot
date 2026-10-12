@@ -817,6 +817,7 @@ function RouteComponent() {
                     disconnectedDescription="No team account is connected, so Bots granted these tools are refused."
                     heading="Team account"
                     notice="Sign in as the team account, not your own."
+                    provider={provider}
                     title={title}
                   />
                 ) : (
@@ -833,6 +834,7 @@ function RouteComponent() {
                        screen — and an administrator still has to be told they are not the step
                        that finishes the connector. */
                     disconnectedReassurance={reassurance}
+                    provider={provider}
                     title={title}
                   />
                 )}
