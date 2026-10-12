@@ -5,7 +5,7 @@
  */
 
 import { flagOf } from "./broker";
-import type { ListedTool } from "./mcp";
+import type { ListedTool, McpCallResult } from "./mcp";
 
 /**
  * Whether listing tools needs somebody's credential. It does not: the listing uses the deployment's
@@ -167,11 +167,22 @@ export async function listTools(connection: {
   let total: number | undefined;
   let exhausted = true;
   for (let page = 0; page < MAX_PAGES; page++) {
-    const answer = await installed.listTools({
-      toolkit,
-      limit: PAGE_SIZE,
-      offset: raw.length,
-    });
+    let answer: { items: unknown[]; total_count?: number };
+    try {
+      answer = await installed.listTools({
+        toolkit,
+        limit: PAGE_SIZE,
+        offset: raw.length,
+      });
+    } catch (error) {
+      /*
+       * A SENTENCE, NOT THE VENDOR'S OBJECT, as `composio.ts`'s listing does. `refreshTools` puts
+       * `error.message` on the admin page and into a model's context, and an SDK `APIError` builds
+       * its message from the whole response body: an unsanitised vendor payload. The original is
+       * kept as `cause` for a log.
+       */
+      throw new Error(listingSentence(toolkit, error), { cause: error });
+    }
     const items = (answer as { items?: unknown } | null)?.items;
     if (!Array.isArray(items)) {
       throw new Error(
@@ -210,4 +221,81 @@ export async function listTools(connection: {
       },
     ];
   });
+}
+
+/** What this deployment says when Arcade's listing could not be read. Never the vendor's words. */
+function listingSentence(toolkit: string, _error: unknown): string {
+  return `Arcade's action list for ${toolkit} could not be read, so nothing was refreshed and the actions already recorded for this app are kept.`;
+}
+
+/**
+ * A failure from Arcade, already normalized and cause-unwrapped by `./arcade-adapter`, so nothing
+ * here sees an SDK class. `name` is the RESPONSE BODY's `error.name`.
+ */
+export type ArcadeFailure = {
+  status: number | undefined;
+  name: string | undefined;
+  message: string | undefined;
+};
+
+/**
+ * KEYED ON THE BODY'S NAME, NEVER ON THE 403. A 403 is also what a revoked key, a disabled project
+ * and a rate limit look like; keyed on the status, this would tell somebody to authorize an action
+ * when the deployment's key is what is wrong.
+ */
+export function isAuthorizationRequired(failure: ArcadeFailure): boolean {
+  return failure.name === "tool_authorization_required";
+}
+
+const failureResult = (text: string): McpCallResult => ({
+  text,
+  isError: true,
+  truncated: false,
+});
+
+/**
+ * Call one Arcade action as the connection's actor.
+ *
+ * THE ACTION IN THE REFUSAL COMES FROM THE CALL SITE, never from the error: `APIError` in
+ * `@arcadeai/arcadejs@2.4.1` carries `status`, `headers` and `error` and nothing naming the tool.
+ *
+ * NO URL IS EVER IN THE SENTENCE. The 403 envelope's `authorization.url` is a bearer capability:
+ * whoever opens it attaches an account to the identity the flow was minted for. It is never
+ * returned to a model, logged, put in an error body or written to an audit row. The refusal names
+ * the Settings page, where the link is minted by an authenticated request whose actor is known.
+ *
+ * NOTHING THE VENDOR SAID IS REPEATED either: the ordinary failure is this deployment's sentence.
+ */
+export async function callTool(
+  connection: { url: string; actorId?: string },
+  toolName: string,
+  args: Record<string, unknown>,
+): Promise<McpCallResult> {
+  if (!installed) {
+    return failureResult(
+      `Arcade is not configured for this deployment, so ${toolName} was not run.`,
+    );
+  }
+  if (!connection.actorId) {
+    return failureResult(
+      `${toolName} was not run: no account was named to run it as.`,
+    );
+  }
+  try {
+    const answer = await installed.execute({
+      tool_name: toolName,
+      input: args,
+      user_id: connection.actorId,
+    });
+    const text = typeof answer === "string" ? answer : JSON.stringify(answer);
+    return { text: text ?? "", isError: false, truncated: false };
+  } catch (thrown) {
+    const failure = record(thrown) as Partial<ArcadeFailure> | null;
+    if (failure && isAuthorizationRequired(failure as ArcadeFailure)) {
+      return failureResult(
+        `${toolName} has not been authorized on this account yet. Authorize it in Settings → Connected accounts and ask again.`,
+      );
+    }
+    return failureResult(`Arcade could not run ${toolName}.`);
+  }
 }
