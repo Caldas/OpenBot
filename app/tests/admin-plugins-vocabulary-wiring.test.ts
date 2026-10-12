@@ -24,6 +24,10 @@
  *      literal and the exemption has no reason left — and an exemption kept
  *      after its reason has gone is an escape hatch waiting to be used a second
  *      time.
+ *      The rule scans EVERY route file (`ALL_ROUTES`, enumerated from the
+ *      directory), not a hand-kept list: an un-scanned sibling is the same
+ *      escape hatch by omission, and `arcade.tsx` — the likeliest place for
+ *      a pasted "Composio" — would have been one.
  *   2. NO route file contains a hard-coded `/admin/plugins/composio` or
  *      `/admin/plugins/arcade` navigation target. THIS IS THE LOWERCASE
  *      SPELLING RULE (1) CANNOT SEE, and it is the one that stranded the
@@ -77,11 +81,17 @@ const VOCAB_CALLERS: Record<string, string[]> = {
   "arcade.tsx": ["directoryRouteDecision"],
 };
 
-const NO_VENDOR_LITERAL = ["index.tsx", "$key.tsx", "composio.tsx"];
+// Self-extending, like rule 2: a hand-kept list is an un-scanned sibling waiting to happen, and
+// the Arcade route is the likeliest place for a "Composio" literal to be pasted into.
+const NO_VENDOR_LITERAL = ALL_ROUTES;
 
 test("the plugins routes carry no Composio literal", () => {
-  // composio.tsx is no longer exempt; $key_.bots and $key_.tools are vendor-blind already.
-  expect(NO_VENDOR_LITERAL.length).toBe(3);
+  // Every route file in the directory is scanned (no exemptions; arcade.tsx and the $key_.*
+  // children included). The floor and the two named files keep the scan from passing on an
+  // empty or truncated list.
+  expect(NO_VENDOR_LITERAL.length).toBeGreaterThanOrEqual(6);
+  expect(NO_VENDOR_LITERAL).toContain("arcade.tsx");
+  expect(NO_VENDOR_LITERAL).toContain("composio.tsx");
   const offenders: string[] = [];
   for (const name of NO_VENDOR_LITERAL) {
     const text = load(name);

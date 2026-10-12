@@ -1,5 +1,15 @@
 import { queryOptions } from "@tanstack/react-query";
 import { client } from "@/lib/client";
+// This import closes a cycle: `./provider-vocabulary` imports `pluginsProvider` from this file.
+// It is safe for one reason, and the reason is the rule. Both live bindings that cross it —
+// `directoryReadFailure` here, `pluginsProvider` there — are `export function` declarations,
+// which are fully initialised during module instantiation, so neither can be caught in the
+// temporal dead zone whichever module evaluates first; and both are only ever called from inside
+// a function body (a `queryFn`, `directoryRouteDecision`), long after both modules have finished
+// evaluating. Nothing may call across this import at module scope. A
+// `const X = directoryReadFailure("...")` at the top level of this file would reach `VOCABULARY`,
+// a lexical `const` in the other module, mid-evaluation: it throws under one evaluation order and
+// not the other, so it can pass every test and still fail in a production bundle.
 import {
   directoryReadFailure,
   type PluginsProvider,
