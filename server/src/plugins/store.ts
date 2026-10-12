@@ -1249,6 +1249,46 @@ export type PluginStoreOptions = {
 /** One in-flight Arcade authorization attempt, as the table stores it. */
 export type PendingAuthorization = typeof pendingAuthorizations.$inferSelect;
 
+/** One app's connection, as far as sibling-finding needs to know it. */
+export type ConnectionFootprint = {
+  /** The toolkit, spelled as the vendor spells it. Compared exactly, never case-folded. */
+  app: string;
+  /** The identity the connection is held under at the vendor. */
+  vendorUserId: string;
+  /** The vendor's own provider the connection is with (`google`), not the broker's name. */
+  providerId: string;
+};
+
+/**
+ * The apps that share `of`'s connection, which are the apps sharing BOTH its vendor identity AND
+ * its `provider_id`. NEVER THE PROVIDER ALONE (spec D26).
+ *
+ * REASON. An Arcade connection is keyed `(user_id, provider_id)`, and this deployment holds MANY
+ * vendor identities: each person's own, PLUS ONE RANDOM IDENTITY PER SHARED APP, minted by
+ * `mintDeploymentVendorUserId`. So shared Gmail and shared Slack, both using Google, do NOT share
+ * a connection: their `user_id`s differ. A computation keyed on `provider_id` alone would warn
+ * about apps that WILL NOT BE TOUCHED, which trains people to dismiss the warning that matters.
+ * Silently ending two connections when somebody asked to end one is the failure to avoid.
+ *
+ * `provider_id` is compared case-insensitively, as the adapter's `connectionsFor` does; the app
+ * name is not, because Arcade toolkit case is never normalised. The answer never contains `of`
+ * itself, and is sorted so two callers see the same list. This function ACTS ON NOTHING.
+ */
+export function connectionSiblings(
+  of: ConnectionFootprint,
+  among: readonly ConnectionFootprint[],
+): string[] {
+  const provider = of.providerId.toLowerCase();
+  const found = new Set<string>();
+  for (const other of among) {
+    if (other.app === of.app) continue;
+    if (other.vendorUserId !== of.vendorUserId) continue;
+    if (other.providerId.toLowerCase() !== provider) continue;
+    found.add(other.app);
+  }
+  return [...found].sort();
+}
+
 /** Raw `execute` rows are snake_case and carry timestamps as whatever the driver decoded. */
 function pendingAuthorizationFromRow(
   row: Record<string, unknown>,
@@ -6013,6 +6053,49 @@ export function createPluginStore(options: PluginStoreOptions) {
               },
         );
       return { verifiedAt, wrote: true };
+    },
+
+    /**
+     * The other apps this deployment holds a connection for that share THIS app's connection: the
+     * apps on the same vendor identity AND the same `provider_id`, never the provider alone. The
+     * reason is written out on {@link connectionSiblings}; this is that computation over the rows
+     * this deployment actually holds under the active provider.
+     *
+     * `providerIdOf` IS PASSED IN because `provider_id` is the vendor's fact, read off its own
+     * listing by the adapter, and this store keeps no copy of it. An app it cannot answer for
+     * (`null`) is left out rather than guessed at: claiming a sibling that is not one is the failure
+     * D26 exists to prevent. If the asking app itself is unanswered the list is empty.
+     *
+     * IT ANSWERS A FACT AND ACTS ON NOTHING: no revocation, no deletion, no audit write. Returns the
+     * sibling toolkits, sorted, never including `toolkit`.
+     */
+    async siblingApps(input: {
+      toolkit: string;
+      account: AccountRef;
+      providerIdOf: (toolkit: string) => Promise<string | null>;
+    }): Promise<string[]> {
+      const providerId = await input.providerIdOf(input.toolkit);
+      if (!providerId) return [];
+      const held = await database
+        .select({
+          app: brokeredConnections.app,
+          vendorUserId: brokeredConnections.vendorUserId,
+        })
+        .from(brokeredConnections)
+        .where(eq(brokeredConnections.provider, brokerProvider));
+      const footprints: ConnectionFootprint[] = [];
+      for (const row of held) {
+        const rowProvider = await input.providerIdOf(row.app);
+        if (rowProvider) footprints.push({ ...row, providerId: rowProvider });
+      }
+      return connectionSiblings(
+        {
+          app: input.toolkit,
+          vendorUserId: input.account.vendorUserId,
+          providerId,
+        },
+        footprints,
+      );
     },
 
     /**
