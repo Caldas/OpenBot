@@ -756,7 +756,7 @@ const connectApp = new Hono().route(
       encryptionKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
       personHasAccess: async () => true,
     },
-    { broker },
+    { broker, provider: "composio" },
   ),
 );
 

@@ -197,7 +197,7 @@ describe("completeAuthorizationAttempt", () => {
       account: account(a),
       action: "Google.SendEmail",
       scopes: ["gmail.send", "gmail.readonly"],
-      provider: "google",
+      authProvider: "google",
     });
 
     const connections = await connectionsFor(app);
@@ -216,6 +216,8 @@ describe("completeAuthorizationAttempt", () => {
     expect(payload.scope).toBe("gmail.send gmail.readonly");
     expect(payload.server).toBe(app);
     expect(payload.holder).toBe("person");
+    expect(payload.authProvider).toBe("google");
+    expect(payload).not.toHaveProperty("provider");
 
     const attempt = await attemptRow(a);
     expect(attempt.outcome).toBe("completed");
@@ -235,7 +237,7 @@ describe("completeAuthorizationAttempt", () => {
         account: account(a),
         action: "Google.SendEmail",
         scopes: ["gmail.send"],
-        provider: "google",
+        authProvider: "google",
       });
 
     // CONCURRENTLY, on the real pool. A sequential replay passes against an implementation with no
@@ -266,7 +268,7 @@ describe("completeAuthorizationAttempt", () => {
         account: account(a),
         action: "Google.SendEmail",
         scopes: ["gmail.send"],
-        provider: "google",
+        authProvider: "google",
       }),
     ).rejects.toThrow("injected audit failure");
 
@@ -292,7 +294,7 @@ describe("completeAuthorizationAttempt", () => {
       account: account(a),
       action: "Google.SendEmail",
       scopes: ["gmail.send"],
-      provider: "google",
+      authProvider: "google",
     });
 
     expect((await connectionsFor(app)).length).toBe(0);

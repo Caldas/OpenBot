@@ -116,7 +116,7 @@ function appAs(role: "admin" | "user", id = `${role}-${suite}`) {
         encryptionKey: `${"A".repeat(43)}=`,
         personHasAccess: async () => true,
       },
-      { broker },
+      { broker, provider: "composio" },
       { modes, use: sharedUseStore },
     ),
   );

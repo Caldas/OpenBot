@@ -6142,8 +6142,11 @@ export function createPluginStore(options: PluginStoreOptions) {
      * an error. What the trail gets is the action the attempt was for and the scopes that came
      * back, which is exactly what is needed later to explain a tool call refused for want of a
      * scope — the question {@link mcpUserCredentials.scope} exists to answer for a `user-oauth`
-     * grant. `provider` is the authorization provider this deployment ASKED for, carried down from
-     * the attempt rather than read back out of the vendor's reply.
+     * grant. `authProvider` is the authorization provider this deployment ASKED for (`google`, say, as
+     * distinct from the broker, `brokered_connections.provider`). The caller resolves it from the
+     * app's own row at freshness-revalidation time and passes it in; the attempt row has no
+     * provider column to carry it. It is never read back out of a vendor reply, and the narrowed
+     * `status` return of D31 makes that structurally impossible.
      */
     async completeAuthorizationAttempt(input: {
       actorId: string;
@@ -6152,7 +6155,7 @@ export function createPluginStore(options: PluginStoreOptions) {
       account: AccountRef;
       action: string;
       scopes: string[];
-      provider: string;
+      authProvider: string;
     }): Promise<void> {
       await database.transaction(async (transaction) => {
         /*
@@ -6245,7 +6248,7 @@ export function createPluginStore(options: PluginStoreOptions) {
               scope: input.scopes.join(" "),
               // The action the attempt was for: what this grant was obtained in order to call.
               action: input.action,
-              provider: input.provider,
+              authProvider: input.authProvider,
               reconnected: Boolean(existing),
               holder: input.account.holder,
             },
