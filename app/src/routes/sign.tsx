@@ -12,6 +12,7 @@ import {
   signInWith,
   signInWithEmailDomain,
 } from "@/lib/auth/client";
+import { resumeUrlFor, verifierPathFor } from "@/lib/auth/resume";
 import { appConfig } from "@/lib/generated/application-config";
 import {
   type AuthProviderId,
@@ -26,12 +27,28 @@ const ENTRANCE_STAGGER_SECONDS = 0.08;
 const ENTRANCE_OFFSET = "translateY(12px)";
 
 export const Route = createFileRoute("/sign")({
-  beforeLoad: async ({ context }) => {
+  /*
+   * `?flow_id=` is the handle a brokered authorization arrived with, sent here when its session had
+   * lapsed. It is a value to carry back, never a place to go: see `resumeUrlFor`.
+   *
+   * The key is omitted rather than set to undefined, for the reason the connected-accounts screen
+   * gives for `?connected=`: present-but-undefined makes `search` a required prop on every Link to
+   * this route, which is a lot of ripple for a parameter only the verifier sets.
+   */
+  validateSearch: (search: Record<string, unknown>): { flow_id?: string } => ({
+    ...(typeof search.flow_id === "string" ? { flow_id: search.flow_id } : {}),
+  }),
+  beforeLoad: async ({ context, search }) => {
     const user = await context.queryClient.ensureQueryData(
       currentUserQueryOptions(),
     );
     if (user) {
-      throw redirect({ to: "/" });
+      /*
+       * Signed in already, so the handle has nowhere to be lost between here and the verifier. `href`
+       * rather than `to` because the verifier is an API path, not a router route.
+       */
+      const verifier = verifierPathFor(search.flow_id);
+      throw verifier ? redirect({ href: verifier }) : redirect({ to: "/" });
     }
     // Loaded here so the screen paints with its buttons rather than painting empty and then
     // growing them, which reads as "no providers" for exactly as long as the request takes.
@@ -41,6 +58,7 @@ export const Route = createFileRoute("/sign")({
 });
 
 function SignScreen() {
+  const { flow_id: flowId } = Route.useSearch();
   // Which provider is being opened, rather than whether one is: with three buttons, a single
   // boolean would put "Opening…" on all of them.
   const [opening, setOpening] = useState<AuthProviderId | "sso" | null>(null);
@@ -61,7 +79,11 @@ function SignScreen() {
     setOpening("sso");
 
     try {
-      await signInWithEmailDomain(email);
+      await signInWithEmailDomain(
+        email,
+        undefined,
+        resumeUrlFor(window.location.origin, flowId),
+      );
     } catch (caughtError) {
       setError(
         caughtError instanceof Error
@@ -77,7 +99,11 @@ function SignScreen() {
     setOpening(provider);
 
     try {
-      await signInWith(provider);
+      await signInWith(
+        provider,
+        undefined,
+        resumeUrlFor(window.location.origin, flowId),
+      );
     } catch (caughtError) {
       setError(
         caughtError instanceof Error
