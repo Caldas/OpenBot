@@ -444,6 +444,39 @@ export const brokeredConnections = pgTable(
 );
 
 /**
+ * One in-flight Arcade authorization: what the returning browser is verified against.
+ *
+ * `actor_id` IS THE SIGNED-IN PERSON'S `users.id` — the session subject — AND NEVER
+ * `credentialActorId`. `store.ts` reads `input.credentialActorId ?? input.actorId`, and on a Team
+ * Bot those differ, and neither is the person holding the browser. The verifier finds this attempt
+ * from the returning browser's session, so any other key writes attempts a browser can never match.
+ *
+ * The key is the actor alone, so a person has at most one attempt at a time. A PRIMARY KEY with
+ * "expired is treated as absent" would be a permanent 409, because the expired row still occupies
+ * the key. Starting an attempt is therefore one `INSERT ... ON CONFLICT (actor_id) DO UPDATE ...
+ * WHERE created_at < now() - interval '15 minutes' OR completed_at IS NOT NULL`: a live attempt is
+ * refused, an expired or completed one is taken over, and nobody is ever locked out.
+ *
+ * `completed_at` is what makes completion happen exactly once: the verifier claims the row by
+ * setting it, and a second return finds it set. `auth_id` is what binds a callback to this attempt;
+ * an attempt holding null can never complete.
+ */
+export const pendingAuthorizations = pgTable("pending_authorizations", {
+  actorId: text("actor_id").primaryKey(),
+  serverId: text("server_id")
+    .notNull()
+    .references(() => mcpServers.id, { onDelete: "cascade" }),
+  action: text("action").notNull(),
+  holder: text("holder").$type<"person" | "deployment">().notNull(),
+  userId: text("user_id"),
+  vendorUserId: text("vendor_user_id").notNull(),
+  authId: text("auth_id"),
+  createdAt: createdAt(),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  outcome: text("outcome").$type<"completed" | "failed" | "unreconciled">(),
+});
+
+/**
  * One person's grant on one MCP server: the row that makes a Bot answer as the asker.
  *
  * A table rather than a column, and this is the whole architectural point of the knowledge lane.
