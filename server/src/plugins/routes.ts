@@ -6,7 +6,7 @@ import type { AppVariables } from "../auth/guards";
 import { requireAdmin } from "../auth/guards";
 import { reasonWithoutStatement } from "../db/query-failure";
 import type { AccountModeSwitch } from "./account-mode";
-import { type BrokerProvider, toolkitOfFor } from "./access";
+import { BROKERED_PROFILE, type BrokerProvider, toolkitOfFor } from "./access";
 import { normalizeArcadeError } from "./arcade-adapter";
 import {
   type AuthorizationFlow,
@@ -110,15 +110,21 @@ function brokerRefusal(
 }
 
 /**
- * What a reader is told when Composio would not answer with its directory.
+ * What a reader is told when the active broker would not answer with its directory.
  *
- * One constant because two routes make that call — browsing the catalogue and enabling an app out of
+ * One function because two routes make that call — browsing the catalogue and enabling an app out of
  * it — and a reader meeting the same failure through two doors should not meet two sentences. It
  * names the setting rather than quoting it: a key that was pasted with a space in it, or one for
- * another project, is the likeliest reason Composio will not talk to this deployment at all.
+ * another project, is the likeliest reason the vendor will not talk to this deployment at all.
+ *
+ * THE VENDOR AND ITS SETTING COME OFF THE ACTIVE PROVIDER'S PROFILE, because the client shows the
+ * server's sentence in preference to its own fallback: a sentence that spelled one broker was read
+ * by an operator of the other.
  */
-const DIRECTORY_UNAVAILABLE =
-  "Composio would not answer with its app directory, and said nothing about why. Check that COMPOSIO_API_KEY is this project's key, and check Composio's status if it persists.";
+function directoryUnavailable(provider: BrokerProvider): string {
+  const { vendor, envVar } = BROKERED_PROFILE[provider];
+  return `${vendor} would not answer with its app directory, and said nothing about why. Check that ${envVar} is this project's key, and check ${vendor}'s status if it persists.`;
+}
 
 /**
  * Where a browser with no session is sent when it lands on the verifier, carrying what it arrived
@@ -928,7 +934,10 @@ export function createPluginRoutes(
     } catch (error) {
       // The vendor's own sentence where there is one, because "invalid api key" is the diagnosis
       // and a 500 is not. See {@link brokerRefusal} for what is kept out of the answer.
-      const refusal = brokerRefusal(error, DIRECTORY_UNAVAILABLE);
+      const refusal = brokerRefusal(
+        error,
+        directoryUnavailable(activeProvider),
+      );
       return context.json({ error: refusal.error }, refusal.status);
     }
     /*
@@ -1035,7 +1044,10 @@ export function createPluginRoutes(
          * deployment whose key is wrong was told nothing at all, on the one screen where the key
          * had just been set.
          */
-        const refusal = brokerRefusal(error, DIRECTORY_UNAVAILABLE);
+        const refusal = brokerRefusal(
+          error,
+          directoryUnavailable(activeProvider),
+        );
         return context.json({ error: refusal.error }, refusal.status);
       }
     }
@@ -1044,7 +1056,7 @@ export function createPluginRoutes(
       return context.json(
         {
           error: slug
-            ? `${slug} is not an app Composio lists for this deployment.`
+            ? `${slug} is not an app ${BROKERED_PROFILE[activeProvider].vendor} lists for this deployment.`
             : "An app is required.",
         },
         400,

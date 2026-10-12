@@ -290,14 +290,20 @@ const TOOLKIT_OF: Record<BrokerProvider, (url: string) => string | null> = {
  */
 export const BROKERED_PROFILE: Record<
   BrokerProvider,
-  { scheme: string; idPrefix: string; vendor: string }
+  { scheme: string; idPrefix: string; vendor: string; envVar: string }
 > = {
   composio: {
     scheme: "composio://",
     idPrefix: "composio-",
     vendor: "Composio",
+    envVar: "COMPOSIO_API_KEY",
   },
-  arcade: { scheme: "arcade://", idPrefix: "arcade-", vendor: "Arcade" },
+  arcade: {
+    scheme: "arcade://",
+    idPrefix: "arcade-",
+    vendor: "Arcade",
+    envVar: "ARCADE_API_KEY",
+  },
 };
 
 /**
