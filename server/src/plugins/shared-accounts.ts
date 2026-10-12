@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { brokeredProvenance } from "./access";
 import { type Decides, type SchemeKind, schemeKind } from "./broker";
 
 /**
@@ -39,7 +40,7 @@ export function accountFor(
   },
   credentialActorId: string,
 ): AccountAnswer {
-  if (row.provenance !== "composio") return { kind: "none" };
+  if (!brokeredProvenance(row.provenance)) return { kind: "none" };
 
   const kind = schemeKind(row.authScheme);
   type _AccountForDecides = Decides<
