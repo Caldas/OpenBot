@@ -151,6 +151,23 @@ export type ComposioApp = {
   categories: string[];
   /** The size of the decision, shown before enabling. */
   actionCount: number;
+  /**
+   * How many of those actions the provider classified, how many distinct non-empty scope sets they
+   * ask for, and how many carry a scope at all — three more facts of the size-of-the-decision kind.
+   *
+   * REQUIRED AND NULLABLE, NEVER OPTIONAL, AND NOTHING HERE WRITES `?? 0`. `0` means measured and
+   * none, so the coverage warning fires; `null` means the provider does not publish it, so the page
+   * says nothing. An optional field makes those the same shape at the call site, and the natural
+   * `?? 0` fires a coverage warning on a Composio deployment — a false alarm at exactly the moment
+   * somebody is deciding whether to trust an app.
+   *
+   * An action with no scopes is not its own permission: it is covered by any approval at all, so it
+   * joins no group. `scopedActionCount` is what keeps `permissionCount: 1` over two actions from
+   * reading as one permission covering both.
+   */
+  classifiedCount: number | null;
+  permissionCount: number | null;
+  scopedActionCount: number | null;
   enabled: boolean;
 };
 

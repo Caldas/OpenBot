@@ -24,6 +24,12 @@ function app(overrides: Partial<ComposioApp> & { slug: string }): ComposioApp {
     logo: null,
     categories: [],
     actionCount: 1,
+    // Required and nullable, never optional: a null is "not measured", which is a different fact
+    // from a zero's "measured, and none". A default here would have to pick one, so it picks the
+    // one a provider that publishes nothing actually answers with.
+    classifiedCount: null,
+    permissionCount: null,
+    scopedActionCount: null,
     enabled: false,
     ...overrides,
   };

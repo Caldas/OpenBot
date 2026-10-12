@@ -318,6 +318,43 @@ export type BrokerApp = {
    * made the choice this field exists to inform.
    */
   actionCount: number;
+  /**
+   * How many of those actions the provider itself classified, or null where nobody measured.
+   *
+   * REQUIRED AND NULLABLE, WHICH IS THE WHOLE POINT OF THE FIELD. `0` means MEASURED, AND NOTHING
+   * WAS CLASSIFIED — every action of this app will be approved like a deletion, so the coverage
+   * warning fires. `null` means NOT MEASURED — this provider does not publish the fact, so the page
+   * says nothing. Those are opposite sentences.
+   *
+   * An OPTIONAL field makes them the same shape at the call site, and the natural `?? 0` collapses
+   * "unmeasured" into "measured none" — firing a coverage warning on a Composio deployment, a false
+   * alarm at exactly the moment somebody is deciding whether to trust an app. So every projection
+   * states the value, `./composio-adapter` writes an explicit `null`, and NOTHING WRITES `?? 0`.
+   */
+  classifiedCount: number | null;
+  /**
+   * How many DISTINCT NON-EMPTY scope sets the app's actions ask for, or null where nobody measured.
+   *
+   * The count of things that are separately approvable. Two actions asking for the same scopes are
+   * one permission; `[a,b]` and `[b,a]` are the same set and so are one too, which is why the sets
+   * are SORTED before they are joined.
+   *
+   * AN ACTION WITH NO SCOPES IS NOT ITS OWN PERMISSION — measured, not chosen. Github's 43 actions
+   * all carry an `oauth2` block with no scopes, and one read consent flipped 43 of 43 to
+   * `met: true`. So "no scopes" never meant "needs nothing"; it meant "the connection itself is the
+   * grant, and any consent covers this". Such an action is not separately approvable, so it joins
+   * no group and this count does not move for it. See {@link BrokerApp.scopedActionCount}.
+   */
+  permissionCount: number | null;
+  /**
+   * How many actions carry AT LEAST ONE scope, or null where nobody measured.
+   *
+   * IT EXISTS BECAUSE WITHOUT IT A MIXED APP LIES BY ARITHMETIC. A toolkit of two actions where one
+   * asks for scopes and one asks for none reports `permissionCount: 1` across `actionCount: 2`,
+   * which reads as ONE PERMISSION COVERING BOTH — while the second is in fact covered by any
+   * approval at all. Those are different facts, and this is the field that tells them apart.
+   */
+  scopedActionCount: number | null;
   /** How somebody would connect to it. See {@link BrokerConnection}. */
   connection: BrokerConnection;
 };

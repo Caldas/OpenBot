@@ -1,7 +1,8 @@
 import Arcade, { APIError } from "@arcadeai/arcadejs";
-import type { ArcadeActions, ArcadeFailure } from "./arcade";
+import { classify, type ArcadeActions, type ArcadeFailure } from "./arcade";
 import {
   BrokerRefusalError,
+  flagOf,
   type BrokerApp,
   type ConnectedAppBroker,
   type GrantState,
@@ -59,15 +60,85 @@ const CATALOGUE_PAGE_SIZE = 100;
 /** A runaway guard, not a bound. */
 const CATALOGUE_MAX_PAGES = 1000;
 
+/** The verdict `classify` falls back to when it could not read a behaviour. See {@link isClassified}. */
+const CLOSED_VERDICT = { effect: "write", destructive: true } as const;
+
+/**
+ * Whether ARCADE classified this action, as against this deployment falling back for it.
+ *
+ * `classify` from `./arcade` is the one reading of `metadata.behavior` anywhere here, and it is
+ * deliberately TOTAL: anything it cannot read answers the closed `{ write, destructive }` verdict,
+ * so an unannotated action is approved like a deletion. That fallback is exactly what must not be
+ * counted — counted, `AirtableApi`'s `metadata: null` actions would report as classified, and the
+ * coverage warning that exists to name them would never fire.
+ *
+ * THE CLOSED VERDICT IS ALSO A REAL ANSWER, which is the only subtlety here: `Attio.RemoveFromList`
+ * genuinely publishes `destructive: true` and lands on the same pair. So the verdict is read first,
+ * and only that one collision is broken — by asking whether Arcade actually sent a `behavior` whose
+ * `destructive` flag reads true, through `flagOf`, the same function `classify` reads it with and
+ * never a second parse of the wire.
+ *
+ * NEVER THE `Api` SUFFIX (spec D8). `AirtableApi` and `GithubApi` are unannotated today and
+ * `Apollo` is annotated, so the suffix correlates beautifully — and it is Arcade's naming
+ * convention rather than a contract. A rule reading it is a guess wearing a measurement's clothes,
+ * right until Arcade curates `DatadogApi`.
+ */
+function isClassified(metadata: unknown): boolean {
+  const verdict = classify(metadata);
+  if (
+    verdict.effect !== CLOSED_VERDICT.effect ||
+    verdict.destructive !== CLOSED_VERDICT.destructive
+  ) {
+    return true;
+  }
+  const behavior = record(record(metadata)?.behavior);
+  return behavior !== null && flagOf(behavior.destructive, false) === true;
+}
+
+/** The oauth2 scopes one listed action asks for, by the path `grantStateOf` reads them on. */
+function scopesOf(item: unknown): string[] {
+  const authorization = record(record(item)?.requirements)?.authorization;
+  const scopes = record(authorization)?.oauth2;
+  const listed = record(scopes)?.scopes;
+  return Array.isArray(listed)
+    ? listed.filter((s): s is string => typeof s === "string")
+    : [];
+}
+
 /**
  * Every toolkit Arcade publishes, with `actionCount` taken from the FULL PAGED tool listing.
  *
  * COUNTED, NEVER READ OFF PAGE ONE: `GithubApi` publishes hundreds of actions where `Github`
  * publishes 43, so a first page of 100 would be a wrong answer in the picker. Pagination ends on a
  * short page; `total_count` is optional on the wire and is used only as a cross-check.
+ *
+ * THE OTHER THREE FACTS ARE COUNTED IN THIS SAME FOLD, BEFORE THE TOOLS ARE DISCARDED, and that is
+ * the whole of why they are free: the listing is already paged to the end for `actionCount`, so no
+ * second listing and NO EXTRA VENDOR CALL is made for them.
+ *
+ * `permissionCount` is the number of DISTINCT NON-EMPTY scope sets, held per toolkit as sorted,
+ * joined strings — SORTED BEFORE JOINED, so `[a,b]` and `[b,a]` are one permission asked for twice.
+ * An action with NO scopes joins no group: Github's 43 actions all carry an `oauth2` block with no
+ * scopes and one read consent flipped 43 of 43 to `met: true`, so "no scopes" means "the connection
+ * itself is the grant", not "needs nothing" — such an action is not separately approvable.
+ * `scopedActionCount` is what keeps that from reading as one permission covering everything.
  */
 async function listApps(client: Arcade): Promise<BrokerApp[]> {
-  const counts = new Map<string, BrokerApp>();
+  /**
+   * The fold's own tally, with PLAIN NUMBERS. `BrokerApp`'s three counts are nullable because
+   * another provider may not measure them; this provider does, on every action it folds, so a
+   * nullable accumulator here would only be a null nothing can produce, narrowed at every `+= 1`.
+   * `permissions` holds the sorted-and-joined scope sets; empty sets never enter it.
+   */
+  type Tally = Omit<
+    BrokerApp,
+    "classifiedCount" | "permissionCount" | "scopedActionCount"
+  > & {
+    classifiedCount: number;
+    scopedActionCount: number;
+    permissions: Set<string>;
+  };
+  const counts = new Map<string, Tally>();
   let seen = 0;
   let total: number | undefined;
   let ended = false;
@@ -87,21 +158,32 @@ async function listApps(client: Arcade): Promise<BrokerApp[]> {
         item as { toolkit?: { name?: unknown; description?: unknown } } | null
       )?.toolkit;
       if (!toolkit || typeof toolkit.name !== "string") continue;
-      const standing = counts.get(toolkit.name);
-      if (standing) {
-        standing.actionCount += 1;
-        continue;
+      const classified = isClassified(record(item)?.metadata);
+      const scopes = scopesOf(item);
+      const standing =
+        counts.get(toolkit.name) ??
+        ({
+          slug: toolkit.name,
+          name: toolkit.name,
+          description:
+            typeof toolkit.description === "string" ? toolkit.description : "",
+          logo: null,
+          categories: [],
+          actionCount: 0,
+          classifiedCount: 0,
+          scopedActionCount: 0,
+          permissions: new Set<string>(),
+          connection: { kind: "consent" },
+        } satisfies Tally);
+      standing.actionCount += 1;
+      if (classified) standing.classifiedCount += 1;
+      if (scopes.length > 0) {
+        standing.scopedActionCount += 1;
+        // SORTED, THEN JOINED. The other order makes one permission into two the first time the
+        // vendor lists the same scopes in a different sequence.
+        standing.permissions.add([...scopes].sort().join(" "));
       }
-      counts.set(toolkit.name, {
-        slug: toolkit.name,
-        name: toolkit.name,
-        description:
-          typeof toolkit.description === "string" ? toolkit.description : "",
-        logo: null,
-        categories: [],
-        actionCount: 1,
-        connection: { kind: "consent" },
-      });
+      counts.set(toolkit.name, standing);
     }
     seen += items.length;
     const reported = (answer as { total_count?: unknown }).total_count;
@@ -121,7 +203,12 @@ async function listApps(client: Arcade): Promise<BrokerApp[]> {
       `Arcade listed ${seen} of ${total} actions, so its app catalogue is incomplete.`,
     );
   }
-  return [...counts.values()];
+  // `permissionCount` IS READ OFF THE FINISHED SET, never kept per page: a size taken mid-listing
+  // is a count of the sets seen so far, which is a different number on every page but the last.
+  return [...counts.values()].map(({ permissions, ...app }) => ({
+    ...app,
+    permissionCount: permissions.size,
+  }));
 }
 
 const FIELDS_REFUSAL =

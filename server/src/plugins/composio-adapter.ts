@@ -1090,6 +1090,16 @@ function appOf(row: VendorToolkit, position: number): BrokerApp {
     logo,
     categories,
     actionCount,
+    /*
+     * THREE EXPLICIT NULLS, AND NEVER `?? 0`. Composio's toolkit listing publishes no behaviour
+     * classification and no per-action scope sets, so this deployment has not measured them here —
+     * which is a different fact from having measured them and found none. A zero would say the
+     * second, and the page would fire its coverage warning on every Composio app: a false alarm at
+     * exactly the moment somebody is deciding whether to trust one. See {@link BrokerApp}.
+     */
+    classifiedCount: null,
+    permissionCount: null,
+    scopedActionCount: null,
     connection: connectionOf(row),
   };
 }

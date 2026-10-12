@@ -487,6 +487,11 @@ describe("the app catalogue", () => {
         logo: "https://logos.composio.dev/gmail.png",
         categories: ["Productivity", "Email"],
         actionCount: 63,
+        // Composio measures none of the three, so each is an explicit null: "not measured", which is
+        // a different fact from "measured, and none" and must never be read through a `?? 0`.
+        classifiedCount: null,
+        permissionCount: null,
+        scopedActionCount: null,
         connection: NO_SCHEME,
       },
       {
@@ -496,6 +501,11 @@ describe("the app catalogue", () => {
         logo: null,
         categories: [],
         actionCount: 0,
+        // Composio measures none of the three, so each is an explicit null: "not measured", which is
+        // a different fact from "measured, and none" and must never be read through a `?? 0`.
+        classifiedCount: null,
+        permissionCount: null,
+        scopedActionCount: null,
         connection: NO_SCHEME,
       },
     ]);
@@ -531,6 +541,11 @@ describe("holding the catalogue", () => {
     logo: null,
     categories: [],
     actionCount: 63,
+    // Composio measures none of the three, so each is an explicit null: "not measured", which is
+    // a different fact from "measured, and none" and must never be read through a `?? 0`.
+    classifiedCount: null,
+    permissionCount: null,
+    scopedActionCount: null,
     connection: NO_SCHEME,
   };
 
@@ -602,6 +617,11 @@ describe("holding the catalogue", () => {
         logo: null,
         categories: [],
         actionCount: 12,
+        // Composio measures none of the three, so each is an explicit null: "not measured", which is
+        // a different fact from "measured, and none" and must never be read through a `?? 0`.
+        classifiedCount: null,
+        permissionCount: null,
+        scopedActionCount: null,
         connection: NO_SCHEME,
       },
     ]);
@@ -2872,6 +2892,11 @@ describe("a catalogue that might be a fragment", () => {
         logo: null,
         categories: ["Productivity"],
         actionCount: 63,
+        // Composio measures none of the three, so each is an explicit null: "not measured", which is
+        // a different fact from "measured, and none" and must never be read through a `?? 0`.
+        classifiedCount: null,
+        permissionCount: null,
+        scopedActionCount: null,
         connection: NO_SCHEME,
       },
     ]);
