@@ -22,6 +22,14 @@ import {
 import { testEnvironment } from "./support/environment";
 
 /**
+ * The sentence a PERSON is shown where no broker is configured, written out rather than imported
+ * from the class that makes it: a test that read it back from the source would pass whatever the
+ * source said. Identical on both providers, and it names no vendor and no setting.
+ */
+const PERSON_UNCONFIGURED =
+  "Connected apps are not set up for this deployment, so nothing was asked. An administrator can set them up.";
+
+/**
  * The handful of reads one route makes, typed against the store that really answers them.
  *
  * ONE CAST, IN ONE PLACE, WITH ITS INPUT CHECKED. A route test supplies four or five methods where
@@ -2164,9 +2172,9 @@ describe("connecting a brokered app", () => {
     const response = await connect({});
 
     expect(response.status).toBe(503);
-    expect((await response.json()).error).not.toMatch(
-      /composio|COMPOSIO_API_KEY/i,
-    );
+    const refusal = (await response.json()).error as string;
+    expect(refusal).toBe(PERSON_UNCONFIGURED);
+    expect(refusal).not.toMatch(/composio|COMPOSIO_API_KEY/i);
   });
 
   test("the address Composio sends somebody back to is built here, never taken from the request", async () => {
@@ -3057,6 +3065,7 @@ describe("confirming and ending a brokered connection", () => {
       (await confirmResponse.json()).error as string,
       (await disconnectResponse.json()).error as string,
     ]) {
+      expect(refusal).toBe(PERSON_UNCONFIGURED);
       expect(refusal).not.toContain("COMPOSIO_API_KEY");
       expect(refusal).not.toMatch(/composio/i);
     }
@@ -3207,9 +3216,9 @@ describe("re-checking a brokered connection", () => {
     const response = await recheck();
 
     expect(response.status).toBe(503);
-    expect((await response.json()).error).not.toMatch(
-      /composio|COMPOSIO_API_KEY/i,
-    );
+    const refusal = (await response.json()).error as string;
+    expect(refusal).toBe(PERSON_UNCONFIGURED);
+    expect(refusal).not.toMatch(/composio|COMPOSIO_API_KEY/i);
     expect(rechecked).toEqual([]);
   });
 
