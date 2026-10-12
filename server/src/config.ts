@@ -16,6 +16,7 @@ import {
   type TranscriptionConfig,
   transcriptionConfig,
 } from "./dictation/config";
+import type { BrokerProvider } from "./plugins/access";
 import { type VoiceConfig, voiceConfig } from "./voice/config";
 
 export type RuntimeCapabilities = {
@@ -393,8 +394,6 @@ function required(environment: Environment, name: string): string {
 function optional(environment: Environment, name: string): string | undefined {
   return environment[name]?.trim() || undefined;
 }
-
-export type BrokerProvider = "composio" | "arcade";
 
 function brokerProvider(environment: Environment): BrokerProvider | undefined {
   const raw = optional(environment, "OPENBOT_BROKER_PROVIDER");

@@ -1135,8 +1135,8 @@ test("a Composio key is read when set and absent when not", () => {
 
 test("an Arcade key and a broker provider are read, and an unknown provider is refused", () => {
   const unset = loadConfig(baseEnvironment);
-  expect(unset.arcadeApiKey).toBeUndefined();
-  expect(unset.brokerProvider).toBeUndefined();
+  expect(unset).toHaveProperty("arcadeApiKey", undefined);
+  expect(unset).toHaveProperty("brokerProvider", undefined);
   const set = loadConfig({
     ...baseEnvironment,
     ARCADE_API_KEY: "  arc_example  ",
