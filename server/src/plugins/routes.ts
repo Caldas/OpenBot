@@ -17,6 +17,7 @@ import {
   brokerSentence,
   type ComposioBroker,
   type Decides,
+  type GrantState,
   isFieldScheme,
   type SchemeKind,
   schemeKind,
@@ -2054,6 +2055,13 @@ export function createPluginRoutes(
   const brokeredAccountFor = async (
     context: { var: AppVariables },
     serverId: string,
+    /**
+     * `readOnly` is true for a question about the account's STATE, which anybody working with the
+     * app benefits from, and false for every act done in it. It lifts exactly one refusal — the
+     * administrator requirement on a Shared app's account — and nothing else: the account
+     * resolved is the same one either way, so a reader is told about the identity calls use.
+     */
+    options: { readOnly?: boolean } = {},
   ): Promise<
     | {
         toolkit: string;
@@ -2091,6 +2099,7 @@ export function createPluginRoutes(
       return { refusal: { error: resolved.refusal, status: 400 } };
     }
     if (
+      !options.readOnly &&
       resolved.ref.holder === "deployment" &&
       context.var.actor.role !== "admin"
     ) {
@@ -2103,6 +2112,67 @@ export function createPluginRoutes(
     }
     return { toolkit, account: resolved.ref, title: resolved.title };
   };
+
+  /**
+   * What the account behind this app holds, action by action: `{ actions: GrantState[] }`.
+   *
+   * A BOOLEAN WOULD NOT DO. An action can be blocked by consent, which Authorize moves, or by a
+   * deployment secret an operator sets once for everybody, which no amount of consenting moves; and
+   * a listing nobody could read is `unknown` rather than a pessimistic `needs-consent`, because
+   * telling somebody to authorize what they already authorized sends them round twice. The states
+   * are the broker's, passed through as it answered them.
+   *
+   * WHOSE IDENTITY IS ASKED ABOUT COMES FROM `brokeredAccountFor`: a Personal app's is the
+   * viewer's, a Shared app's is the app's own `shared_vendor_user_id`. Asking about the viewer for
+   * a Shared app would report a state no call ever uses.
+   *
+   * BEHIND `requireUser` AND NOT ADMIN-GATED: the status is a fact about the team's account that
+   * anybody working with the app benefits from. Minting is the privileged act, and the authorize
+   * route still refuses it with 403 through the same resolver.
+   *
+   * NO PRESENCE TEST ON THE BROKER AND NO REFUSAL PATH: every broker answers `grantsFor`, a
+   * degenerate answer being a real one, so this works on both deployments. A throw from the broker
+   * is answered as `unknown` carrying our own sentence, never the vendor's words, which could
+   * carry a credential.
+   */
+  routes.get("/servers/:id/grants", requireUser, async (context) => {
+    const resolved = await brokeredAccountFor(
+      context,
+      context.req.param("id"),
+      { readOnly: true },
+    );
+    if (resolved.refusal) {
+      return context.json(
+        { error: resolved.refusal.error },
+        resolved.refusal.status,
+      );
+    }
+    const { toolkit, account } = resolved;
+    // `composio` is non-null here: the resolver refuses 503 before it returns an account.
+    const broker = composio?.broker;
+    if (!broker) {
+      return context.json(
+        {
+          error: new BrokerUnconfiguredError(activeProvider, "person").message,
+        },
+        503,
+      );
+    }
+    let actions: GrantState[];
+    try {
+      actions = await broker.grantsFor({ toolkit, account });
+    } catch {
+      actions = [
+        {
+          action: toolkit,
+          state: "unknown",
+          reason:
+            "This deployment could not read what this account holds just now, so nothing is said about it either way. Try again in a moment.",
+        },
+      ];
+    }
+    return context.json({ actions });
+  });
 
   /**
    * Ask Composio whether this person's account is really attached, and write the answer down.
