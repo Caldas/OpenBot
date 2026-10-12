@@ -49,6 +49,8 @@ function storeFor(
   ensure: "created" | "standing" = "created",
 ) {
   const broker: ComposioBroker = {
+    // This stub stands in for Composio, whose grant is held locally; see `ConnectedAppBroker.grantIsLocal`.
+    grantIsLocal: true,
     listApps: unasked("list"),
     ensureAuthConfig: async () => ensure,
     deleteAuthConfig: unasked("delete"),

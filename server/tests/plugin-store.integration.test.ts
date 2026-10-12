@@ -6612,6 +6612,8 @@ test("enabling an app writes a brokered row, and asks for its auth config first"
     throw new Error(`enabling an app asked the broker to ${what}`);
   };
   const broker: ComposioBroker = {
+    // This stub stands in for Composio, whose grant is held locally; see `ConnectedAppBroker.grantIsLocal`.
+    grantIsLocal: true,
     listApps: unasked("list the catalogue"),
     ensureAuthConfig: async (config) => {
       asked.push(config);
@@ -6785,6 +6787,8 @@ function brokerSpy(answers: {
   return {
     order,
     broker: {
+      // This stub stands in for Composio, whose grant is held locally; see `ConnectedAppBroker.grantIsLocal`.
+      grantIsLocal: true,
       listApps: unasked("list the catalogue"),
       ensureAuthConfig: asked(
         "ensureAuthConfig",

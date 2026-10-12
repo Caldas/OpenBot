@@ -23,6 +23,8 @@ const keptRef = `${keptServerId}/${keptAction}`;
 const botId = `agent_grant_removal_${suite}`;
 
 const broker: ConnectedAppBroker = {
+  // This stub stands in for Composio, whose grant is held locally; see `ConnectedAppBroker.grantIsLocal`.
+  grantIsLocal: true,
   listApps: async () => [],
   ensureAuthConfig: async () => undefined,
   deleteAuthConfig: async () => undefined,

@@ -1751,6 +1751,38 @@ export function createPluginStore(options: PluginStoreOptions) {
           `${row.title} changed how it is shared while this call was being checked, so it was not called. Ask again.`,
           null,
         );
+      /*
+       * A ROW IS ONLY REQUIRED WHERE THIS DEPLOYMENT IS THE ONE HOLDING THE GRANT.
+       *
+       * CRITERION. Whether a brokered call has to find a `brokered_connections` row first is the
+       * broker's DECLARED {@link ConnectedAppBroker.grantIsLocal} — never a `provider === "arcade"`
+       * comparison, never a test of the row's provenance column, never a look at its url. The
+       * question is "where does the grant live", the field answers exactly that question, and the
+       * vendor's name is not an answer to it.
+       *
+       * REASON. The gate just below and its `none` exemption above once keyed on DIFFERENT things,
+       * and the exemption failed OPEN: a duplicate row recording `NO_AUTH` at a key app's url
+       * skipped the per-person gate entirely, and the deployment's own key ran a call for somebody
+       * who had connected nothing. A vendor's name compared inside a check whose vocabulary is
+       * about permission is that same shape — two answers to one question with nothing forcing them
+       * to agree, and a third broker would mean finding every such comparison by hand. A declared
+       * property is checkable against every adapter, reads the same as the `listNeedsCredential`
+       * beside it, and a third provider answers it by existing or fails to type-check.
+       *
+       * WHY THE ROW IS NOT REQUIRED WHERE THE GRANT IS THE VENDOR'S. Such a broker checks per
+       * action, on every call, at the vendor. A local row demanding to exist first would be a
+       * second, weaker copy of that check — and it is the copy that forces a Connect button, which
+       * forces an arbitrary first consent before anybody knows which action they want. Here the
+       * call proceeds and the vendor's own typed refusal is the authoritative answer.
+       *
+       * ONLY A PRECONDITION IS REMOVED; THE IDENTITY IS UNCHANGED. The id returned is
+       * `resolved.ref.vendorUserId` — the very value the branch below returns out of the row —
+       * derived by {@link accountRefFor} from the session's actor and the app's own mode, Personal
+       * or Shared, exactly as before. The model cannot name an identity, nothing about whose
+       * account a call runs in changes here, and the Shared case still goes out as the deployment.
+       */
+      if (broker && !broker.grantIsLocal)
+        return { vendorUserId: resolved.ref.vendorUserId };
       const [connected] = await database
         .select({ vendorUserId: brokeredConnections.vendorUserId })
         .from(brokeredConnections)

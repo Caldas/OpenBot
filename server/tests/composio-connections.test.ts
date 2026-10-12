@@ -680,6 +680,8 @@ let vendorHolds: string[] = [];
 let configWasStanding = false;
 
 const broker: ComposioBroker = {
+  // This stub stands in for Composio, whose grant is held locally; see `ConnectedAppBroker.grantIsLocal`.
+  grantIsLocal: true,
   listApps: unasked("list the catalogue"),
   ensureAuthConfig: async (config) => {
     // Named by app AND kind, because the kind is what decides which config is created: an enable

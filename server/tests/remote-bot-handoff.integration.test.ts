@@ -35,6 +35,8 @@ const ACTOR = `remote-handoff-actor-${suite}`;
 const ALL = [REMOTE, BUILT_IN, OTHER_REMOTE];
 
 const broker: ConnectedAppBroker = {
+  // This stub stands in for Composio, whose grant is held locally; see `ConnectedAppBroker.grantIsLocal`.
+  grantIsLocal: true,
   listApps: async () => [],
   ensureAuthConfig: async () => undefined,
   deleteAuthConfig: async () => undefined,
