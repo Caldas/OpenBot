@@ -48,6 +48,42 @@ export const Route = createFileRoute("/_authed/admin/plugins/composio")({
 });
 
 /**
+ * The D8 coverage warning for an app, or null when there is nothing to say.
+ *
+ * Driven by `classifiedCount` against `actionCount` and nothing else. `classifiedCount: 0` is
+ * MEASURED, nothing classified, so it warns; `null` is NOT MEASURED (a Composio app) so it says
+ * nothing. Those are opposite sentences, and `?? 0` would collapse one into the other.
+ *
+ * The classification is measured server-side from the fetched listing and never re-derived here:
+ * never inferred from the `Api` suffix (Arcade's naming convention, not a contract — a guess wearing
+ * a measurement's clothes), and never from `classify()`'s verdict, which is TOTAL: its closed
+ * destructive-write verdict for absent metadata is byte-identical to its verdict for a genuinely
+ * destructive action, so counting "did classify return something" counts nothing.
+ *
+ * Phrased as what it will feel like, not as a percentage.
+ */
+export function coverageWarning(
+  app: Pick<ComposioApp, "actionCount" | "classifiedCount">,
+): string | null {
+  if (app.classifiedCount === null) return null;
+  if (app.actionCount > 0 && app.classifiedCount === 0) {
+    return "This provider has not said which of its actions only read, so every action is treated as a destructive write and every call will ask for approval.";
+  }
+  return null;
+}
+
+/** The warning on a row, shown before Add is pressed. Draws nothing when there is none. */
+export function CoverageNote({ app }: { app: ComposioApp }) {
+  const warning = coverageWarning(app);
+  if (!warning) return null;
+  return (
+    <p className="text-muted-foreground text-xs" data-testid="coverage-warning">
+      {warning}
+    </p>
+  );
+}
+
+/**
  * The apps to draw, in the order to draw them.
  *
  * A function rather than a `.sort()` inside the map, so the two things a row is decided from — the
@@ -207,6 +243,7 @@ function ComposioDirectory() {
                     <ItemContent>
                       <ItemTitle>{entry.name}</ItemTitle>
                       <ItemDescription>{entry.description}</ItemDescription>
+                      {entry.enabled ? null : <CoverageNote app={entry} />}
                     </ItemContent>
                     <ItemActions>
                       {/* The size of the decision, stated before it is made: an app is not one
