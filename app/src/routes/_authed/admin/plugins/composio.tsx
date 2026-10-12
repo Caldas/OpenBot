@@ -1,6 +1,6 @@
 import { IconPlug } from "@tabler/icons-react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Navigate } from "@tanstack/react-router";
 import * as React from "react";
 import {
   PageEmpty,
@@ -23,9 +23,11 @@ import {
   enableComposioAppMutationOptions,
   invalidatePlugins,
 } from "@/lib/plugins/mutations";
+import { directoryRouteDecision } from "@/lib/plugins/provider-vocabulary";
 import {
   type ComposioApp,
   composioAppsQueryOptions,
+  pluginsPageQueryOptions,
 } from "@/lib/plugins/queries";
 import { queryClient } from "@/query-client";
 
@@ -61,7 +63,22 @@ export function matchingApps(apps: ComposioApp[]): ComposioApp[] {
   return [...apps].sort((left, right) => left.name.localeCompare(right.name));
 }
 
+/**
+ * The route guard: this directory answers only on a Composio deployment.
+ *
+ * A route answering for the wrong provider is how a Composio-shaped enablement flow gets spent
+ * against an Arcade project. Nothing is drawn, and so no directory request is made, until the page
+ * has said which provider this is.
+ */
 function RouteComponent() {
+  const plugins = useQuery(pluginsPageQueryOptions());
+  const decision = directoryRouteDecision("composio", plugins.data);
+  if (decision === "redirect") return <Navigate replace to="/admin/plugins" />;
+  if (decision === "pending") return null;
+  return <ComposioDirectory />;
+}
+
+function ComposioDirectory() {
   const [search, setSearch] = React.useState("");
   /*
    * Debounced, as on People, and for a stronger reason: every distinct term is a cache key of its
