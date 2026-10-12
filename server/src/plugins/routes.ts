@@ -7,6 +7,7 @@ import { requireAdmin } from "../auth/guards";
 import { reasonWithoutStatement } from "../db/query-failure";
 import type { AccountModeSwitch } from "./account-mode";
 import { type BrokerProvider, toolkitOfFor } from "./access";
+import { normalizeArcadeError } from "./arcade-adapter";
 import {
   type BrokerApp,
   type BrokerField,
@@ -2236,7 +2237,7 @@ export function createPluginRoutes(
    * logged, audited or put in an error body. No `next_uri` is sent: the vendor refuses every value,
    * and the landing page comes from the attempt row instead.
    *
-   * NOT HERE: what a failed mint does to its attempt, and cancelling one.
+   * A FAILED MINT'S ATTEMPT is handled at the mint's `catch`. NOT HERE: cancelling one.
    */
   routes.post("/servers/:id/authorize", requireUser, async (context) => {
     const serverId = context.req.param("id");
@@ -2328,12 +2329,63 @@ export function createPluginRoutes(
       );
     }
 
-    const minted = await composio.broker.authorize({
-      account,
-      toolkit,
-      action,
-      returnUrl,
-    });
+    let minted: Awaited<ReturnType<typeof composio.broker.authorize>>;
+    try {
+      minted = await composio.broker.authorize({
+        account,
+        toolkit,
+        action,
+        returnUrl,
+      });
+    } catch (error) {
+      /*
+       * WHAT A FAILED MINT DOES TO ITS ATTEMPT. THREE OUTCOMES, KEYED ON WHAT WAS ANSWERED.
+       *
+       * DEFINITE: the broker refused before asking (an authored `BrokerRefusalError`), or the
+       * vendor ANSWERED with an HTTP status. Nothing is live upstream, so the attempt is discarded
+       * and the actor is free to try again. Matched on `(actor_id, created_at)`, never `auth_id`: an
+       * attempt whose mint never completed has none, and `created_at` is what stops a late cleanup
+       * from deleting a NEWER attempt by the same actor.
+       *
+       * UNCERTAIN, AND THE ATTEMPT IS LEFT STANDING: `status === undefined` on a normalized SDK
+       * error. `APIConnectionError` and `APIUserAbortError` EXTEND `APIError`, so the normalizer
+       * answers `{ status: undefined, ... }` for them, NOT `null`; a dropped connection or an
+       * aborted socket means Arcade may well have created a flow. Keying this on `null` would class
+       * a timeout as a refusal and delete an attempt whose flow may be live, which frees the actor
+       * to start a second flow beside it. An attempt holding a null `auth_id` can never complete,
+       * so leaving it to expire is safe, and it is the point.
+       *
+       * THE NORMALIZER ANSWERING `null` IS UNCERTAIN TOO. That is "not an SDK error at all", and
+       * the adapter throws exactly such an `Error` ("Arcade answered an authorization with no id.")
+       * for a mint that answered SUCCESSFULLY without an `ar_...`: Arcade very likely did create a
+       * flow. Do not tidy this case into the definite branch.
+       *
+       * NOTHING FROM THE VENDOR'S ANSWER IS LOGGED, AUDITED OR RETURNED: its body can carry the
+       * authorization url, a bearer capability.
+       */
+      const authored = brokerSentence(error) !== null;
+      const failure = normalizeArcadeError(error);
+      const definite =
+        authored || (failure !== null && failure.status !== undefined);
+      if (definite) {
+        await store.discardAuthorizationAttempt({
+          actorId: context.var.actor.id,
+          createdAt: claim.attempt.createdAt,
+        });
+        const refusal = brokerRefusal(
+          error,
+          "The app's vendor refused to start that authorization, so nothing was started. Try again in a moment.",
+        );
+        return context.json({ error: refusal.error }, refusal.status);
+      }
+      return context.json(
+        {
+          error:
+            "The app's vendor did not answer clearly, and the authorization may or may not have started. Wait for it to expire, or finish it if you were sent to a consent screen, before starting another.",
+        },
+        502,
+      );
+    }
     // A null id is recorded as NULL: an attempt holding none can never complete and simply expires.
     await store.recordAuthorizationMint({
       actorId: context.var.actor.id,

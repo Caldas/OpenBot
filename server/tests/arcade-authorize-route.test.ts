@@ -7,6 +7,7 @@ import {
   expect,
   test,
 } from "bun:test";
+import { APIConnectionError, APIError } from "@arcadeai/arcadejs";
 import { randomUUID } from "node:crypto";
 import { eq, inArray, sql } from "drizzle-orm";
 import { Hono, type MiddlewareHandler } from "hono";
@@ -31,6 +32,8 @@ const SECRET_URL = "https://vendor.example/consent?secret=bearer-capability";
 
 let mints: { vendorUserId: string; action?: string; toolkit: string }[] = [];
 let nextAuthId: string | null = "ar_minted_1";
+// What the next mint does before answering; a test sets it to throw, or to hold the mint open.
+let beforeMint: (() => Promise<void>) | null = null;
 
 const arcadeBroker: ConnectedAppBroker = {
   grantIsLocal: false,
@@ -48,6 +51,7 @@ const arcadeBroker: ConnectedAppBroker = {
   deleteAuthConfig: async () => {},
   authorize: async ({ account, toolkit, action }) => {
     mints.push({ vendorUserId: account.vendorUserId, action, toolkit });
+    await beforeMint?.();
     return { redirectUrl: SECRET_URL, authorizationId: nextAuthId };
   },
   isConnected: async () => true,
@@ -184,6 +188,7 @@ afterAll(async () => {
 beforeEach(() => {
   mints = [];
   nextAuthId = "ar_minted_1";
+  beforeMint = null;
 });
 
 describe("POST /servers/:id/authorize", () => {
@@ -339,5 +344,159 @@ describe("POST /servers/:id/authorize", () => {
     );
     expect(response.status).toBe(503);
     expect(await attemptsFor(actor)).toEqual([]);
+  });
+
+  describe("a mint that fails", () => {
+    const refuse = async () => {
+      throw new APIError(
+        500,
+        { name: "boom", message: "vendor-body-secret" },
+        "500",
+        new Headers(),
+      );
+    };
+
+    test("a definite vendor refusal deletes the attempt, and a late cleanup can never delete a newer one", async () => {
+      const actor = person("definite");
+      beforeMint = refuse;
+      const response = await authorize(appAs("user", actor), personalApp);
+      expect(response.status).toBe(502);
+      expect(JSON.stringify(await response.json())).not.toContain(
+        "vendor-body-secret",
+      );
+      expect(await attemptsFor(actor)).toEqual([]);
+
+      // The actor starts again; the first attempt's cleanup then arrives late.
+      beforeMint = null;
+      nextAuthId = "ar_newer";
+      expect((await authorize(appAs("user", actor), personalApp)).status).toBe(
+        200,
+      );
+      const [newer] = await attemptsFor(actor);
+      const store = createPluginStore({
+        brokerProvider: "arcade",
+        database,
+        auditStore: createAuditStore(database),
+        credentials: {} as never,
+        encryptionKey: "x".repeat(44),
+        policy: () => ({ mode: "enforce", deny: [], allow: ["true"] }),
+        broker: arcadeBroker,
+        deploymentId: `acme-${suite}`,
+      });
+      const staleCreatedAt = new Date(
+        (newer?.createdAt.getTime() as number) - 5,
+      );
+      expect(
+        await store.discardAuthorizationAttempt({
+          actorId: actor,
+          createdAt: staleCreatedAt,
+        }),
+      ).toBe(false);
+      const [survivor] = await attemptsFor(actor);
+      expect(survivor).toMatchObject({
+        authId: "ar_newer",
+        completedAt: null,
+        outcome: null,
+      });
+      expect(survivor?.createdAt.getTime()).toBe(newer?.createdAt.getTime());
+    });
+
+    test("an authored refusal is definite: nothing reached the vendor, so the attempt is deleted", async () => {
+      const actor = person("authored");
+      const { BrokerRefusalError } = await import("../src/plugins/broker");
+      beforeMint = async () => {
+        throw new BrokerRefusalError("Arcade needs an action.");
+      };
+      const response = await authorize(appAs("user", actor), personalApp);
+      expect(response.status).toBe(503);
+      expect(await attemptsFor(actor)).toEqual([]);
+    });
+
+    test("an uncertain failure (status undefined) leaves the attempt standing with a null auth_id", async () => {
+      const actor = person("uncertain");
+      beforeMint = async () => {
+        throw new APIConnectionError({ message: "socket dropped" });
+      };
+      const response = await authorize(appAs("user", actor), personalApp);
+      expect(response.status).toBe(502);
+      const body = JSON.stringify(await response.json());
+      expect(body).not.toContain("bearer-capability");
+      const rows = await attemptsFor(actor);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        authId: null,
+        completedAt: null,
+        outcome: null,
+      });
+      const created = rows[0]?.createdAt as Date;
+      expect(new Date(created.getTime()).getTime()).toBe(created.getTime());
+      // ...and it still holds the actor: a second start is a 409, not a second flow.
+      beforeMint = null;
+      expect((await authorize(appAs("user", actor), personalApp)).status).toBe(
+        409,
+      );
+    });
+
+    test("a non-SDK throw (the adapter's missing-id Error) is uncertain too: the attempt stands", async () => {
+      const actor = person("noid");
+      beforeMint = async () => {
+        throw new Error("Arcade answered an authorization with no id.");
+      };
+      const response = await authorize(appAs("user", actor), personalApp);
+      expect(response.status).toBe(502);
+      const [row] = await attemptsFor(actor);
+      expect(row).toMatchObject({
+        authId: null,
+        completedAt: null,
+        outcome: null,
+      });
+    });
+  });
+
+  test("two concurrent starts by one actor yield exactly one 200 and one 409", async () => {
+    const actor = person("race");
+    // Hold the winner's mint open so the loser's claim runs while it is in flight.
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    beforeMint = () => held;
+    const app = appAs("user", actor);
+    const first = authorize(app, personalApp);
+    const second = authorize(app, personalApp);
+    const settled = Promise.all([first, second]);
+    setTimeout(release, 150);
+    const responses = await settled;
+    expect(responses.map((r) => r.status).sort()).toEqual([200, 409]);
+    expect(mints).toHaveLength(1);
+    const rows = await attemptsFor(actor);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      authId: "ar_minted_1",
+      completedAt: null,
+      outcome: null,
+    });
+  });
+
+  test("a Shared app is authorized under the SESSION SUBJECT, not the deployment's credential account", async () => {
+    const actor = person("team-bot");
+    expect((await authorize(appAs("admin", actor), sharedApp)).status).toBe(
+      200,
+    );
+    const rows = await attemptsFor(actor);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      actorId: actor,
+      holder: "deployment",
+      vendorUserId: SHARED_VENDOR_ID,
+      completedAt: null,
+      outcome: null,
+    });
+    expect(rows[0]?.actorId).not.toBe(SHARED_VENDOR_ID);
+    const stray = await database
+      .select()
+      .from(pendingAuthorizations)
+      .where(eq(pendingAuthorizations.actorId, SHARED_VENDOR_ID));
+    expect(stray).toEqual([]);
   });
 });
