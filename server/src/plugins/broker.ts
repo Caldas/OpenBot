@@ -10,8 +10,8 @@
  * schema. Everything below is a name for a shape, so the vendor's package stays confined to the
  * adapter that implements {@link ConnectedAppBroker} — one file, replaceable, and the only place a
  * version bump can reach. A module that named the vendor's types here would put their package on
- * the import graph of every test that touches enablement. `AccountRef`, below, is the one import
- * that crosses this file's boundary, and it is a type this deployment names, never the vendor's.
+ * the import graph of every test that touches enablement. `AccountRef` and `BrokerProvider`, below, are the only imports
+ * that cross this file's boundary, and both are types this deployment names, never the vendor's.
  */
 import type { BrokerProvider } from "./access";
 import type { AccountRef } from "./shared-accounts";

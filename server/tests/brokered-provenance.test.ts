@@ -5,13 +5,7 @@
  *
  * `access.ts` is the one exempt file because it is where the vocabulary lives.
  *
- * KNOWN GAP: the regexes below do NOT catch
- * `eq(mcpServers.provenance, "composio")` (two sites in `logos.ts`).
- * Micro-task 2.5 will add that spelling. A guard that catches one spelling of
- * a mistake and not the other is worse than none, because it is read as
- * coverage.
- *
- * EXPECTED TO FAIL until micro-tasks 2.3, 2.5 and 3.2 clear the offenders.
+ * EXPECTED TO FAIL until micro-task 3.2 clears the last offender.
  */
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
