@@ -214,17 +214,26 @@ describe("discardAuthorizationAttempt", () => {
     const older = await claim(a, "older");
     if (!older.claimed) throw new Error("claim failed");
     await age(a, "16 minutes");
+    // What the row NOW holds, which is what a late discard would have been aiming at.
+    // `older.attempt.createdAt` is the PRE-age value and matches nothing, so a discard
+    // aimed at it misses whether or not a replacement exists, which is no test at all.
+    const [aged] = await database
+      .select()
+      .from(pendingAuthorizations)
+      .where(eq(pendingAuthorizations.actorId, a));
+    if (!aged) throw new Error("aged row missing");
+    const agedAt = aged.createdAt;
+
     const newer = await claim(a, "newer");
     expect(newer.claimed).toBe(true);
     if (!newer.claimed) return;
-    expect(newer.attempt.createdAt.getTime()).toBeGreaterThan(
-      older.attempt.createdAt.getTime(),
-    );
+    // Differ by 16 minutes BY CONSTRUCTION, not by wall-clock luck: no same-millisecond race.
+    expect(newer.attempt.createdAt.getTime()).not.toBe(agedAt.getTime());
 
-    // Aimed at the OLD attempt's created_at: it must not reach the new one.
+    // Aimed at the attempt that actually stood: the replacement must survive it.
     const deleted = await store.discardAuthorizationAttempt({
       actorId: a,
-      createdAt: older.attempt.createdAt,
+      createdAt: agedAt,
     });
     expect(deleted).toBe(false);
     const standing = await store.authorizationAttemptFor(a);
