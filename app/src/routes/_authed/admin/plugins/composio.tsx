@@ -155,6 +155,19 @@ export function matchingApps(apps: ComposioApp[]): ComposioApp[] {
  */
 function RouteComponent() {
   const plugins = useQuery(pluginsPageQueryOptions());
+  /*
+   * `data` stays undefined PERMANENTLY on a failed read, not only while loading, so the gate below
+   * would answer "pending" forever and draw a blank page. A failure is said, and the directory is
+   * not drawn: it would fire a request against a provider nobody has confirmed.
+   */
+  if (plugins.isError) {
+    return (
+      <p className="m-4 text-destructive text-sm" role="alert">
+        This deployment's plugin settings could not be read, so nothing was
+        shown.
+      </p>
+    );
+  }
   const decision = directoryRouteDecision("composio", plugins.data);
   if (decision === "redirect") return <Navigate replace to="/admin/plugins" />;
   if (decision === "pending") return null;
