@@ -1,6 +1,7 @@
+import { toolkitOf as arcadeToolkitOf } from "./arcade";
 import { schemeKind } from "./broker";
 import type { CatalogueEntry } from "./catalogue";
-import { toolkitOf } from "./composio";
+import { toolkitOf as composioToolkitOf } from "./composio";
 import type { TransportKind } from "./transport";
 
 /**
@@ -23,6 +24,14 @@ import type { TransportKind } from "./transport";
  * without filling in this function, and the test beside it enumerates every row shape that exists —
  * which is the exhaustiveness the previous arrangement could not offer, since nothing connects three
  * independent string comparisons.
+ *
+ * AND THIS IS THE ONE MODULE ALLOWED TO SPELL A BROKER'S NAME, which `brokered-provenance.test.ts`
+ * enforces by exempting this file and no other. A second broker turned `row.provenance === "composio"`
+ * from a reading of one column into a claim that there is only one broker — a claim each copy of the
+ * comparison made separately, in a module that had no reason to be edited when the second one
+ * arrived. So the name stops being a comparison anybody can write and becomes {@link BrokerProvider}
+ * and {@link brokeredProvenance}, asked here; everywhere else reads the resolved fields below. The
+ * exemption is not a privilege, it is the cost of having somewhere for the vocabulary to live.
  */
 
 /** Whose credential a call goes out on. */
@@ -195,7 +204,83 @@ export class CatalogueTransportUnroutableError extends ServerUnresolvableError {
  * compile-time door and the runtime one shut, rather than trading the second for the first.
  */
 function isBrokerTransport(kind: TransportKind): boolean {
-  return kind === "composio";
+  return brokeredProvenance(kind);
+}
+
+/**
+ * Which broker a row is reached through, for a row that is reached through one at all.
+ *
+ * A NAMED UNION RATHER THAN THE STRING THE COLUMN HOLDS, because the column holds every provenance
+ * there is — `first-party`, `custom`, a broker's name — and only these two mean "an app somebody
+ * enabled at a broker, reached with the deployment's key and kept apart by an id we send". Code that
+ * compared the column to a literal could not say which of those it meant, so the comparison had to be
+ * re-derived wherever it was needed, and re-derived wrongly once a second broker existed.
+ *
+ * THE VALUES ARE THE COLUMN'S OWN SPELLINGS, not a mapping away from them. `brokered_connections.provider`
+ * is constrained to exactly `composio` and `arcade`, and `mcp_servers.provenance` writes the same two
+ * words, so a translation table here would be a second vocabulary to keep in step with the database's
+ * for no gain. What this type adds is that the compiler now knows the set is closed: a third broker is
+ * a change to this line, and every `Record<BrokerProvider, …>` below stops compiling until it is
+ * answered for.
+ */
+export type BrokerProvider = "composio" | "arcade";
+
+/**
+ * Whether a provenance names a broker — the one place that question is asked.
+ *
+ * CRITERION. No module outside this one compares a provenance or a provider column to a vendor's
+ * name. `brokered-provenance.test.ts` is what says so, and this predicate is what that test leaves
+ * callers with instead.
+ *
+ * REASON. The comparison it replaces was correct and complete for as long as there was one broker,
+ * and every copy of it became a silent `false` for Arcade rows on the day there were two — not a
+ * failure, a row quietly resolving as somebody's MCP endpoint and being dialled as one. A function
+ * cannot do that: adding a broker to the union above changes every caller's answer at once, and the
+ * ones that must NOT change are then the ones that have to say so explicitly.
+ *
+ * TAKES A `string`, NOT A `BrokerProvider`, because every caller is holding a database column. A
+ * parameter narrowed to the union would push the unsafe cast back out to each call site, which is
+ * precisely the thing being collected here. The type predicate is the point: `row.provenance` goes
+ * in as a string and comes out narrowed, so the tables keyed on the union below are reachable
+ * without an assertion.
+ */
+export function brokeredProvenance(p: string): p is BrokerProvider {
+  return p === "composio" || p === "arcade";
+}
+
+/**
+ * Which app at which broker, read from the url by the parser belonging to that broker.
+ *
+ * ONE PARSER PER PROVIDER, AND THEY ARE NOT INTERCHANGEABLE. `composio://gmail` and `arcade://Gmail`
+ * are different schemes naming apps under different rules: Composio's slugs are lower case by
+ * convention and Arcade's toolkit names are case-sensitive and dotted, so each module's `toolkitOf`
+ * answers null for the other's url by design. Dispatching on the provider rather than trying both
+ * parsers is what keeps that null meaning "this row's url does not name an app at its own broker" —
+ * the thing the brokered gate needs — instead of "no broker recognised it", which would let a row
+ * provenanced at one broker resolve against the other's parse of the same string.
+ *
+ * A `Record` keyed on {@link BrokerProvider} rather than a branch, so a broker added to the union
+ * cannot be resolved until the url it is dialled at can be read.
+ */
+const TOOLKIT_OF: Record<BrokerProvider, (url: string) => string | null> = {
+  composio: composioToolkitOf,
+  arcade: arcadeToolkitOf,
+};
+
+/**
+ * The transport kind a broker is dialled over, which is the provider's own name.
+ *
+ * It is a function rather than the bare value only because {@link TransportKind} does not list
+ * `arcade` yet — the registry in `./transport` is wired by micro-task 5.1, and until it is, the
+ * assertion here is what stands in for the union having caught up. Nothing else about the mapping is
+ * in question: a brokered row is dialled over the transport named after its broker, by construction.
+ *
+ * TODO(micro-task 5.1): once `TransportKind` includes `arcade`, delete this and declare
+ * `BrokerProvider` as `Extract<TransportKind, "composio" | "arcade">`, which makes the identity the
+ * compiler's claim rather than this comment's.
+ */
+function brokerTransport(provider: BrokerProvider): TransportKind {
+  return provider as TransportKind;
 }
 
 /**
@@ -207,7 +292,7 @@ function isBrokerTransport(kind: TransportKind): boolean {
  * from an old backup, written by a bug — cannot turn a reviewed vendor into a brokered one and start
  * sending its calls somewhere else. The row only ever answers where the catalogue is silent.
  *
- * IT CUTS BOTH WAYS, WHICH IS WHY `composio` IS REFUSED RATHER THAN OVERRULED. Only one direction
+ * IT CUTS BOTH WAYS, WHICH IS WHY A BROKERED PROVENANCE IS REFUSED RATHER THAN OVERRULED. Only one direction
  * was considered when that order was written: a brokered row whose id collides with a curated slug
  * was quietly answered as the curated vendor. Nothing in these two arguments tells that row apart
  * from a tampered curated one, so the only answer that is not wrong in one of the two worlds is no
@@ -234,16 +319,16 @@ export function accessFor(
   },
   entry: CatalogueEntry | null,
 ): ServerAccess {
-  if (entry && row.provenance === "composio") {
+  if (entry && brokeredProvenance(row.provenance)) {
     throw new ServerRowAmbiguousError(
-      `${entry.key} is a server this deployment ships an entry for, and a row with that id says its provenance is composio. Nothing can tell an edited column from a brokered app that took the name, so this row is not resolved at all: rename it, or correct its provenance.`,
+      `${entry.key} is a server this deployment ships an entry for, and a row with that id says its provenance is ${row.provenance}. Nothing can tell an edited column from a brokered app that took the name, so this row is not resolved at all: rename it, or correct its provenance.`,
     );
   }
 
   if (entry) {
     if (isBrokerTransport(entry.transport ?? "mcp")) {
       throw new CatalogueTransportUnroutableError(
-        `${entry.key} is a catalogue entry declaring the composio transport, which is reached from a row's provenance and the app slug in its url — neither of which an entry has. There is no app to broker to and no connection to check, so this entry is not resolved at all: give it the transport it is actually reached over.`,
+        `${entry.key} is a catalogue entry declaring the ${entry.transport ?? "mcp"} transport, which is a broker's and is reached from a row's provenance and the app slug in its url — neither of which an entry has. There is no app to broker to and no connection to check, so this entry is not resolved at all: give it the transport it is actually reached over.`,
       );
     }
 
@@ -255,7 +340,7 @@ export function accessFor(
     };
   }
 
-  if (row.provenance === "composio") {
+  if (brokeredProvenance(row.provenance)) {
     /*
      * AND A BROKERED APP THAT NEEDS NO CREDENTIAL IS REACHED AS THE DEPLOYMENT, NOT AS THE ASKER.
      *
@@ -281,15 +366,22 @@ export function accessFor(
      * asked, the call lands in one account that is nobody's in particular, and naming the asker as
      * the account would assert an attribution that does not exist. The asker is still on the row as
      * `actor`.
+     *
+     * NEITHER OF THOSE TWO READINGS IS THE BROKER'S, which is why adding a second broker leaves this
+     * branch alone. `schemeKind` and `accountMode` are columns on OUR row describing what the app was
+     * created as and whether it was switched to Shared, and both answer the same question about an
+     * Arcade app that they answer about a Composio one. Only WHICH broker and WHICH app are the
+     * provider's business, and those are the two fields below.
      */
+    const provider = row.provenance;
     return {
-      transport: "composio",
+      transport: brokerTransport(provider),
       credential: "brokered",
       reachedAs:
         schemeKind(row.authScheme) === "none" || row.accountMode === "shared"
           ? "deployment"
           : "person",
-      toolkit: toolkitOf(row.url),
+      toolkit: TOOLKIT_OF[provider](row.url),
     };
   }
 
