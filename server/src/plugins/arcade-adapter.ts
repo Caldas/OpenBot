@@ -126,6 +126,44 @@ async function listApps(client: Arcade): Promise<BrokerApp[]> {
 const FIELDS_REFUSAL =
   "Arcade has no per-person field entry: what it asks for is a deployment-wide secret (admin.secrets, e.g. GITHUB_SERVER_URL) that an operator sets once for everybody, so a form asking a person to type one would collect a value that is not theirs and share it with everyone. Set it in the Arcade dashboard instead.";
 
+type ConnectionRow = Arcade.Admin.UserConnectionResponse;
+
+/**
+ * THE ONE PLACE the toolkit to `provider_id` mapping lives. It is read off each row's own
+ * `provider_id` in the `admin.userConnections` listing the adapter already performs (no extra
+ * vendor call), compared case-insensitively. A row for another app is never returned.
+ */
+async function connectionsFor(
+  client: Arcade,
+  vendorUserId: string,
+  toolkit: string,
+): Promise<ConnectionRow[]> {
+  const wanted = toolkit.toLowerCase();
+  const rows: ConnectionRow[] = [];
+  for await (const row of client.admin.userConnections.list({
+    user_id: vendorUserId,
+  })) {
+    if (textOf(row.provider_id)?.toLowerCase() === wanted) rows.push(row);
+  }
+  return rows;
+}
+
+/**
+ * DELETE TAKES `connection_id` (`ac_...`), NOT `id` (`at_...`). A user-connection row carries both
+ * and the listing prints `id` FIRST; the SDK declares `delete(id: string)` and does not say which.
+ * Measured against the live API: `at_...` answers 500, `ac_...` answers 204. Reading the obvious
+ * field fails only when somebody presses Disconnect, the worst time to find out.
+ */
+async function deleteConnection(
+  client: Arcade,
+  connectionId: string | undefined,
+): Promise<void> {
+  if (!connectionId) {
+    throw new Error("Arcade connection has no connection_id to delete.");
+  }
+  await client.admin.userConnections.delete(connectionId);
+}
+
 const notYet = (task: string, member: string) => () =>
   Promise.reject(new Error(`${member} is not implemented yet (${task}).`));
 
@@ -177,10 +215,14 @@ export function createArcadeClient(apiKey: string): {
       Promise.reject(new BrokerRefusalError(FIELDS_REFUSAL)),
     connectWithFields: () =>
       Promise.reject(new BrokerRefusalError(FIELDS_REFUSAL)),
-    accountName: async ({ account }) => {
-      for await (const row of client.admin.userConnections.list({
-        user_id: account.vendorUserId,
-      })) {
+    accountName: async ({ account, toolkit }) => {
+      // Filtered by the row's own provider, as Composio's `accountsFor(..., toolkit, ...)` is: a
+      // person connected to two apps must never be shown the OTHER app's name on this app's screen.
+      for (const row of await connectionsFor(
+        client,
+        account.vendorUserId,
+        toolkit,
+      )) {
         const info = row.provider_user_info as
           | { name?: unknown; login?: unknown }
           | null
@@ -219,12 +261,28 @@ export function createArcadeClient(apiKey: string): {
       }
       return { redirectUrl: url };
     },
-    // 6.2: isConnected, revoke, revokeAccount (the connection-lifecycle trio).
-    // `admin.userConnections.delete` takes `connection_id` (`ac_...`), NOT the `id` (`at_...`) the
-    // listing prints first: measured, `at_...` answers 500 and `ac_...` answers 204.
-    isConnected: notYet("micro-task 6.2", "isConnected"),
-    revoke: notYet("micro-task 6.2", "revoke"),
-    revokeAccount: notYet("micro-task 6.2", "revokeAccount"),
+    // 6.2: the connection-lifecycle trio.
+    isConnected: async ({ account, toolkit }) =>
+      (await connectionsFor(client, account.vendorUserId, toolkit)).length > 0,
+    // Answers what was REQUESTED: true when something was found and every delete was accepted,
+    // false when there was nothing. Every delete is attempted, then ANY failure throws: a partial
+    // ask must not read as `false` ("nothing there") nor as a clean `true`.
+    revoke: async ({ account, toolkit }) => {
+      const rows = await connectionsFor(client, account.vendorUserId, toolkit);
+      if (rows.length === 0) return false;
+      const outcomes = await Promise.allSettled(
+        rows.map((row) => deleteConnection(client, row.connection_id)),
+      );
+      const failed = outcomes.filter((o) => o.status === "rejected");
+      if (failed.length > 0) {
+        throw new Error(
+          `Arcade revoke failed for ${failed.length} of ${rows.length} connections.`,
+          { cause: (failed[0] as PromiseRejectedResult).reason },
+        );
+      }
+      return true;
+    },
+    revokeAccount: (accountId) => deleteConnection(client, accountId),
     // 6.3: the read-only status pair. Both are DECLARED here because the seam requires them —
     // `grantsFor` is a member every broker answers, and `authorizations` is the sub-surface Arcade
     // alone runs, so a null here would say Arcade mints nothing to poll, which is false. The

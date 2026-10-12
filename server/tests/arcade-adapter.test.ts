@@ -176,13 +176,16 @@ describe("createArcadeClient", () => {
     );
     const { broker } = createArcadeClient("never-dialled");
     const ask = () => broker.accountName({ account, toolkit: "Github" });
-    rows.push({ provider_user_info: { name: "Ada", login: "ada1" } });
+    rows.push({
+      provider_id: "github",
+      provider_user_info: { name: "Ada", login: "ada1" },
+    });
     expect(await ask()).toBe("Ada");
     rows.length = 0;
-    rows.push({ provider_user_info: { login: "ada1" } });
+    rows.push({ provider_id: "github", provider_user_info: { login: "ada1" } });
     expect(await ask()).toBe("ada1");
     rows.length = 0;
-    rows.push({ provider_user_info: {} });
+    rows.push({ provider_id: "github", provider_user_info: {} });
     expect(await ask()).toBeNull();
   });
 
