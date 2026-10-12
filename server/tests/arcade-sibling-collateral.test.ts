@@ -193,14 +193,7 @@ describe("the Personal to Shared switch", () => {
 });
 
 describe("removing an app", () => {
-  /*
-   * KNOWN GAP, NOT A PASSING PIN. `removeServer` (store.ts) revokes each connected account with a
-   * direct `broker.revoke` and deletes only `app = toolkit`, so a sibling the vendor just ended keeps
-   * its local row and gets no audit row. It does not go through `disconnectBrokered`'s cascade, and
-   * store.ts is outside this micro-task's fence. `test.failing` makes this flip to a failure the
-   * moment the gap is closed, at which point it must become a plain `test`.
-   */
-  test.failing("ends a sibling app's connection too, and removes and audits its row", async () => {
+  test("ends a sibling app's connection too, and removes and audits its row", async () => {
     const t = run();
     await server(t.gmail, "personal");
     await hold(t.gmail, t.person);
@@ -214,5 +207,76 @@ describe("removing an app", () => {
     expect(trail.map((event) => event.app)).toEqual(
       [t.calendar, t.gmail].sort(),
     );
+    const sibling = trail.find((event) => event.app === t.calendar);
+    expect(sibling?.payload).toMatchObject({
+      reason: "mcp_server_removed",
+      endedWith: t.gmail,
+      owner: t.person,
+      unansweredSiblings: 0,
+    });
+  });
+
+  test("a revoke that answers false does not delete or audit a sibling as ended", async () => {
+    const t = run();
+    await server(t.gmail, "personal");
+    await hold(t.gmail, t.person);
+    await hold(t.calendar, t.person);
+    const unresolved: ConnectedAppBroker = {
+      ...broker,
+      revoke: async () => false,
+    };
+    const falseStore = createPluginStore({
+      brokerProvider: "arcade",
+      database,
+      auditStore: createAuditStore(database),
+      credentials: {} as never,
+      encryptionKey: "x".repeat(44),
+      policy: () => ({ mode: "enforce" as const, deny: [], allow: ["true"] }),
+      broker: unresolved,
+      deploymentId: "acme",
+      sharedUse: async () => ({ allowed: true }),
+    });
+
+    await falseStore.removeServer(t.gmail, "admin");
+
+    // The vendor was not shown to have ended Calendar: its row stands and nothing claims it ended.
+    expect(await rowsFor([t.gmail, t.calendar])).toEqual([t.calendar]);
+    const trail = await trailFor([t.gmail, t.calendar]);
+    expect(trail.map((event) => event.app)).toEqual([t.gmail]);
+    expect(trail[0]?.payload).toMatchObject({
+      vendorRevocationRequested: false,
+    });
+  });
+
+  test("a partial vendor failure throws and leaves every row standing", async () => {
+    const t = run();
+    await server(t.gmail, "personal");
+    await hold(t.gmail, t.person);
+    await hold(t.calendar, t.person);
+    const failing = createPluginStore({
+      brokerProvider: "arcade",
+      database,
+      auditStore: createAuditStore(database),
+      credentials: {} as never,
+      encryptionKey: "x".repeat(44),
+      policy: () => ({ mode: "enforce" as const, deny: [], allow: ["true"] }),
+      broker: {
+        ...broker,
+        revoke: async () => {
+          throw new Error("vendor down");
+        },
+      },
+      deploymentId: "acme",
+      sharedUse: async () => ({ allowed: true }),
+    });
+
+    await expect(failing.removeServer(t.gmail, "admin")).rejects.toThrow(
+      "vendor down",
+    );
+
+    expect(await rowsFor([t.gmail, t.calendar])).toEqual(
+      [t.calendar, t.gmail].sort(),
+    );
+    expect(await trailFor([t.gmail, t.calendar])).toEqual([]);
   });
 });

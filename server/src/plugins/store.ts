@@ -4010,7 +4010,18 @@ export function createPluginStore(options: PluginStoreOptions) {
          * either way — but nothing was asked of Composio and the row must not claim otherwise.
          */
         const vendorRevocationRequested: boolean[] = [];
+        /*
+         * THE APPS EACH ACCOUNT'S REVOCATION ENDS BESIDES THIS ONE, read BEFORE anything is revoked
+         * and through {@link resolveSiblings}, the one place that answers it. Where a connection is
+         * keyed `(identity, auth provider)` — Arcade — withdrawing it ends every app sharing it, so a
+         * local row left for one of them claims an account the vendor no longer holds. On Composio the
+         * set is empty by construction and nothing below differs from what this method always did.
+         */
+        const endedBesides: { siblings: string[]; unanswered: number }[] = [];
         for (const connection of connected) {
+          endedBesides.push(
+            await resolveSiblings({ toolkit, account: accountOf(connection) }),
+          );
           vendorRevocationRequested.push(
             broker
               ? await broker.revoke({ account: accountOf(connection), toolkit })
@@ -4078,6 +4089,46 @@ export function createPluginStore(options: PluginStoreOptions) {
                 vendorRevocationRequested[index] ?? false,
             },
           });
+        }
+
+        /*
+         * THE SIBLINGS THE VENDOR ENDED WITH THIS APP, each filed as `disconnectBrokered` files one:
+         * under its own app, naming the app whose removal ended it, with the count of apps that could
+         * not be asked about. Only for an account whose revoke ANSWERED TRUE. `false` means nothing
+         * was found to withdraw or the auth provider could not be resolved, and the vendor was not
+         * shown to have ended anything, so a sibling's row is left standing rather than claimed
+         * gone. It sits after the revokes above for the same reason the asked app's rows do: an
+         * exception from any of them left every row standing.
+         */
+        for (const [index, connection] of connected.entries()) {
+          const { siblings, unanswered } = endedBesides[index] ?? {
+            siblings: [],
+            unanswered: 0,
+          };
+          if (!vendorRevocationRequested[index]) continue;
+          const account = accountOf(connection);
+          for (const app of siblings) {
+            const [deleted] = await database
+              .delete(brokeredConnections)
+              .where(accountRow(app, account))
+              .returning({ app: brokeredConnections.app });
+            if (!deleted) continue;
+            await recordAuditEvent(auditStore, {
+              eventType: "mcp.account_disconnected",
+              targetType: "mcp_server",
+              targetId: app,
+              payload: {
+                actor: by,
+                server: app,
+                owner:
+                  account.holder === "person" ? account.userId : "deployment",
+                reason: "mcp_server_removed",
+                vendorRevocationRequested: true,
+                unansweredSiblings: unanswered,
+                endedWith: toolkit,
+              },
+            });
+          }
         }
 
         // Last of all, for the reason above, and skipped entirely on a deployment with no
