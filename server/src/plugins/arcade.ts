@@ -4,6 +4,8 @@
  * records that the other direction is a cycle).
  */
 
+import { flagOf } from "./broker";
+
 /**
  * Whether listing tools needs somebody's credential. It does not: the listing uses the deployment's
  * own Arcade key, and a listing is not a person's.
@@ -33,4 +35,31 @@ export function toolkitOf(url: string): string | null {
   if (!url.startsWith(prefix)) return null;
   const name = url.slice(prefix.length).trim().replace(/\/+$/, "");
   return TOOLKIT_NAME.test(name) ? name : null;
+}
+
+/**
+ * What a tool does, from `metadata.behavior`. DESTRUCTIVE IS READ FIRST, and the order is the
+ * decision: a reading that checked `read_only` first would record a both-flagged tool as a READ,
+ * the one direction nothing downstream recovers from, since nothing ever asks again.
+ *
+ * ABSENT METADATA, OR A FLAG THAT `flagOf` ANSWERS NULL (a vendor publishing a string where it
+ * documents a boolean), IS A DESTRUCTIVE WRITE, which is also what a listing that would not say
+ * already records in `./mcp`. It fails safe by putting an approval in front of a read, which is
+ * annoying and correct; the alternative lets a deletion through unannounced.
+ */
+export function classify(metadata: unknown): {
+  effect: "read" | "write";
+  destructive: boolean;
+} {
+  const closed = { effect: "write", destructive: true } as const;
+  if (typeof metadata !== "object" || metadata === null) return closed;
+  const behavior = (metadata as { behavior?: unknown }).behavior;
+  if (typeof behavior !== "object" || behavior === null) return closed;
+  const flags = behavior as { destructive?: unknown; read_only?: unknown };
+  const destructive = flagOf(flags.destructive, false);
+  const readOnly = flagOf(flags.read_only, false);
+  if (destructive === null || readOnly === null) return closed;
+  if (destructive) return { effect: "write", destructive: true };
+  if (readOnly) return { effect: "read", destructive: false };
+  return { effect: "write", destructive: false };
 }
