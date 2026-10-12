@@ -120,6 +120,26 @@ const DIRECTORY_UNAVAILABLE =
   "Composio would not answer with its app directory, and said nothing about why. Check that COMPOSIO_API_KEY is this project's key, and check Composio's status if it persists.";
 
 /**
+ * Where a browser with no session is sent when it lands on the verifier, carrying what it arrived
+ * with.
+ *
+ * ABSOLUTE ON THE APP'S ORIGIN, for the reason {@link connectedAccountsUrlFor} is: the verifier
+ * lands on the API and the sign-in screen is a page, and locally those are two different ports — a
+ * relative `Location` would resolve against this server, which serves no pages at all. A deployment
+ * that serves both from one origin has no `appUrl`, and relative is correct there.
+ *
+ * THE HANDLE TRAVELS AS ITSELF AND NOT AS A RETURN ADDRESS. A `next=` parameter holding a URL is a
+ * redirect target somebody else gets a say in; this carries the one opaque value the return leg
+ * arrived with, so signing back in as the same person has everything it needs to resume and nothing
+ * it could be pointed elsewhere with. Encoded, because it is somebody else's id and this deployment
+ * does not know what is in it.
+ */
+function signInUrlFor(appUrl: string | undefined, flowId: string): string {
+  const base = `${appUrl?.replace(/\/+$/, "") ?? ""}/sign`;
+  return flowId ? `${base}?flow_id=${encodeURIComponent(flowId)}` : base;
+}
+
+/**
  * The Plugins surface: what this deployment has added, and which Bots may use it.
  *
  * What a Bot can reach is an administrator's; what it is told is not. Adding an MCP server stores a
@@ -2428,6 +2448,193 @@ export function createPluginRoutes(
       createdAt: attempt.createdAt,
     });
     return context.json({ cancelled });
+  });
+
+  /**
+   * Where a person's BROWSER lands after a brokered per-action consent: the verifier.
+   *
+   * THIS ROUTE BREAKS THIS FILE'S JSON/401 CONVENTION DELIBERATELY, AND THE REASON IS WRITTEN HERE
+   * SO NOBODY "FIXES" IT TO MATCH ITS NEIGHBOURS. Every other route in this file answers `fetch`
+   * from OpenBot's own pages, so JSON is what the caller can read and 401 is what an unauthenticated
+   * one deserves. Here the caller is a PERSON'S BROWSER, arriving on a top-level navigation from the
+   * broker's own screen with a just-completed consent behind it — so an unauthenticated arrival is
+   * sent to sign-in with a 303 and a `Location` CARRYING ITS `flow_id`, never answered 401. A 401
+   * here is somebody who has just granted a third party access to their mailbox being shown a raw
+   * error object on an API origin that serves no pages.
+   *
+   * WHICH IS WHY `requireUser` IS RUN BY HAND RATHER THAN MOUNTED IN FRONT OF THE HANDLER. The guard
+   * answers 401 JSON, and the whole point of this route is that it must not. It is still the same
+   * guard — the session is read, the role is resolved and `actor` is set by it, so nothing here
+   * re-implements authentication — and only its REFUSAL is translated into the redirect. The
+   * composition is the one `admin/gate.ts` already uses: call it with a `next` that records that it
+   * ran.
+   *
+   * SIGNING BACK IN AS THE SAME PERSON THEN COMPLETES NORMALLY, because the attempt is keyed on the
+   * signed-in person. Signing in as somebody else finds no attempt and refuses, which is correct and
+   * occasionally annoying.
+   *
+   * THIS HALF REFUSES AND NOTHING MORE. The bounded `auth.status` wait, the identity check, the
+   * freshness re-resolution, the completion transaction and the 303 landing are a separate step and
+   * are deliberately absent: nothing below polls an authorization, completes an attempt or writes a
+   * connection row. Every exit from this handler leaves the database exactly as it found it.
+   */
+  routes.get("/arcade/verify", async (context) => {
+    /*
+     * Read, not yet judged. The redirect below has to carry it, and that redirect happens before
+     * the value is validated — reading a query string calls nobody and writes nothing.
+     */
+    const flowId = (context.req.query("flow_id") ?? "").trim();
+
+    /*
+     * THE CAPABILITY GATE, AND IT IS A PRESENCE TEST ON A VALUE THE BROKER DECLARED. Never a
+     * `provider === "arcade"` comparison: see {@link ConnectedAppBroker.authorizations}, and
+     * `store.ts`'s gate comment, which records a defect where a gate and its exemption keyed on
+     * different things and the exemption failed OPEN. A deployment whose broker runs no correlated
+     * authorization flow has no return leg for this route to verify.
+     */
+    if (!composio) {
+      return context.json(
+        { error: new BrokerUnconfiguredError().message },
+        503,
+      );
+    }
+    const flow = composio.broker.authorizations;
+    if (!flow) {
+      return context.json(
+        {
+          error:
+            "This deployment's apps are connected once for the whole app, with the Connect button on the app's page; they are not authorized one action at a time.",
+        },
+        503,
+      );
+    }
+
+    let signedIn = false;
+    await requireUser(context, async () => {
+      signedIn = true;
+    });
+    if (!signedIn) {
+      return context.redirect(signInUrlFor(connect?.appUrl, flowId), 303);
+    }
+
+    /*
+     * A HANDLE THIS DEPLOYMENT CANNOT USE IS REFUSED WITHOUT ASKING THE VENDOR ANYTHING. Empty,
+     * missing or whitespace-only are one fact — the browser arrived without the one thing the
+     * return leg carries — and spending a vendor call on it would be an unauthenticated-shaped
+     * request reaching another company's API.
+     */
+    if (!flowId) {
+      return context.json(
+        {
+          error:
+            "That link is missing the part that says which authorization it finishes, so nothing was done. Start the authorization again from the app's page.",
+        },
+        400,
+      );
+    }
+
+    /*
+     * THE ATTEMPT COMES FROM THE SIGNED-IN ACTOR AND NEVER FROM THE HANDLE. The vendor's return-leg
+     * id and the id its mint answered with are different id spaces with no endpoint between them,
+     * and nothing here may try to bridge them; trying identities until one is accepted would be an
+     * oracle reporting which of this deployment's identities have flows outstanding. The session
+     * names exactly one candidate, which is what makes the correlation exact rather than probable.
+     *
+     * {@link PluginStore.authorizationAttemptFor} already excludes a completed attempt and one past
+     * the fifteen-minute TTL, so all three absences arrive here as `null` and are refused in one
+     * sentence. A NULL `auth_id` is the fourth: its mint never completed, so there is nothing for
+     * the binding below to be checked against and the attempt can only ever expire.
+     */
+    const actorId = context.var.actor.id;
+    const attempt = await store.authorizationAttemptFor(actorId);
+    if (!attempt || attempt.authId === null) {
+      return context.json(
+        {
+          error:
+            "There is no authorization in progress for you to finish — it may have expired, or it may have been started by somebody else or in another session. Start it again from the app's page.",
+        },
+        400,
+      );
+    }
+
+    /*
+     * THE BINDING. `handle` IS AN OPAQUE STRING THE SEAM DOES NOT INTERPRET — the vendor's word for
+     * it stops at the adapter, and nothing here parses it, compares it to a scheme or reads a
+     * provider out of it.
+     *
+     * THE MISMATCH BRANCH IS ASSUMPTION-BACKED AND IS MOCKED-ONLY UNTIL A LIVE PROBE RUNS. The SDK
+     * declares no error shape for a handle belonging to somebody else; the adapter detects one by
+     * normalizing the thrown error and reading `user_mismatch`, and RETHROWS anything else. If the
+     * vendor's real shape differs, `confirmReturn` does not quietly answer `{ mismatch: true }` —
+     * it throws, and the branch below surfaces an outage instead of a clean refusal. That is UX
+     * degradation and not a hole: nothing is written and the attempt row is left alone either way,
+     * and the `auth_id` comparison underneath independently covers a `confirm` that SUCCEEDS
+     * against the wrong identity. Do not read a passing mocked test as proof this path works.
+     */
+    let confirmed: Awaited<ReturnType<typeof flow.confirmReturn>>;
+    try {
+      confirmed = await flow.confirmReturn({
+        handle: flowId,
+        vendorUserId: attempt.vendorUserId,
+      });
+    } catch {
+      /*
+       * NOTHING FROM THE VENDOR'S ANSWER TRAVELS WITH THIS — not its sentence, not its body, not
+       * the error. A reply on this leg can carry an authorization url, which is a bearer capability,
+       * and an outage is not worth a person's consent being quotable out of an error body.
+       */
+      return context.json(
+        {
+          error:
+            "The app's vendor did not answer when this deployment tried to finish that authorization, so nothing was recorded. Try the link again in a moment.",
+        },
+        502,
+      );
+    }
+
+    /*
+     * TWO REFUSALS, ONE SENTENCE, AND THE ATTEMPT ROW IS LEFT UNTOUCHED BY BOTH. A handle the vendor
+     * says belongs to somebody else, and a confirmation naming a DIFFERENT authorization than the
+     * one this deployment minted, are both "this return leg is not for the attempt you are holding".
+     *
+     * THE `auth_id` COMPARISON IS NOT OPTIONAL AND IT IS NOT HOPEFUL: the confirmation's id was
+     * measured IDENTICAL to the mint's through a completed consent, so this is an exact equality
+     * over one id space. Identity alone is not correlation — an expired read attempt, a fresh send
+     * attempt under the same identity, and then the read's callback arriving late matches on
+     * identity at every step, and a check stopping there would attribute a read consent to a send
+     * request. Local expiry does not cancel a vendor flow, so late callbacks are ordinary.
+     *
+     * NOTHING IS WRITTEN AND NOTHING IS CLOSED. A late callback must never consume or ALTER the
+     * replacement it arrived behind, so the row is not deleted, not completed and not marked.
+     */
+    if (
+      "mismatch" in confirmed ||
+      confirmed.authorizationId !== attempt.authId
+    ) {
+      return context.json(
+        {
+          error:
+            "That link does not finish the authorization you have in progress, so nothing was recorded and it is still waiting. Finish it from the tab it was started in, or start it again from the app's page.",
+        },
+        400,
+      );
+    }
+
+    /*
+     * EVERYTHING PAST THE BINDING BELONGS TO THE OTHER HALF OF THIS VERIFIER: the bounded wait on
+     * the authorization's status, the identity check against it, the freshness re-resolution, the
+     * one transaction that writes the connection row and its audit entry, and the 303 that lands the
+     * person back on the page they left from. Until that half lands, a return leg that binds
+     * correctly is answered as a capability this deployment does not yet have — which keeps the
+     * promise this half makes: NOTHING IS WRITTEN HERE, on any path.
+     */
+    return context.json(
+      {
+        error:
+          "This deployment cannot finish that authorization yet, so nothing was recorded. The authorization is still waiting, and nothing at the app's vendor was changed.",
+      },
+      503,
+    );
   });
 
   /**
