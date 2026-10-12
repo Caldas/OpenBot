@@ -88,7 +88,13 @@ const broker: ConnectedAppBroker = {
  * `shared-wiring.integration.test.ts` gives: a parameter added in the middle then moves a type error
  * onto the wrong index here rather than shifting an argument silently.
  */
-function build(who: string | null) {
+function build(
+  who: string | null,
+  options: {
+    roles?: string[];
+    brokerBag?: { broker: ConnectedAppBroker; provider: string } | undefined;
+  } = {},
+) {
   const auditStore = createAuditStore(database);
   const pluginStore = createPluginStore({
     brokerProvider: "arcade",
@@ -113,15 +119,20 @@ function build(who: string | null) {
           : { user: { id: who, email: `${who}@example.test`, name: "Person" } },
     },
   } as never;
-  args[2] = { rolesForUser: async () => ["user"] } as never;
+  args[2] = { rolesForUser: async () => options.roles ?? ["user"] } as never;
   args[12] = auditStore;
   args[14] = pluginStore;
-  args[29] = { broker, provider: "arcade" };
+  args[29] =
+    "brokerBag" in options ? options.brokerBag : { broker, provider: "arcade" };
   return createApp(...args);
 }
 
-function verify(who: string | null, query: string) {
-  return build(who).request(
+function verify(
+  who: string | null,
+  query: string,
+  options?: Parameters<typeof build>[1],
+) {
+  return build(who, options).request(
     `http://openbot.test/api/plugins/arcade/verify${query}`,
   );
 }
@@ -336,6 +347,50 @@ describe("a return leg with no session", () => {
     );
     expect(confirmCalls).toEqual([]);
     await expectNothingWritten();
+  });
+});
+
+describe("a return leg with a session whose role was removed", () => {
+  test("is told so with a 403, not sent to a sign-in that cannot help", async () => {
+    await giveAttempt({ authId: MINTED, ageMinutes: 1 });
+    const response = await verify(ACTOR, "?flow_id=flow-abc", { roles: [] });
+    expect(response.status).not.toBe(303);
+    expect(response.status).toBe(403);
+    expect(response.headers.get("location")).toBeNull();
+    expect(confirmCalls).toEqual([]);
+    await expectNothingWritten();
+  });
+});
+
+describe("a deployment whose broker runs no correlated authorization flow", () => {
+  test("a broker declaring authorizations: null answers 503", async () => {
+    await giveAttempt({ authId: MINTED, ageMinutes: 1 });
+    const response = await verify(ACTOR, "?flow_id=flow-abc", {
+      brokerBag: {
+        broker: { ...broker, authorizations: null },
+        provider: "composio",
+      },
+    });
+    expect(response.status).toBe(503);
+    expect(confirmCalls).toEqual([]);
+    await expectNothingWritten();
+  });
+
+  test("no broker bag at all answers 503", async () => {
+    await giveAttempt({ authId: MINTED, ageMinutes: 1 });
+    const response = await verify(ACTOR, "?flow_id=flow-abc", {
+      brokerBag: undefined,
+    });
+    expect(response.status).toBe(503);
+    expect(confirmCalls).toEqual([]);
+    await expectNothingWritten();
+  });
+
+  test("the gate does not answer before the session is checked", async () => {
+    const response = await verify(null, "?flow_id=flow-abc", {
+      brokerBag: undefined,
+    });
+    expect(response.status).toBe(303);
   });
 });
 

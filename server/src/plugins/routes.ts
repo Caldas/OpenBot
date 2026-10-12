@@ -2485,6 +2485,29 @@ export function createPluginRoutes(
      */
     const flowId = (context.req.query("flow_id") ?? "").trim();
 
+    let signedIn = false;
+    const refusal = await requireUser(context, async () => {
+      signedIn = true;
+    });
+    if (!signedIn) {
+      /*
+       * ONLY A MISSING SESSION GOES TO SIGN-IN. The guard also refuses 403 for a session with no
+       * role, and sending that person to sign-in is a dead end: the sign-in screen's own load hits
+       * the same guard, gets the same 403, and they sign in as themselves again with nothing
+       * changed and never told their access was removed.
+       */
+      if (refusal instanceof Response && refusal.status === 401) {
+        return context.redirect(signInUrlFor(connect?.appUrl, flowId), 303);
+      }
+      return context.json(
+        {
+          error:
+            "This deployment no longer recognises you, so nothing was recorded. Ask an administrator to restore your access, then start the authorization again from the app's page.",
+        },
+        403,
+      );
+    }
+
     /*
      * THE CAPABILITY GATE, AND IT IS A PRESENCE TEST ON A VALUE THE BROKER DECLARED. Never a
      * `provider === "arcade"` comparison: see {@link ConnectedAppBroker.authorizations}, and
@@ -2507,14 +2530,6 @@ export function createPluginRoutes(
         },
         503,
       );
-    }
-
-    let signedIn = false;
-    await requireUser(context, async () => {
-      signedIn = true;
-    });
-    if (!signedIn) {
-      return context.redirect(signInUrlFor(connect?.appUrl, flowId), 303);
     }
 
     /*
