@@ -410,7 +410,7 @@ export const composioConnections = pgTable(
 export const brokeredConnections = pgTable(
   "brokered_connections",
   {
-    provider: text("provider").$type<"composio">().notNull(),
+    provider: text("provider").$type<"composio" | "arcade">().notNull(),
     app: text("app").notNull(),
     holder: text("holder").$type<"person" | "deployment">().notNull(),
     userId: text("user_id"),
@@ -431,7 +431,7 @@ export const brokeredConnections = pgTable(
     ),
     check(
       "brokered_connections_provider_check",
-      sql`${table.provider} IN ('composio')`,
+      sql`${table.provider} IN ('composio', 'arcade')`,
     ),
     uniqueIndex("brokered_connections_person_idx")
       .on(table.provider, table.app, table.userId)

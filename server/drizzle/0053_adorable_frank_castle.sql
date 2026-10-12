@@ -1,0 +1,2 @@
+ALTER TABLE "brokered_connections" DROP CONSTRAINT "brokered_connections_provider_check";--> statement-breakpoint
+ALTER TABLE "brokered_connections" ADD CONSTRAINT "brokered_connections_provider_check" CHECK ("brokered_connections"."provider" IN ('composio', 'arcade'));
