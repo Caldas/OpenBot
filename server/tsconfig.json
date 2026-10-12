@@ -41,6 +41,7 @@
     "scripts",
     "../scripts/composio-smoke.ts",
     "tests/store-provider-required.test.ts",
-    "tests/arcade-transport-registry.test.ts"
+    "tests/arcade-transport-registry.test.ts",
+    "tests/db-client-address.test.ts"
   ]
 }
