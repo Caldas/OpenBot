@@ -92,3 +92,75 @@ export function consentBreadth(
 export function matchingApps(apps: ComposioApp[]): ComposioApp[] {
   return [...apps].sort((left, right) => left.name.localeCompare(right.name));
 }
+
+/** One action of a provider's app, as far as consent is concerned: its name and the scopes it requests. */
+export type ConsentAction = { name: string; scopes: readonly string[] };
+
+export type ConsentCopy = {
+  /** The permissions the requested action asks the provider for. Empty when it asks for none. */
+  scopes: string[];
+  /** The OTHER actions whose scopes overlap those, computed by grouping on `scopes`. */
+  alsoEnables: string[];
+  /** What to say before redirecting somebody to the consent screen. */
+  sentence: string;
+};
+
+/**
+ * What to say before sending somebody to a consent screen for `requested`.
+ *
+ * THE LIST IS GROUPED ON `scopes` AND NEVER WORDED BY HAND. What a person grants is an OAuth scope;
+ * the action is only how they chose which scope to be asked for. Two actions that request an
+ * identical scope set (`Gmail.ListEmails` and `Gmail.ListThreads`) are authorized together, so the
+ * copy names the permission and lists every other action requiring any of it.
+ *
+ * IT NEVER PROMISES THAT ONLY THE NAMED ACTION BECOMES USABLE. Whether a consent isolates is the
+ * provider's property, measured per app (Google isolated 11 of 30; GitHub 43 of 43), so an app with
+ * no scopes says it cannot separate permissions at all. Scope answers "may this deployment ever read
+ * your mail"; the tool grant answers "may this Bot call it", and no consent widens that. The last
+ * clause keeps the two apart.
+ */
+export function consentCopy(
+  requested: string,
+  actions: readonly ConsentAction[],
+): ConsentCopy {
+  const asked = actions.find((action) => action.name === requested);
+  const scopes = asked ? [...new Set(asked.scopes)].sort() : [];
+  const grants =
+    "Which Bots may call an action is still set separately, and approving does not change it.";
+  if (!actions.some((action) => action.scopes.length > 0)) {
+    const all = actions.length;
+    return {
+      scopes,
+      alsoEnables: [],
+      sentence:
+        all === 1
+          ? `This app cannot separate permissions; approving this approves its single action. ${grants}`
+          : `This app cannot separate permissions; approving this approves all ${all}. ${grants}`,
+    };
+  }
+  if (scopes.length === 0) {
+    return {
+      scopes,
+      alsoEnables: [],
+      sentence: `${requested} requests no permission of its own; approving connects the account. ${grants}`,
+    };
+  }
+  const alsoEnables = actions
+    .filter(
+      (action) =>
+        action.name !== requested &&
+        action.scopes.some((scope) => scopes.includes(scope)),
+    )
+    .map((action) => action.name)
+    .sort();
+  const permission = `${scopes.length === 1 ? "the permission" : "the permissions"} ${scopes.join(", ")}`;
+  const tail =
+    alsoEnables.length === 0
+      ? "No other action requires it."
+      : `It also enables ${alsoEnables.length === 1 ? "this other action" : `these ${alsoEnables.length} other actions`} requiring it: ${alsoEnables.join(", ")}.`;
+  return {
+    scopes,
+    alsoEnables,
+    sentence: `Approving ${requested} asks the provider for ${permission}. ${tail} ${grants}`,
+  };
+}
