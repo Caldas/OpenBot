@@ -265,7 +265,7 @@ function RouteComponent() {
                */}
               {moreApps.linked ? (
                 <Item
-                  data-testid="plugin-composio"
+                  data-testid="plugin-directory"
                   render={<Link to="/admin/plugins/composio" />}
                   size="sm"
                 >
@@ -283,7 +283,7 @@ function RouteComponent() {
               ) : (
                 /* No chevron and no link: the row goes nowhere, because there is nowhere to go
                    until the key is set. */
-                <Item data-testid="plugin-composio" size="sm">
+                <Item data-testid="plugin-directory" size="sm">
                   <RowMark>
                     <IconPlug className="size-4" />
                   </RowMark>
