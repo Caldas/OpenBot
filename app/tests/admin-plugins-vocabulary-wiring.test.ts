@@ -16,7 +16,8 @@
  * Reads the route sources as TEXT (like arcade-no-browser-calls.test.ts) and
  * imports nothing from them. Comments are stripped first, so docblocks may
  * still explain the vendor. Then:
- *   1. `index.tsx` and `$key.tsx` contain no capitalised "Composio" (string
+ *   1. `index.tsx` and `$key.tsx` contain no capitalised "Composio" NOR the
+ *      all-caps "COMPOSIO" (string
  *      literal, JSX text or test id).
  *   2. each vocabulary function appears in the file that should call it.
  *
@@ -63,7 +64,13 @@ test("the provider-neutral plugins pages carry no Composio literal", () => {
     const text = load(name);
     expect(text.length).toBeGreaterThan(1000);
     text.split("\n").forEach((line, i) => {
-      if (/Composio/.test(line))
+      // Capitalised AND all-caps. `COMPOSIO_API_KEY` is a user-visible string 1.8 moved
+      // into the vocabulary (`envVar`), rendered as "Set COMPOSIO_API_KEY on this
+      // deployment." — it must read ARCADE_API_KEY on an Arcade deployment, and an
+      // env-var name is exactly the string an editor inlines as a constant. NOT
+      // case-insensitive: `composioConfigured` and the `/admin/plugins/composio` route
+      // path are legitimate and must stay legal.
+      if (/Composio|COMPOSIO/.test(line))
         offenders.push(`${name}:${i + 1}: ${line.trim()}`);
     });
   }
