@@ -182,16 +182,41 @@ export function createArcadeClient(apiKey: string): {
         user_id: account.vendorUserId,
       })) {
         const info = row.provider_user_info as
-          | { name?: unknown; login?: unknown }
-          | null
-          | undefined;
+          { name?: unknown; login?: unknown } | null | undefined;
         const name = textOf(info?.name) ?? textOf(info?.login);
         if (name) return name;
       }
       return null;
     },
-    // 6.1: authorize, and confirm_user (the mint pair; confirm_user is not on this seam yet)
-    authorize: notYet("micro-task 6.1", "authorize"),
+    // The mint. Stays a TOP-LEVEL member: the Composio connect flow calls it from routes.ts, so it
+    // cannot move behind the nullable `authorizations` sub-surface.
+    authorize: async ({ account, action }) => {
+      if (!action) {
+        throw new BrokerRefusalError(
+          "Arcade grants per action, so an authorization needs the action it is for and none was given.",
+        );
+      }
+      // NEVER SEND `next_uri`. THIS LOOKS LIKE A BUG AND IS A MEASUREMENT. The SDK declares the
+      // field (`ToolAuthorizeParams.next_uri`), but against the live API it refuses EVERY value and
+      // the mint answers `500 "error starting authorization challenge: invalid next URI"`: an app
+      // page, the verifier's own origin, `cloud.arcade.dev` and a localhost address alike. Do not
+      // "fix" this by passing a return address.
+      //
+      // `returnUrl` IS ACCEPTED AND IGNORED, for the same reason: the landing page comes from the
+      // attempt row (spec D18), not from a parameter this vendor will take.
+      const answer = await client.tools.authorize({
+        tool_name: action,
+        user_id: account.vendorUserId,
+      });
+      // The url is a bearer capability: it goes back to the caller and nowhere else.
+      const url = answer.url;
+      if (typeof url !== "string" || url === "") {
+        throw new Error(
+          "Arcade answered an authorization with no url to visit.",
+        );
+      }
+      return { redirectUrl: url };
+    },
     // 6.2: isConnected, revoke, revokeAccount (the connection-lifecycle trio).
     // `admin.userConnections.delete` takes `connection_id` (`ac_...`), NOT the `id` (`at_...`) the
     // listing prints first: measured, `at_...` answers 500 and `ac_...` answers 204.
@@ -207,7 +232,23 @@ export function createArcadeClient(apiKey: string): {
     grantsFor: notYet("micro-task 6.3", "grantsFor"),
     authorizations: {
       status: notYet("micro-task 6.3", "authorizations.status"),
-      confirmReturn: notYet("micro-task 6.3", "authorizations.confirmReturn"),
+      // `handle` is opaque to the seam; `flow_id` is Arcade's word for it and stops in this file.
+      // A `user_mismatch` answer is an ANSWER, so it surfaces as `{ mismatch: true }`; any other
+      // failure is an outage or a bug and is rethrown untouched.
+      confirmReturn: async ({ handle, vendorUserId }) => {
+        try {
+          const answer = await client.auth.confirmUser({
+            flow_id: handle,
+            user_id: vendorUserId,
+          });
+          return { authorizationId: answer.auth_id };
+        } catch (error) {
+          if (normalizeArcadeError(error)?.name === "user_mismatch") {
+            return { mismatch: true };
+          }
+          throw error;
+        }
+      },
     },
   };
   return { actions, broker };
