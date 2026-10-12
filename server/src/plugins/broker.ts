@@ -338,6 +338,22 @@ export type AuthConfigOutcome = "created" | "standing" | "not-needed";
  * dial.
  */
 export type ConnectedAppBroker = {
+  /**
+   * Whether this provider's grant is held by THIS deployment, as opposed to by the vendor.
+   *
+   * A DECLARED PROPERTY, AND NEVER A `provider === "arcade"` COMPARISON. Every permission check
+   * that has to know where a grant lives reads this field off the broker it was handed; none of
+   * them asks which vendor it is talking to. `store.ts:1631` is why: a gate and its exemption
+   * keyed on different things there, and the exemption failed OPEN — a duplicate row let a call
+   * run for somebody who had connected nothing. A vendor-name comparison inside a permission check
+   * is that same shape, two answers to one question that nothing forces to agree, and adding a
+   * provider would mean finding every such comparison by hand. A property on the seam makes the
+   * answer one value per broker and makes a new broker declare it or fail to type-check.
+   *
+   * TRUE for Composio, whose connection rows and grants live in this deployment's own tables. That
+   * is the behaviour it always had, made explicit here rather than changed.
+   */
+  grantIsLocal: boolean;
   /** Every app the catalogue offers, which is what an administrator chooses from. */
   listApps(): Promise<BrokerApp[]>;
   /**
@@ -426,6 +442,18 @@ export type ConnectedAppBroker = {
      * address through that before it hands it here.
      */
     returnUrl: string;
+    /**
+     * The one action this consent is being begun for, for a vendor that grants per action.
+     *
+     * OPTIONAL, AND IGNORABLE. An adapter whose vendor grants per app, as Composio does, has no use
+     * for it and drops it without throwing: handing an action to a broker that cannot use it is
+     * not an error, and a caller need not know which kind of broker it holds to call this.
+     *
+     * `returnUrl` ABOVE STAYS REQUIRED ON THE SEAM EVEN SO. An adapter whose vendor answers with
+     * its own return leg may ignore it, but the seam does not relax for that: the next adapter
+     * that needs it must not find the field optional because the last one did not.
+     */
+    action?: string;
   }): Promise<{ redirectUrl: string }>;
   /** Whether this account is currently attached to this app at the vendor. */
   isConnected(request: {

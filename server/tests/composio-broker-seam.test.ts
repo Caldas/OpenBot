@@ -5,6 +5,7 @@ import {
   brokerReturnUrl,
   brokerSentence,
 } from "../src/plugins/broker";
+import { createComposioClient } from "../src/plugins/composio-adapter";
 
 /**
  * The broker seam's three decisions, asserted with no network and no database.
@@ -140,6 +141,47 @@ describe("brokerReturnUrl", () => {
       "https://openbot.test/settings\r/connected-accounts/x",
     ]) {
       expect(brokerReturnUrl(disguised)).toBe(intended);
+    }
+  });
+});
+
+/**
+ * `grantIsLocal` is a DECLARED PROPERTY of the broker, read off the object and never derived from
+ * a vendor's name. Composio holds the grant in this deployment, so it declares true — which is the
+ * behaviour it always had, made explicit.
+ */
+describe("grantIsLocal", () => {
+  test("Composio declares that its grant is held by this deployment", () => {
+    expect(createComposioClient("never-dialled").broker.grantIsLocal).toBe(
+      true,
+    );
+  });
+
+  test("a broker handed an action it cannot use ignores it rather than throwing", async () => {
+    const { broker } = createComposioClient("never-dialled");
+    const original = globalThis.fetch;
+    // No network: an empty config listing, so `authorize` stops at its own refusal for having no
+    // config to connect against. What is asserted is that `action` was not what stopped it.
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ items: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof fetch;
+    try {
+      const attempt = await broker
+        .authorize({
+          account: { holder: "person", userId: "u", vendorUserId: "u" },
+          toolkit: "linear",
+          returnUrl: "https://openbot.test/settings/connected-accounts/x",
+          action: "LINEAR_CREATE_ISSUE",
+        })
+        .then(
+          () => "resolved",
+          (error: unknown) => (error instanceof Error ? error.message : ""),
+        );
+      expect(attempt).not.toMatch(/action/i);
+    } finally {
+      globalThis.fetch = original;
     }
   });
 });

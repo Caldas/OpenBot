@@ -3005,6 +3005,9 @@ export function buildComposioClient(
   };
 
   const broker: ComposioBroker = {
+    // Composio's grant is held by this deployment. Its existing behaviour, declared; see
+    // {@link ConnectedAppBroker.grantIsLocal} for why this is a property and not a comparison.
+    grantIsLocal: true,
     /**
      * The catalogue, from memory where this process asked for it less than ten minutes ago.
      *

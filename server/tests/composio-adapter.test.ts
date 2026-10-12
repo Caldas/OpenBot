@@ -3264,8 +3264,13 @@ describe("what a vendor failure becomes on its way out of the seam", () => {
     // projection arrives in this set, and the table that does not cover it fails here rather than
     // being the one door nobody thought to probe.
     const seam = buildComposioClient(fakeVendor({}));
+    // Methods only: `grantIsLocal` is a declared property of the broker, not a door to probe.
+    const methodsOf = (part: object) =>
+      Object.entries(part)
+        .filter(([, member]) => typeof member === "function")
+        .map(([name]) => name);
     expect(
-      [...Object.keys(seam.broker), ...Object.keys(seam.actions)].sort(),
+      [...methodsOf(seam.broker), ...methodsOf(seam.actions)].sort(),
     ).toEqual(SEAM_CASES.map((seamCase) => seamCase.method).sort());
   });
 
