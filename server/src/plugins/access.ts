@@ -223,7 +223,7 @@ function isBrokerTransport(kind: TransportKind): boolean {
  * a change to this line, and every `Record<BrokerProvider, …>` below stops compiling until it is
  * answered for.
  */
-export type BrokerProvider = "composio" | "arcade";
+export type BrokerProvider = Extract<TransportKind, "composio" | "arcade">;
 
 /**
  * Whether a provenance names a broker — the one place that question is asked.
@@ -310,22 +310,6 @@ export function toolkitOfFor(
   url: string,
 ): string | null {
   return TOOLKIT_OF[provider](url);
-}
-
-/**
- * The transport kind a broker is dialled over, which is the provider's own name.
- *
- * It is a function rather than the bare value only because {@link TransportKind} does not list
- * `arcade` yet — the registry in `./transport` is wired by micro-task 5.1, and until it is, the
- * assertion here is what stands in for the union having caught up. Nothing else about the mapping is
- * in question: a brokered row is dialled over the transport named after its broker, by construction.
- *
- * TODO(micro-task 5.1): once `TransportKind` includes `arcade`, delete this and declare
- * `BrokerProvider` as `Extract<TransportKind, "composio" | "arcade">`, which makes the identity the
- * compiler's claim rather than this comment's.
- */
-function brokerTransport(provider: BrokerProvider): TransportKind {
-  return provider as TransportKind;
 }
 
 /**
@@ -420,7 +404,7 @@ export function accessFor(
      */
     const provider = row.provenance;
     return {
-      transport: brokerTransport(provider),
+      transport: provider,
       credential: "brokered",
       reachedAs:
         schemeKind(row.authScheme) === "none" || row.accountMode === "shared"
