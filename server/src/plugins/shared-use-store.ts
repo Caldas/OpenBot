@@ -20,7 +20,7 @@ import {
   teamBotPublications,
   users,
 } from "../db/schema";
-import { type BrokerProvider, toolkitOfFor } from "./access";
+import { BROKERED_PROFILE, type BrokerProvider, toolkitOfFor } from "./access";
 import {
   type ActorFacts,
   type ApprovalMember,
@@ -74,12 +74,17 @@ const sameApproval = (left: SharedUseApproval, right: SharedUseApproval) =>
   covers(left, right) && covers(right, left);
 
 /**
- * The url scheme a broker's apps live at. A broker's scheme is its provider's name, `<provider>://`,
- * the same identity the `provenance` column already leans on (see {@link BrokerProvider}), so it is
- * derived from the provider rather than spelled as a literal a third broker would have to be
- * remembered in.
+ * The url scheme a broker's apps live at, read from the one record that holds it.
+ *
+ * DERIVED HERE AS `${provider}://` UNTIL {@link BROKERED_PROFILE} BECAME REACHABLE. That derivation
+ * was right about every scheme there is and still a second source of truth: the store mints its rows
+ * from the record, this read them back from a rule, and nothing held the two in step beyond the
+ * happy fact that a broker's scheme is its own name. A third broker that spelled its scheme any
+ * other way would have had its rows written at one address and looked for at another, silently, in
+ * the gate that decides who may use a shared account. One table, one spelling.
  */
-const schemeOf = (provider: BrokerProvider) => `${provider}://`;
+const schemeOf = (provider: BrokerProvider) =>
+  BROKERED_PROFILE[provider].scheme;
 
 /**
  * `provider` IS REQUIRED, with no default, for the reason `PluginStoreOptions.brokerProvider` is:

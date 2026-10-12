@@ -46,6 +46,7 @@ import {
 import type { CheckPrivateShare } from "../proactive/private-share";
 import {
   accessFor,
+  BROKERED_PROFILE,
   type BrokerProvider,
   type ServerAccess,
   ServerUnresolvableError,
@@ -1108,27 +1109,21 @@ const CLIENT_REREGISTRATION_BACKOFF_MS = 5 * 60_000;
 const IDENTITY_ACTION = /(_GET_ME|_PROFILE|_CURRENT_USER|_USER_INFO|_WHOAMI)$/;
 
 /**
- * What each broker's rows are minted as: the url scheme, the id namespace and the vendor label.
- *
- * ONE ROW PER PROVIDER, KEYED ON {@link BrokerProvider}, so a third broker cannot be enabled until
- * it says how its rows are spelled. The provenance column is the provider's own name and needs no
- * entry here. The id prefix is what prefixes every tool name and what a grant and a policy rule are
- * written against, which is why {@link BROKERED_ID_PREFIXES} reserves every provider's, not only the
- * active one's: a deployment that switches broker must not find a typed server already sitting in
- * the namespace the other path mints into.
+ * Every broker's id namespace, reserved together. See {@link BROKERED_PROFILE} in `./access` for
+ * what a profile holds and why it lives there; this is only the list this file reserves off it.
  */
-const BROKERED_PROFILE: Record<
-  BrokerProvider,
-  { scheme: string; idPrefix: string; vendor: string }
-> = {
-  composio: {
-    scheme: "composio://",
-    idPrefix: "composio-",
-    vendor: "Composio",
-  },
-  arcade: { scheme: "arcade://", idPrefix: "arcade-", vendor: "Arcade" },
-};
 const BROKERED_ID_PREFIXES = Object.values(BROKERED_PROFILE);
+
+/**
+ * Every broker's screen name, reserved together, for the reason {@link BROKERED_ID_PREFIXES} is.
+ *
+ * THE KEYS, NOT A SECOND LITERAL LIST. `/admin/plugins/composio` is the app directory's own page and
+ * `/admin/plugins/arcade` is the Arcade one, and a static route is matched ahead of
+ * `/admin/plugins/$key` on both — so a server sitting at either id would be listed and then open
+ * somebody else's page instead of its own. Spelled as its own list, this reservation would be the
+ * one somebody adds a broker to {@link BROKERED_PROFILE} without adding to.
+ */
+const BROKERED_SCREEN_NAMES = Object.entries(BROKERED_PROFILE);
 
 /** What a vendor's token endpoint gave back for a refresh token. */
 export type AccessToken = {
@@ -3000,15 +2995,24 @@ export function createPluginStore(options: PluginStoreOptions) {
 
       /*
        * Nor may it take the name of a screen. `/admin/plugins/composio` is a static route — the app
-       * directory's own page — and a static route is matched ahead of `/admin/plugins/$key`, so a
-       * server sitting at this id would be listed and then open somebody else's page instead of its
-       * own. Brokered servers are `composio-<slug>` and no catalogue entry is called this, which
-       * leaves a hand-typed id as the only way to reach it.
+       * directory's own page — and `/admin/plugins/arcade` is the Arcade equivalent, and a static
+       * route is matched ahead of `/admin/plugins/$key`, so a server sitting at either id would be
+       * listed and then open somebody else's page instead of its own. Brokered servers are
+       * `<provider>-<slug>` and no catalogue entry is called either of these, which leaves a
+       * hand-typed id as the only way to reach them.
+       *
+       * BOTH, ON WHICHEVER BROKER THIS DEPLOYMENT RUNS, and derived from
+       * {@link BROKERED_SCREEN_NAMES} rather than from a literal — the same argument the id-prefix
+       * loop six lines below makes for its own namespace: the screen is there to be collided with
+       * whether or not this deployment brokers through it today, and a reservation spelled twice is
+       * the one that gets added to once. Each refusal still names the id it refused.
        */
-      if (input.id === "composio") {
-        throw new CustomServerRefusedError(
-          "composio is the name of this deployment's own Composio screen, so a server added there could never be opened. Choose another.",
-        );
+      for (const [screen, { vendor }] of BROKERED_SCREEN_NAMES) {
+        if (input.id === screen) {
+          throw new CustomServerRefusedError(
+            `${screen} is the name of this deployment's own ${vendor} screen, so a server added there could never be opened. Choose another.`,
+          );
+        }
       }
 
       /*
@@ -5451,13 +5455,21 @@ export function createPluginStore(options: PluginStoreOptions) {
        * join answered and what the missing `serverId` below drops. A person can hold an account at
        * an app this deployment has since removed, and the settings page has no row to draw for it.
        */
+      /*
+       * AT THE ACTIVE BROKER'S SCHEME, which is the one {@link brokeredAppRow} resolves every other
+       * url against. Spelled `composio://` here, this read answered an empty map on any other
+       * broker — every `serverId` undefined, every connection dropped, and the connected-accounts
+       * page drawn empty for somebody holding accounts. Fail-closed and visible, and total.
+       */
+      const canonical = (toolkit: string) =>
+        `${BROKERED_PROFILE[brokerProvider].scheme}${toolkit}`;
       const named = await brokeredAppRowsAt(
-        connections.map((row) => `composio://${row.toolkit}`),
+        connections.map((row) => canonical(row.toolkit)),
       );
 
       const rows = connections
         .flatMap((row) => {
-          const serverId = named.get(`composio://${row.toolkit}`)?.id;
+          const serverId = named.get(canonical(row.toolkit))?.id;
           return serverId === undefined ? [] : [{ ...row, serverId }];
         })
         // By server id, as the join's own `order by` was, so this read and `connectionsFor` hand the
@@ -6056,9 +6068,42 @@ export function createPluginStore(options: PluginStoreOptions) {
        * Composio transport strips before anything reaches the vendor and asserts that it did, so
        * what Composio is handed is the action and an empty argument object.
        */
+      /*
+       * AND ON ANY OTHER BROKER THIS REFUSES RATHER THAN DIALS, because `composioAskAction` is
+       * Composio's own `askAction` and no counterpart has been written for a second broker.
+       *
+       * CRITERION. A deployment whose broker is not Composio gets a stated refusal here, and no
+       * request leaves this process.
+       *
+       * REASON. The url this used to compose was `composio://<toolkit>` whatever the broker was, so
+       * an Arcade deployment's check was sent to Composio with a Composio-shaped url. On a
+       * deployment holding no Composio key that fails at a vendor it has no business talking to and
+       * the person is told their connection could not be checked — an outage reported where there
+       * was none. Where a Composio key IS present it is worse: the slug is a plain app name, so the
+       * call lands on an UNRELATED app of the same name at the wrong vendor and succeeds, and the
+       * row records a verified check of an account nobody holds.
+       *
+       * `unreachable` IS THE HONEST OUTCOME, not `nothing`. Nothing was learned about the key and
+       * nothing is recorded about it — `probe` is null, so {@link _ProbeOutcomeLeaves} leaves the
+       * row untouched and `probe_action` unwritten — and `attempted` is what WOULD have been spent,
+       * which is the fact about this deployment's intent that field exists to carry. The sentence
+       * names the state rather than blaming the connection, because the gap is ours.
+       *
+       * TODO: delete this once a probe is designed for the second broker. Until then a refusal that
+       * says so is the only answer that is not a claim about somebody's account.
+       */
+      if (brokerProvider !== "composio") {
+        return {
+          outcome: "unreachable",
+          probe: null,
+          attempted: candidate.name,
+          sentence: `This deployment brokers its apps through ${BROKERED_PROFILE[brokerProvider].vendor}, and the only connection check this deployment knows how to make is Composio's. Nothing was asked about this connection, so nothing is recorded about it.`,
+        };
+      }
+
       const { result, answered } = await composioAskAction(
         {
-          url: `composio://${input.toolkit}`,
+          url: `${BROKERED_PROFILE.composio.scheme}${input.toolkit}`,
           actorId: input.account.vendorUserId,
           // Spread rather than passed as `undefined`, so "any account of theirs" reaches the wire
           // as a body with no such key. See {@link ComposioActions.execute}.

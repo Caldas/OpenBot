@@ -268,6 +268,39 @@ const TOOLKIT_OF: Record<BrokerProvider, (url: string) => string | null> = {
 };
 
 /**
+ * What each broker's rows are minted as: the url scheme, the id namespace and the vendor label.
+ *
+ * ONE ROW PER PROVIDER, KEYED ON {@link BrokerProvider}, so a third broker cannot be enabled until
+ * it says how its rows are spelled. The provenance column is the provider's own name and needs no
+ * entry here. The id prefix is what prefixes every tool name and what a grant and a policy rule are
+ * written against, which is why `store.ts` reserves EVERY provider's and not only the active one's:
+ * a deployment that switches broker must not find a typed server already sitting in the namespace
+ * the other path mints into. The scheme is reserved the same way one step in — the screen name
+ * `/admin/plugins/<provider>` is a static route on each broker — and that reservation is derived
+ * from these keys rather than spelled again, because a reservation spelled twice is the one that
+ * gets added to once.
+ *
+ * AND IT LIVES HERE RATHER THAN IN `store.ts`, BESIDE {@link TOOLKIT_OF}, for that table's reason.
+ * This module is where a broker's vocabulary is allowed to be spelled, and it is the one file
+ * `brokered-provenance.test.ts` exempts. A scheme literal in `store.ts` is a second home for the
+ * same word, and the guard that keeps the first home the only one cannot be absolute while the
+ * record it reads from sits outside it. `shared-use-store.ts` had to derive its own `${provider}://`
+ * for exactly as long as this was private here, which is what two homes costs: one table, one
+ * spelling, read by everybody.
+ */
+export const BROKERED_PROFILE: Record<
+  BrokerProvider,
+  { scheme: string; idPrefix: string; vendor: string }
+> = {
+  composio: {
+    scheme: "composio://",
+    idPrefix: "composio-",
+    vendor: "Composio",
+  },
+  arcade: { scheme: "arcade://", idPrefix: "arcade-", vendor: "Arcade" },
+};
+
+/**
  * {@link TOOLKIT_OF}, reachable. A function so a caller cannot index the table with a widened
  * string, and so the table stays private to the one module that argues for it: a second dispatch
  * anywhere else is a second place for a provider to be missed.
