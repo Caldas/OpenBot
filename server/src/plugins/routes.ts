@@ -2396,6 +2396,41 @@ export function createPluginRoutes(
   });
 
   /**
+   * Cancel THIS actor's authorization attempt, so somebody who closed the consent tab need not wait
+   * out the fifteen-minute TTL. Answers `{ cancelled }`: whether an attempt was removed.
+   *
+   * CANCELLING WHEN NO ATTEMPT EXISTS IS NOT AN ERROR — the attempt may have expired, completed or
+   * been cancelled already, and the person's intent (no attempt standing) is met either way.
+   *
+   * MATCHED ON `(actor_id, created_at)`, NEVER ON `auth_id`: an attempt whose mint never completed
+   * has no `auth_id` and is exactly the one most worth cancelling, and `created_at` is what stops
+   * this from deleting a NEWER attempt by the same actor that replaced the one resolved here. It
+   * goes through `discardAuthorizationAttempt`, the same deletion the mint's definite-failure
+   * discard uses.
+   *
+   * `actorId` IS THE SESSION SUBJECT (`users.id`), NEVER A CREDENTIAL ACTOR. BEHIND `requireUser`
+   * AND NOT ADMIN-GATED AT THE ROUTE, as the disconnect route above: `brokeredAccountFor` is where
+   * a Shared app is refused to anybody but an administrator.
+   */
+  routes.delete("/servers/:id/authorize", requireUser, async (context) => {
+    const resolved = await brokeredAccountFor(context, context.req.param("id"));
+    if (resolved.refusal) {
+      return context.json(
+        { error: resolved.refusal.error },
+        resolved.refusal.status,
+      );
+    }
+    const actorId = context.var.actor.id;
+    const attempt = await store.authorizationAttemptFor(actorId);
+    if (!attempt) return context.json({ cancelled: false });
+    const cancelled = await store.discardAuthorizationAttempt({
+      actorId,
+      createdAt: attempt.createdAt,
+    });
+    return context.json({ cancelled });
+  });
+
+  /**
    * Where the vendor sends somebody back.
    *
    * Deliberately not behind `requireUser`. The person arrives on a redirect from another company's
