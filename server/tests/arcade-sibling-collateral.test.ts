@@ -1,0 +1,218 @@
+// server/tests/arcade-sibling-collateral.test.ts
+import { afterEach, describe, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { createAuditStore } from "../src/audit";
+import { createDatabase } from "../src/db/client";
+import { auditEvents, brokeredConnections, mcpServers } from "../src/db/schema";
+import { createAccountModeSwitch } from "../src/plugins/account-mode";
+import type { ConnectedAppBroker } from "../src/plugins/broker";
+import { createSharedUseStore } from "../src/plugins/shared-use-store";
+import { createPluginStore } from "../src/plugins/store";
+import { TEST_POOL, testDatabaseUrl } from "./support/database";
+
+/*
+ * SCOPING. `audit_events` is append-only and `brokered_connections` is long-lived, so every
+ * assertion here is keyed on names THIS TEST ALONE writes: each test mints its own `run()` — a
+ * fresh suffix on every app and every vendor identity it touches — and reads rows and the trail
+ * only by those. A "did not happen" assertion is therefore one only this test could have falsified.
+ */
+const database = createDatabase(testDatabaseUrl(), TEST_POOL);
+const suite = randomUUID().slice(0, 8);
+
+const providerOf = (toolkit: string) =>
+  toolkit.startsWith("Slack-") ? "slack" : "google";
+
+const broker: ConnectedAppBroker = {
+  grantIsLocal: false,
+  authorizations: {
+    status: async () => {
+      throw new Error("nothing here polls an authorization");
+    },
+    confirmReturn: async () => {
+      throw new Error("nothing here confirms a return leg");
+    },
+  },
+  authProviderOf: async (toolkit) => providerOf(toolkit),
+  grantsFor: async () => [],
+  listApps: async () => [],
+  ensureAuthConfig: async () => "standing",
+  deleteAuthConfig: async () => {},
+  authorize: async () => ({
+    redirectUrl: "https://vendor.example/consent",
+    authorizationId: "ar_1",
+  }),
+  isConnected: async () => true,
+  revoke: async () => true,
+  connectionFields: async () => [],
+  connectWithFields: async () => ({ accountId: "ca_1" }),
+  revokeAccount: async () => {},
+  accountName: async () => "acme",
+};
+
+const store = createPluginStore({
+  brokerProvider: "arcade",
+  database,
+  auditStore: createAuditStore(database),
+  credentials: {} as never,
+  encryptionKey: "x".repeat(44),
+  policy: () => ({ mode: "enforce" as const, deny: [], allow: ["true"] }),
+  broker,
+  deploymentId: "acme",
+  sharedUse: async () => ({ allowed: true }),
+});
+const modes = createAccountModeSwitch({
+  store,
+  sharedUse: createSharedUseStore(database, "arcade"),
+  deploymentId: "acme",
+  audit: createAuditStore(database),
+  teamRules: undefined,
+});
+
+const apps: string[] = [];
+let n = 0;
+/** This test's own names: nothing another test writes can share one. */
+function run() {
+  n += 1;
+  const tag = `${suite}${n}`;
+  const names = {
+    gmail: `Gmail-${tag}`,
+    calendar: `GoogleCalendar-${tag}`,
+    slack: `Slack-${tag}`,
+    person: `person-${tag}`,
+  };
+  apps.push(names.gmail, names.calendar, names.slack);
+  return names;
+}
+async function server(app: string, mode: "personal" | "shared") {
+  await database.insert(mcpServers).values({
+    id: app,
+    title: app,
+    vendor: "Arcade",
+    url: `arcade://${app}`,
+    provenance: "arcade",
+    authScheme: "OAUTH2",
+    accountMode: mode,
+  });
+}
+async function hold(
+  app: string,
+  vendorUserId: string,
+  holder: "person" | "deployment" = "person",
+) {
+  await database.insert(brokeredConnections).values({
+    provider: "arcade",
+    app,
+    holder,
+    userId: holder === "person" ? vendorUserId : null,
+    vendorUserId,
+  });
+}
+const rowsFor = async (names: string[]) =>
+  (
+    await database
+      .select({ app: brokeredConnections.app })
+      .from(brokeredConnections)
+      .where(inArray(brokeredConnections.app, names))
+      .orderBy(asc(brokeredConnections.app))
+  ).map((row) => row.app);
+const trailFor = (names: string[]) =>
+  database
+    .select({
+      app: auditEvents.targetId,
+      payload: sql<Record<string, unknown>>`payload`,
+    })
+    .from(auditEvents)
+    .where(
+      and(
+        eq(auditEvents.eventType, "mcp.account_disconnected"),
+        inArray(auditEvents.targetId, names),
+      ),
+    )
+    .orderBy(asc(auditEvents.targetId));
+
+afterEach(async () => {
+  if (apps.length) {
+    await database
+      .delete(brokeredConnections)
+      .where(inArray(brokeredConnections.app, apps));
+    await database.delete(mcpServers).where(inArray(mcpServers.id, apps));
+  }
+  apps.length = 0;
+});
+
+describe("the Personal to Shared switch", () => {
+  test("ends a sibling app's connection too, and removes and audits its row", async () => {
+    const t = run();
+    await server(t.gmail, "personal");
+    await hold(t.gmail, t.person);
+    await hold(t.calendar, t.person); // same identity, same provider: ended with Gmail
+    await hold(t.slack, t.person); // another provider: not touched
+
+    const result = await modes.switchMode({
+      serverId: t.gmail,
+      mode: "shared",
+      by: "admin",
+      confirm: true,
+    });
+
+    expect(result).toEqual({ changed: true, revoked: 1 });
+    expect(await rowsFor([t.gmail, t.calendar, t.slack])).toEqual([t.slack]);
+    const trail = await trailFor([t.gmail, t.calendar, t.slack]);
+    expect(trail.map((event) => event.app)).toEqual(
+      [t.calendar, t.gmail].sort(),
+    );
+    const sibling = trail.find((event) => event.app === t.calendar);
+    expect(sibling?.payload).toMatchObject({
+      reason: "mode_switched",
+      endedWith: t.gmail,
+      owner: t.person,
+    });
+  });
+
+  test("a Shared app's switch back leaves another Shared app on the same provider alone", async () => {
+    const t = run();
+    await server(t.gmail, "shared");
+    // Two Shared apps, one provider, but each its OWN minted identity: no shared connection.
+    await hold(t.gmail, `deployment-${t.gmail}`, "deployment");
+    await hold(t.calendar, `deployment-${t.calendar}`, "deployment");
+
+    const result = await modes.switchMode({
+      serverId: t.gmail,
+      mode: "personal",
+      by: "admin",
+      confirm: true,
+    });
+
+    expect(result).toEqual({ changed: true, revoked: 1 });
+    expect(await rowsFor([t.gmail, t.calendar])).toEqual([t.calendar]);
+    expect((await trailFor([t.gmail, t.calendar])).map((e) => e.app)).toEqual([
+      t.gmail,
+    ]);
+  });
+});
+
+describe("removing an app", () => {
+  /*
+   * KNOWN GAP, NOT A PASSING PIN. `removeServer` (store.ts) revokes each connected account with a
+   * direct `broker.revoke` and deletes only `app = toolkit`, so a sibling the vendor just ended keeps
+   * its local row and gets no audit row. It does not go through `disconnectBrokered`'s cascade, and
+   * store.ts is outside this micro-task's fence. `test.failing` makes this flip to a failure the
+   * moment the gap is closed, at which point it must become a plain `test`.
+   */
+  test.failing("ends a sibling app's connection too, and removes and audits its row", async () => {
+    const t = run();
+    await server(t.gmail, "personal");
+    await hold(t.gmail, t.person);
+    await hold(t.calendar, t.person);
+    await hold(t.slack, t.person);
+
+    await store.removeServer(t.gmail, "admin");
+
+    expect(await rowsFor([t.gmail, t.calendar, t.slack])).toEqual([t.slack]);
+    const trail = await trailFor([t.gmail, t.calendar, t.slack]);
+    expect(trail.map((event) => event.app)).toEqual(
+      [t.calendar, t.gmail].sort(),
+    );
+  });
+});
