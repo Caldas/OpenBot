@@ -138,11 +138,13 @@ test("BROKERED_PROFILE lives in access.ts and answers for both brokers", () => {
     scheme: "composio://",
     idPrefix: "composio-",
     vendor: "Composio",
+    envVar: "COMPOSIO_API_KEY",
   });
   expect(BROKERED_PROFILE.arcade).toEqual({
     scheme: "arcade://",
     idPrefix: "arcade-",
     vendor: "Arcade",
+    envVar: "ARCADE_API_KEY",
   });
 });
 
