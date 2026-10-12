@@ -2164,7 +2164,9 @@ describe("connecting a brokered app", () => {
     const response = await connect({});
 
     expect(response.status).toBe(503);
-    expect((await response.json()).error).toContain("COMPOSIO_API_KEY");
+    expect((await response.json()).error).not.toMatch(
+      /composio|COMPOSIO_API_KEY/i,
+    );
   });
 
   test("the address Composio sends somebody back to is built here, never taken from the request", async () => {
@@ -3050,10 +3052,14 @@ describe("confirming and ending a brokered connection", () => {
 
     expect(confirmResponse.status).toBe(503);
     expect(disconnectResponse.status).toBe(503);
-    expect((await confirmResponse.json()).error).toContain("COMPOSIO_API_KEY");
-    expect((await disconnectResponse.json()).error).toContain(
-      "COMPOSIO_API_KEY",
-    );
+    // A PERSON'S route: no vendor, no variable they cannot set (spec D11).
+    for (const refusal of [
+      (await confirmResponse.json()).error as string,
+      (await disconnectResponse.json()).error as string,
+    ]) {
+      expect(refusal).not.toContain("COMPOSIO_API_KEY");
+      expect(refusal).not.toMatch(/composio/i);
+    }
     expect(confirmed).toEqual([]);
     expect(disconnected).toEqual([]);
   });
@@ -3201,7 +3207,9 @@ describe("re-checking a brokered connection", () => {
     const response = await recheck();
 
     expect(response.status).toBe(503);
-    expect((await response.json()).error).toContain("COMPOSIO_API_KEY");
+    expect((await response.json()).error).not.toMatch(
+      /composio|COMPOSIO_API_KEY/i,
+    );
     expect(rechecked).toEqual([]);
   });
 

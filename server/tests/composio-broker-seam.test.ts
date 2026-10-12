@@ -24,7 +24,7 @@ import { createComposioClient } from "../src/plugins/composio-adapter";
 
 describe("brokerSentence", () => {
   test("reports the unconfigured deployment in the error's own words", () => {
-    const error = new BrokerUnconfiguredError();
+    const error = new BrokerUnconfiguredError("composio", "operator");
 
     expect(error.message).toContain("COMPOSIO_API_KEY");
     expect(brokerSentence(error)).toBe(error.message);

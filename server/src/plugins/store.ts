@@ -3418,7 +3418,8 @@ export function createPluginStore(options: PluginStoreOptions) {
     }): Promise<ServerRecord> {
       // Before anything at all. A deployment with no key has no catalogue for this app to have been
       // chosen from, so there is nothing here to half-do and nothing to say but the setting.
-      if (!broker) throw new BrokerUnconfiguredError();
+      if (!broker)
+        throw new BrokerUnconfiguredError(brokerProvider, "operator");
 
       const profile = BROKERED_PROFILE[brokerProvider];
       const url = `${profile.scheme}${input.slug}`;
@@ -6773,7 +6774,7 @@ export function createPluginStore(options: PluginStoreOptions) {
     }): Promise<{ connected: boolean }> {
       // Before anything, and for the reason `addBrokeredApp` says it first too: a deployment with
       // no key has no broker to have connected anybody at, so there is nothing here to ask.
-      if (!broker) throw new BrokerUnconfiguredError();
+      if (!broker) throw new BrokerUnconfiguredError(brokerProvider, "person");
 
       const connected = await broker.isConnected({
         account: input.account,
@@ -7087,7 +7088,7 @@ export function createPluginStore(options: PluginStoreOptions) {
     }): Promise<{ connected: true; verified: boolean; probe: string | null }> {
       // First, and for `confirmBrokeredConnection`'s reason: a deployment with no key has nobody to
       // connect anybody at, and the refusal must happen before the values are touched at all.
-      if (!broker) throw new BrokerUnconfiguredError();
+      if (!broker) throw new BrokerUnconfiguredError(brokerProvider, "person");
 
       // Keyed on the url and on the one row that answers for it — see `brokeredAppScheme`. It is
       // the same reasoning the connection gate in `connectionTokenFor` is keyed on, and for the
@@ -7489,7 +7490,7 @@ export function createPluginStore(options: PluginStoreOptions) {
       verifiedAt: string | null;
       probe: string | null;
     }> {
-      if (!broker) throw new BrokerUnconfiguredError();
+      if (!broker) throw new BrokerUnconfiguredError(brokerProvider, "person");
 
       // Keyed on the url and on the one row that answers for it — see `brokeredAppKind`. It is the
       // read `connectBrokeredWithFields`, `confirmBrokeredConnection` and `disconnectBrokered` all
@@ -7796,7 +7797,7 @@ export function createPluginStore(options: PluginStoreOptions) {
        */
       reason: "self" | "person_removed" | "admin" | "mode_switched";
     }): Promise<{ vendorRevocationRequested: boolean }> {
-      if (!broker) throw new BrokerUnconfiguredError();
+      if (!broker) throw new BrokerUnconfiguredError(brokerProvider, "person");
 
       /*
        * Keyed on the url and on the one row that answers for it — see {@link brokeredAppKind}.

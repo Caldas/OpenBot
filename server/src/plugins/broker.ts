@@ -13,7 +13,7 @@
  * the import graph of every test that touches enablement. `AccountRef` and `BrokerProvider`, below, are the only imports
  * that cross this file's boundary, and both are types this deployment names, never the vendor's.
  */
-import type { BrokerProvider } from "./access";
+import { BROKERED_PROFILE, type BrokerProvider } from "./access";
 import type { AccountRef } from "./shared-accounts";
 
 /**
@@ -832,11 +832,22 @@ export class BrokerRefusalError extends Error {
  * message where no call was made at all.
  */
 export class BrokerUnconfiguredError extends BrokerRefusalError {
-  constructor(provider = "Composio") {
+  /**
+   * BOTH ARGUMENTS ARE REQUIRED, AND THAT IS THE FIX. This used to default to Composio, so a call
+   * site that passed nothing put `COMPOSIO_API_KEY` on an Arcade deployment. An omission is a
+   * compile error now: every site must say which provider it means and who is reading.
+   *
+   * `reader` IS WHO THE SENTENCE IS FOR. An `operator` can set an environment variable, so the
+   * sentence names the ACTIVE provider's variable (from {@link BROKERED_PROFILE}). A `person` can
+   * set nothing, and a vendor they do not use and a key they cannot reach is the vendor
+   * vocabulary spec D11 keeps off their screen, so theirs names neither.
+   */
+  constructor(provider: BrokerProvider, reader: "operator" | "person") {
+    const { vendor, envVar } = BROKERED_PROFILE[provider];
     super(
-      provider === "Composio"
-        ? "Composio is not configured for this deployment, so nothing was asked. Set COMPOSIO_API_KEY to make the brokered apps available; until it is set there is nothing to connect, nothing to grant and no Composio tool for a Bot to call, and the admin Plugins page shows one row under More apps that goes nowhere."
-        : `${provider} is not configured for this deployment, so nothing was asked.`,
+      reader === "person"
+        ? "Connected apps are not set up for this deployment, so nothing was asked. An administrator can set them up."
+        : `${vendor} is not configured for this deployment, so nothing was asked. Set ${envVar} to make the brokered apps available; until it is set there is nothing to connect, nothing to grant and no ${vendor} tool for a Bot to call, and the admin Plugins page shows one row under More apps that goes nowhere.`,
     );
     this.name = "BrokerUnconfiguredError";
   }

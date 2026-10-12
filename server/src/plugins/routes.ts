@@ -923,7 +923,10 @@ export function createPluginRoutes(
 
     if (!composio) {
       return context.json(
-        { error: new BrokerUnconfiguredError().message },
+        {
+          error: new BrokerUnconfiguredError(activeProvider, "operator")
+            .message,
+        },
         503,
       );
     }
@@ -1013,7 +1016,10 @@ export function createPluginRoutes(
 
     if (!composio) {
       return context.json(
-        { error: new BrokerUnconfiguredError().message },
+        {
+          error: new BrokerUnconfiguredError(activeProvider, "operator")
+            .message,
+        },
         503,
       );
     }
@@ -1371,7 +1377,10 @@ export function createPluginRoutes(
        */
       if (!composio) {
         return context.json(
-          { error: new BrokerUnconfiguredError().message },
+          {
+            error: new BrokerUnconfiguredError(activeProvider, "person")
+              .message,
+          },
           503,
         );
       }
@@ -2071,7 +2080,10 @@ export function createPluginRoutes(
     }
     if (!composio) {
       return {
-        refusal: { error: new BrokerUnconfiguredError().message, status: 503 },
+        refusal: {
+          error: new BrokerUnconfiguredError(activeProvider, "person").message,
+          status: 503,
+        },
       };
     }
     const resolved = await store.accountRefFor(serverId, context.var.actor.id);
@@ -2355,7 +2367,9 @@ export function createPluginRoutes(
 
     if (!composio) {
       return context.json(
-        { error: new BrokerUnconfiguredError().message },
+        {
+          error: new BrokerUnconfiguredError(activeProvider, "person").message,
+        },
         503,
       );
     }

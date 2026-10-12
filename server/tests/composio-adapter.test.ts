@@ -8500,7 +8500,11 @@ describe("accounts named by holder", () => {
   });
 
   test("an unconfigured broker names the provider it is missing", () => {
-    expect(new BrokerUnconfiguredError("Acme").message).toMatch(/Acme/);
-    expect(new BrokerUnconfiguredError().message).toMatch(/COMPOSIO_API_KEY/);
+    expect(new BrokerUnconfiguredError("arcade", "operator").message).toMatch(
+      /Arcade/,
+    );
+    expect(new BrokerUnconfiguredError("composio", "operator").message).toMatch(
+      /COMPOSIO_API_KEY/,
+    );
   });
 });
