@@ -38,6 +38,7 @@ import {
   mcpServers,
   mcpTools,
   mcpUserCredentials,
+  pendingAuthorizations,
   pluginGrants,
   skills,
   skillTools,
@@ -1243,6 +1244,29 @@ export type PluginStoreOptions = {
    */
   deploymentId?: string;
 };
+
+/** One in-flight Arcade authorization attempt, as the table stores it. */
+export type PendingAuthorization = typeof pendingAuthorizations.$inferSelect;
+
+/** Raw `execute` rows are snake_case and carry timestamps as whatever the driver decoded. */
+function pendingAuthorizationFromRow(
+  row: Record<string, unknown>,
+): PendingAuthorization {
+  const when = (v: unknown) =>
+    v === null || v === undefined ? null : new Date(v as string | Date);
+  return {
+    actorId: row.actor_id as string,
+    serverId: row.server_id as string,
+    action: row.action as string,
+    holder: row.holder as PendingAuthorization["holder"],
+    userId: (row.user_id as string | null) ?? null,
+    vendorUserId: row.vendor_user_id as string,
+    authId: (row.auth_id as string | null) ?? null,
+    createdAt: when(row.created_at) as Date,
+    completedAt: when(row.completed_at),
+    outcome: (row.outcome as PendingAuthorization["outcome"]) ?? null,
+  };
+}
 
 /**
  * The literal recorded on the row, which is the scheme a later call must keep using.
@@ -5942,6 +5966,135 @@ export function createPluginStore(options: PluginStoreOptions) {
               },
         );
       return { verifiedAt, wrote: true };
+    },
+
+    /**
+     * Start an Arcade authorization attempt for one person: take the key if it is free, expired or
+     * completed, and refuse if a LIVE attempt holds it. ONE STATEMENT.
+     *
+     * `actorId` IS THE SESSION SUBJECT (`users.id`), NEVER `credentialActorId`. This file reads
+     * `input.credentialActorId ?? input.actorId`, and on a Team Bot those differ, and neither is the
+     * person holding the browser. The verifier finds the attempt from the returning browser's
+     * session, so any other key writes attempts a browser can never match.
+     *
+     * ONE STATEMENT BECAUSE A READ-THEN-WRITE LETS TWO REQUESTS BOTH SEE "NO LIVE ATTEMPT" AND BOTH
+     * INSERT. The conditional `ON CONFLICT ... DO UPDATE ... WHERE` is what makes the claim atomic:
+     * the second request waits on the first's row and then evaluates the WHERE against it. The
+     * live row is answered by the same statement, in a branch that only produces rows when the
+     * claim produced none. It can be null: a rival that committed after this statement took its
+     * snapshot is live but not yet visible to it, and the caller's 409 then names nothing.
+     *
+     * `created_at` is truncated to milliseconds so the `Date` handed back names the stored value
+     * exactly. {@link recordAuthorizationMint} and {@link discardAuthorizationAttempt} match on it,
+     * and a microsecond the `Date` cannot carry would match nothing.
+     */
+    async claimAuthorizationAttempt(input: {
+      actorId: string;
+      serverId: string;
+      action: string;
+      account: AccountRef;
+    }): Promise<
+      | { claimed: true; attempt: PendingAuthorization }
+      | { claimed: false; live: PendingAuthorization | null }
+    > {
+      const rows = await database.execute(sql`
+        WITH claimed AS (
+          INSERT INTO pending_authorizations
+            (actor_id, server_id, action, holder, user_id, vendor_user_id, created_at)
+          VALUES (
+            ${input.actorId}, ${input.serverId}, ${input.action}, ${input.account.holder},
+            ${input.account.holder === "person" ? input.account.userId : null},
+            ${input.account.vendorUserId}, date_trunc('milliseconds', now())
+          )
+          ON CONFLICT (actor_id) DO UPDATE SET
+            server_id = EXCLUDED.server_id,
+            action = EXCLUDED.action,
+            holder = EXCLUDED.holder,
+            user_id = EXCLUDED.user_id,
+            vendor_user_id = EXCLUDED.vendor_user_id,
+            auth_id = NULL,
+            created_at = EXCLUDED.created_at,
+            completed_at = NULL,
+            outcome = NULL
+          WHERE pending_authorizations.created_at < now() - interval '15 minutes'
+            OR pending_authorizations.completed_at IS NOT NULL
+          RETURNING *
+        )
+        SELECT true AS claimed, claimed.* FROM claimed
+        UNION ALL
+        SELECT false AS claimed, p.* FROM pending_authorizations p
+        WHERE p.actor_id = ${input.actorId}
+          AND NOT EXISTS (SELECT 1 FROM claimed)
+      `);
+      const row = rows[0] as Record<string, unknown> | undefined;
+      if (!row) return { claimed: false, live: null };
+      const attempt = pendingAuthorizationFromRow(row);
+      return row.claimed === true
+        ? { claimed: true, attempt }
+        : { claimed: false, live: attempt };
+    },
+
+    /**
+     * Write the `ar_...` the vendor minted onto the attempt, matched on `(actor_id, created_at)`.
+     * Answers whether it wrote: false is an attempt that was discarded or replaced meanwhile.
+     */
+    async recordAuthorizationMint(input: {
+      actorId: string;
+      createdAt: Date;
+      authId: string;
+    }): Promise<boolean> {
+      const written = await database
+        .update(pendingAuthorizations)
+        .set({ authId: input.authId })
+        .where(
+          and(
+            eq(pendingAuthorizations.actorId, input.actorId),
+            eq(pendingAuthorizations.createdAt, input.createdAt),
+          ),
+        )
+        .returning({ actorId: pendingAuthorizations.actorId });
+      return written.length > 0;
+    },
+
+    /**
+     * Delete one attempt, matched on `(actor_id, created_at)` SO IT CAN NEVER DELETE A NEWER
+     * ATTEMPT BY THE SAME ACTOR. Matching on `auth_id` would be wrong: an attempt whose mint never
+     * completed has none, and that is exactly the one most worth cancelling.
+     */
+    async discardAuthorizationAttempt(input: {
+      actorId: string;
+      createdAt: Date;
+    }): Promise<boolean> {
+      const deleted = await database
+        .delete(pendingAuthorizations)
+        .where(
+          and(
+            eq(pendingAuthorizations.actorId, input.actorId),
+            eq(pendingAuthorizations.createdAt, input.createdAt),
+          ),
+        )
+        .returning({ actorId: pendingAuthorizations.actorId });
+      return deleted.length > 0;
+    },
+
+    /**
+     * The live attempt for a session subject (`users.id`, never `credentialActorId`), or null when
+     * there is none, it is past the 15-minute TTL, or it has completed.
+     */
+    async authorizationAttemptFor(
+      actorId: string,
+    ): Promise<PendingAuthorization | null> {
+      const [row] = await database
+        .select()
+        .from(pendingAuthorizations)
+        .where(
+          and(
+            eq(pendingAuthorizations.actorId, actorId),
+            isNull(pendingAuthorizations.completedAt),
+            sql`${pendingAuthorizations.createdAt} >= now() - interval '15 minutes'`,
+          ),
+        );
+      return row ?? null;
     },
 
     /**
