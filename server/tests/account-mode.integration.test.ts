@@ -40,7 +40,7 @@ const broker = {
   listApps: async () => [],
   ensureAuthConfig: async () => "standing",
   deleteAuthConfig: async () => {},
-  authorize: async () => ({ redirectUrl: "x" }),
+  authorize: async () => ({ redirectUrl: "x", authorizationId: null }),
   isConnected: async () => true,
   revoke: async ({ account }) => {
     if (account.vendorUserId === failRevokeFor)

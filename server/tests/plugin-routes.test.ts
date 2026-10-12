@@ -1899,7 +1899,7 @@ function brokeredApp(
               // address it was asked with was this deployment's own.
               authorized.push(request);
               if (deployment.authorizeThrows) throw deployment.authorizeThrows;
-              return { redirectUrl };
+              return { redirectUrl, authorizationId: null };
             },
             connectionFields: async (request: {
               toolkit: string;

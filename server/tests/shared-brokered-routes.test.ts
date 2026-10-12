@@ -51,7 +51,10 @@ const broker: ConnectedAppBroker = {
   authorize: async ({ account, returnUrl }) => {
     authorizedFor.push(account.vendorUserId);
     returnUrlsSeen.push(returnUrl);
-    return { redirectUrl: "https://vendor.example/consent" };
+    return {
+      redirectUrl: "https://vendor.example/consent",
+      authorizationId: null,
+    };
   },
   isConnected: async () => true,
   revoke: async ({ account }) => {

@@ -673,7 +673,10 @@ const broker: ConnectedAppBroker = {
   },
   authorize: async (request) => {
     brokerAsks.push(`authorize:${request.toolkit}`);
-    return { redirectUrl: `https://composio.test/${request.toolkit}/consent` };
+    return {
+      redirectUrl: `https://composio.test/${request.toolkit}/consent`,
+      authorizationId: null,
+    };
   },
   isConnected: async (request) => {
     brokerAsks.push(

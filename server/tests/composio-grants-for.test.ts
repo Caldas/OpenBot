@@ -220,7 +220,10 @@ describe("the declared sub-surface", () => {
       listApps: async () => [],
       ensureAuthConfig: async () => "not-needed" as const,
       deleteAuthConfig: async () => {},
-      authorize: async () => ({ redirectUrl: "https://openbot.test/x" }),
+      authorize: async () => ({
+        redirectUrl: "https://openbot.test/x",
+        authorizationId: null,
+      }),
       isConnected: async () => false,
       revoke: async () => false,
       connectionFields: async () => [],

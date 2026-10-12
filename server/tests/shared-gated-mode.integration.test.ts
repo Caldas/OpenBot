@@ -33,7 +33,10 @@ const broker: ConnectedAppBroker = {
   listApps: async () => [],
   ensureAuthConfig: async () => "standing",
   deleteAuthConfig: async () => {},
-  authorize: async () => ({ redirectUrl: "https://vendor.example/consent" }),
+  authorize: async () => ({
+    redirectUrl: "https://vendor.example/consent",
+    authorizationId: null,
+  }),
   isConnected: async () => true,
   revoke: async () => true,
   connectionFields: async () => [],

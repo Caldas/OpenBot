@@ -557,6 +557,22 @@ export type ConnectedAppBroker = {
    * connection, so it is neither stored nor logged nor put in an audit row: it is handed to the
    * browser that asked for it and then forgotten. A redirect url in a log is somebody else's
    * mailbox for as long as it stays valid.
+   *
+   * IT ANSWERS THE MINT'S OWN ID BESIDE THE URL, AND THE ID IS REQUIRED AND NULLABLE, NEVER
+   * OPTIONAL. `authorizationId` is the handle the vendor gave this one mint, which is what a
+   * return leg is checked against (spec D24: the attempt's id must equal the callback's
+   * `auth_id`). An OMITTED field is an inferred absence, and the natural `?? something` at a call
+   * site turns "this broker mints no id" into a value — an empty string or a made-up id that a
+   * verifier would then compare against. A required nullable field makes the `null` a DECLARED
+   * STATEMENT, the same shape {@link ConnectedAppBroker.grantIsLocal} and
+   * {@link ConnectedAppBroker.authorizations} have in this file, and a call site that holds a
+   * null passes it on as null.
+   *
+   * IT PAIRS WITH {@link ConnectedAppBroker.authorizations}: a broker declaring `null` there
+   * answers `null` here, and a broker declaring a flow answers a non-null id on every successful
+   * mint. A broker that grew a flow and forgot the id would leave D24 with no source while every
+   * type still checked, so `broker-authorization-pairing.test.ts` asserts the pair over every
+   * broker literal in the tree.
    */
   authorize(request: {
     account: AccountRef;
@@ -598,7 +614,7 @@ export type ConnectedAppBroker = {
      * that needs it must not find the field optional because the last one did not.
      */
     action?: string;
-  }): Promise<{ redirectUrl: string }>;
+  }): Promise<{ redirectUrl: string; authorizationId: string | null }>;
   /** Whether this account is currently attached to this app at the vendor. */
   isConnected(request: {
     account: AccountRef;

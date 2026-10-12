@@ -455,7 +455,14 @@ export function createArcadeClient(apiKey: string): {
           "Arcade answered an authorization with no url to visit.",
         );
       }
-      return { redirectUrl: url };
+      // The mint's own `ar_…` id: spec D24 binds it to the callback's `auth_id`. A mint that
+      // answered none is not a success, and the refusal is here so that a null can never be
+      // minted from an Arcade answer — `authorizationId` is non-null for every Arcade mint.
+      const authorizationId = answer.id;
+      if (typeof authorizationId !== "string" || authorizationId === "") {
+        throw new Error("Arcade answered an authorization with no id.");
+      }
+      return { redirectUrl: url, authorizationId };
     },
     // 6.2: the connection-lifecycle trio.
     isConnected: async ({ account, toolkit }) =>

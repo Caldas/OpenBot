@@ -60,7 +60,45 @@ describe("arcade adapter authorize", () => {
     const params = seen[0] as Record<string, unknown>;
     expect(params.tool_name).toBe("Github.CreateIssue");
     expect(params.user_id).toBe("vendor-u1");
-    expect(out).toEqual({ redirectUrl: "https://consent.example/x" });
+    // The mint's own `ar_…` id rides out beside the url: spec D24 binds it to the callback's auth_id.
+    expect(out).toEqual({
+      redirectUrl: "https://consent.example/x",
+      authorizationId: "au_1",
+    });
+  });
+
+  test("returns the mint's id as authorizationId, untouched", async () => {
+    stub(
+      protoOf((c) => c.tools),
+      "authorize",
+      () =>
+        Promise.resolve({ id: "ar_abc123", url: "https://consent.example/y" }),
+    );
+    const { broker } = createArcadeClient("never-dialled");
+    const out = await broker.authorize({
+      account,
+      toolkit: "Github",
+      returnUrl: "https://app.example/settings",
+      action: "Github.CreateIssue",
+    });
+    expect(out.authorizationId).toBe("ar_abc123");
+  });
+
+  test("a mint that answers no id is not a success, so no null is ever minted", async () => {
+    stub(
+      protoOf((c) => c.tools),
+      "authorize",
+      () => Promise.resolve({ url: "https://consent.example/y" }),
+    );
+    const { broker } = createArcadeClient("never-dialled");
+    await expect(
+      broker.authorize({
+        account,
+        toolkit: "Github",
+        returnUrl: "https://app.example/settings",
+        action: "Github.CreateIssue",
+      }),
+    ).rejects.toThrow("no id");
   });
 
   test("with no action it refuses without dialling", async () => {

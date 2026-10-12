@@ -944,6 +944,8 @@ describe("beginning one person's connection", () => {
     ]);
     expect(begun).toEqual({
       redirectUrl: "https://backend.composio.dev/s/a-link",
+      // Declared null: Composio's return leg is correlated by sealed state, not by a broker id.
+      authorizationId: null,
     });
   });
 
@@ -5765,6 +5767,8 @@ describe("a field Composio padded with whitespace", () => {
 
     expect(begun).toEqual({
       redirectUrl: "https://backend.composio.dev/s/a-link",
+      // Declared null: Composio's return leg is correlated by sealed state, not by a broker id.
+      authorizationId: null,
     });
   });
 
@@ -5845,6 +5849,8 @@ describe("a field Composio padded with whitespace", () => {
 
     expect(begun).toEqual({
       redirectUrl: "https://backend.composio.dev/s/a-link",
+      // Declared null: Composio's return leg is correlated by sealed state, not by a broker id.
+      authorizationId: null,
     });
     expect(linked).toEqual([
       ["user_1", "ac_ours", { callbackUrl: RETURN_URL }],
@@ -6155,7 +6161,10 @@ describe("the key becoming a vendor, and which delete that vendor carries", () =
     };
 
     const minted: unknown[][] = [];
-    let begun: { redirectUrl: string } | null = null;
+    let begun: {
+      redirectUrl: string;
+      authorizationId: string | null;
+    } | null = null;
     try {
       // The config listing is what carries the auth config's id to the link, so it answers with the
       // one this deployment made — the id that must arrive SECOND.
@@ -6185,6 +6194,8 @@ describe("the key becoming a vendor, and which delete that vendor carries", () =
     ]);
     expect(begun).toEqual({
       redirectUrl: "https://backend.composio.dev/s/a-link",
+      // Declared null: Composio's return leg is correlated by sealed state, not by a broker id.
+      authorizationId: null,
     });
   });
 });

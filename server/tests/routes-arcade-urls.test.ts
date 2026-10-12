@@ -103,7 +103,10 @@ function deployment(provider: BrokerProvider) {
     listApps: async () => [directoryApp(row.toolkit)],
     authorize: async (input: { toolkit: string }) => {
       authorized.push({ toolkit: input.toolkit });
-      return { redirectUrl: "https://vendor.example/consent" };
+      return {
+        redirectUrl: "https://vendor.example/consent",
+        authorizationId: null,
+      };
     },
   } as unknown as ComposioBroker;
 

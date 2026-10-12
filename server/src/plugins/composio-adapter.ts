@@ -3496,7 +3496,7 @@ export function buildComposioClient(
       account,
       toolkit,
       returnUrl,
-    }): Promise<{ redirectUrl: string }> {
+    }): Promise<{ redirectUrl: string; authorizationId: string | null }> {
       const userId = account.vendorUserId;
       /*
        * THE CONFIG THIS DEPLOYMENT ALREADY MADE, AND NO SECOND ONE MADE HERE.
@@ -3765,7 +3765,11 @@ export function buildComposioClient(
           `Composio began a connection to ${toolkit} but answered with no page to visit, so there is nothing to send ${whose(account)} to. An app that is connected by entering a credential rather than by visiting a page cannot be connected from here.`,
         );
       }
-      return { redirectUrl: page };
+      // DECLARED NULL, NOT COMPOSIO'S CONNECTION-REQUEST ID. Composio's return leg never comes
+      // through this seam: it lands in `oauth.ts`, correlated by sealed state this deployment
+      // minted, not by an id the broker handed back. The connection-request id would put a value
+      // with a DIFFERENT MEANING behind the same member — the `accountName` defect again.
+      return { redirectUrl: page, authorizationId: null };
     },
 
     async isConnected({ account, toolkit }): Promise<boolean> {
