@@ -99,7 +99,7 @@ export function createSharedUseStore(
 ) {
   const roles = createRoleRepository(database);
   const scheme = schemeOf(provider);
-  const toolkitOf = (url: string) => toolkitOfFor(provider, url);
+  const appOfUrl = (url: string) => toolkitOfFor(provider, url);
   const canonicalUrlOf = (toolkit: string) => `${scheme}${toolkit}`;
 
   /*
@@ -112,8 +112,8 @@ export function createSharedUseStore(
    * than imported because the store's helper is a closure inside `createStore`, and this store is
    * built from the database alone.
    *
-   * "AT THE URL" MEANS THE CANONICAL ONE, `${scheme}${toolkitOf(url)}`, NOT THE DIALLED ROW'S OWN
-   * url string. `toolkitOf` (the active provider's own parser, via `toolkitOfFor`) trims whitespace and a trailing slash before it reads
+   * "AT THE URL" MEANS THE CANONICAL ONE, `${scheme}${appOfUrl(url)}`, NOT THE DIALLED ROW'S OWN
+   * url string. `appOfUrl` (the active provider's own parser, via `toolkitOfFor`) trims whitespace and a trailing slash before it reads
    * the slug, so a row stored as `<scheme>github/` or `<scheme>github ` names the toolkit
    * `github` exactly as `<scheme>github` does — and the store's own gate (`brokeredAppRow`,
    * `accountRefFor`) only ever looks rows up at the trimmed, canonical address. Grouping by the raw
@@ -122,9 +122,9 @@ export function createSharedUseStore(
    * else. So THIS is "the same rule" the comment above claims — same `order by`, same address the
    * gate itself resolves to.
    *
-   * A row whose url is not at the provider's scheme at all, or whose slug `toolkitOf` cannot parse, is an app
+   * A row whose url is not at the provider's scheme at all, or whose slug `appOfUrl` cannot parse, is an app
    * of its own and is the only row in its answer — the same two cases the store's own gate lets
-   * stand rather than refuses (`accountRefFor` reads `toolkitOf` only for a row provenanced at the active provider,
+   * stand rather than refuses (`accountRefFor` reads `appOfUrl` only for a row provenanced at the active provider,
    * and a null result there is read as "not brokered", not as a refusal).
    *
    * NO ROW AT THE CANONICAL URL is answered by falling back to the dialled `serverId` itself, which
@@ -148,7 +148,7 @@ export function createSharedUseStore(
       .where(eq(mcpServers.id, serverId))
       .limit(1);
     const url = row?.url ?? null;
-    const toolkit = url ? toolkitOf(url) : null;
+    const toolkit = url ? appOfUrl(url) : null;
     if (!toolkit) return { appId: serverId, url, ids: [serverId] };
     const canonical = canonicalUrlOf(toolkit);
     const siblings = await database
@@ -397,7 +397,7 @@ export function createSharedUseStore(
    * url to its answering row, and the mode, the title and the id returned are that row's. A Bot
    * holding tools through two rows at one url holds one app and is listed once.
    *
-   * "ITS URL" IS THE CANONICAL ONE A GRANTED ROW RESOLVES TO THROUGH `toolkitOf`, same as
+   * "ITS URL" IS THE CANONICAL ONE A GRANTED ROW RESOLVES TO THROUGH `appOfUrl`, same as
    * `rowsOfApp` above, and not the row's own stored url compared by prefix. A granted row stored as
    * `<scheme>github/` is the toolkit `github` exactly as `<scheme>github` is, and grouping it
    * by its raw url instead left it unmatched against the answering row at the trimmed address — so
@@ -421,7 +421,7 @@ export function createSharedUseStore(
       .select({ id: mcpServers.id, url: mcpServers.url })
       .from(mcpServers)
       .where(inArray(mcpServers.id, serverIds));
-    const toolkitOfRow = (url: string | null) => (url ? toolkitOf(url) : null);
+    const toolkitOfRow = (url: string | null) => (url ? appOfUrl(url) : null);
     const canonicalUrls = [
       ...new Set(
         granted
@@ -468,17 +468,17 @@ export function createSharedUseStore(
    * to contain `_` and `%`, which a LIKE would read as wildcards and match a neighbouring app's
    * grants by.
    *
-   * "ANY ROW AT ITS URL" HAS TO MEAN EVERY ROW `toolkitOf` RESOLVES TO THE SAME TOOLKIT, NOT ONLY
+   * "ANY ROW AT ITS URL" HAS TO MEAN EVERY ROW `appOfUrl` RESOLVES TO THE SAME TOOLKIT, NOT ONLY
    * THE ONES `rowsOfApp` FOUND AT THE EXACT CANONICAL URL. `rowsOfApp`'s `ids` already covers the
    * canonical rows plus the row actually dialled, but a grant can be made through a THIRD row —
    * neither the dialled one nor stored at the trimmed address, e.g. `<scheme><toolkit>/` sitting
    * elsewhere in the table — and that row never surfaces from an exact `eq` on the canonical url. So
-   * every row at the provider's scheme is read once here and matched in JavaScript by `toolkitOf`, which is the
+   * every row at the provider's scheme is read once here and matched in JavaScript by `appOfUrl`, which is the
    * one place that defines what "the same toolkit" means.
    */
   async function botsHolding(serverId: string): Promise<string[]> {
     const { ids, url } = await rowsOfApp(serverId);
-    const toolkit = url ? toolkitOf(url) : null;
+    const toolkit = url ? appOfUrl(url) : null;
     let allIds = ids;
     if (toolkit) {
       const schemeRows = await database
@@ -486,7 +486,7 @@ export function createSharedUseStore(
         .from(mcpServers)
         .where(sql`${mcpServers.url} like ${`${scheme}%`}`);
       const matching = schemeRows
-        .filter((row) => row.url && toolkitOf(row.url) === toolkit)
+        .filter((row) => row.url && appOfUrl(row.url) === toolkit)
         .map((row) => row.id);
       allIds = [...new Set([...ids, ...matching])];
     }
