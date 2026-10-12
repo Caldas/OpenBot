@@ -2930,6 +2930,67 @@ export function createPluginStore(options: PluginStoreOptions) {
     return schemeKind(await brokeredAppScheme(toolkit));
   }
 
+  /**
+   * THE ONE PLACE THAT ASKS THE BROKER FOR AN AUTH PROVIDER, and so the only place that knows how
+   * many it could not get. {@link connectionSiblings} says what the answers imply; this is the
+   * question asked of the rows this deployment holds, with its one extra fact: HOW MANY APPS ON
+   * THE ASKING IDENTITY WENT UNANSWERED.
+   *
+   * THE COUNT EXISTS BECAUSE THE RULE IS ASYMMETRIC ON PURPOSE. An app the broker cannot answer for
+   * is left out rather than guessed at — naming an app that will not be touched trains people to
+   * dismiss the warning that matters (D26). But under-naming is not free: somebody presses
+   * Disconnect and loses an app nobody warned them about, and a deployment whose resolver fails
+   * systematically would do it silently and for ever. So the number is surfaced, an integer and
+   * never names, for whoever reads the trail.
+   *
+   * Counted over the OTHER apps on the asking identity: the asking app's own row is not a sibling
+   * candidate. If the asking app itself is unanswered, nothing is resolvable and every other app on
+   * the identity is unanswered with it.
+   */
+  async function resolveSiblings(input: {
+    toolkit: string;
+    account: AccountRef;
+  }): Promise<{ siblings: string[]; unanswered: number }> {
+    if (!broker) return { siblings: [], unanswered: 0 };
+    const authProvider = await broker.authProviderOf(input.toolkit);
+    const held = await database
+      .select({
+        app: brokeredConnections.app,
+        vendorUserId: brokeredConnections.vendorUserId,
+      })
+      .from(brokeredConnections)
+      .where(
+        and(
+          eq(brokeredConnections.provider, brokerProvider),
+          eq(brokeredConnections.vendorUserId, input.account.vendorUserId),
+        ),
+      );
+    if (!authProvider) {
+      const others = new Set(
+        held.map((row) => row.app).filter((app) => app !== input.toolkit),
+      );
+      return { siblings: [], unanswered: others.size };
+    }
+    const footprints: ConnectionFootprint[] = [];
+    const unanswered = new Set<string>();
+    for (const row of held) {
+      const rowProvider = await broker.authProviderOf(row.app);
+      if (rowProvider) footprints.push({ ...row, authProvider: rowProvider });
+      else if (row.app !== input.toolkit) unanswered.add(row.app);
+    }
+    return {
+      siblings: connectionSiblings(
+        {
+          app: input.toolkit,
+          vendorUserId: input.account.vendorUserId,
+          authProvider,
+        },
+        footprints,
+      ),
+      unanswered: unanswered.size,
+    };
+  }
+
   return {
     accountRefFor,
     /**
@@ -6086,41 +6147,17 @@ export function createPluginStore(options: PluginStoreOptions) {
      * sibling that is not one is the failure D26 exists to prevent. If the asking app itself is
      * unanswered the list is empty.
      *
+     * `unanswered` IS HOW MANY OTHER APPS ON THE ASKING IDENTITY WERE LEFT OUT FOR THAT REASON — an
+     * integer, never names; see {@link resolveSiblings} for why it is surfaced.
+     *
      * IT ANSWERS A FACT AND ACTS ON NOTHING: no revocation, no deletion, no audit write. Returns the
-     * sibling toolkits, sorted, never including `toolkit`.
+     * sibling toolkits, sorted, never including `toolkit`, and the unanswered count.
      */
     async siblingApps(input: {
       toolkit: string;
       account: AccountRef;
-    }): Promise<string[]> {
-      if (!broker) return [];
-      const authProvider = await broker.authProviderOf(input.toolkit);
-      if (!authProvider) return [];
-      const held = await database
-        .select({
-          app: brokeredConnections.app,
-          vendorUserId: brokeredConnections.vendorUserId,
-        })
-        .from(brokeredConnections)
-        .where(
-          and(
-            eq(brokeredConnections.provider, brokerProvider),
-            eq(brokeredConnections.vendorUserId, input.account.vendorUserId),
-          ),
-        );
-      const footprints: ConnectionFootprint[] = [];
-      for (const row of held) {
-        const rowProvider = await broker.authProviderOf(row.app);
-        if (rowProvider) footprints.push({ ...row, authProvider: rowProvider });
-      }
-      return connectionSiblings(
-        {
-          app: input.toolkit,
-          vendorUserId: input.account.vendorUserId,
-          authProvider,
-        },
-        footprints,
-      );
+    }): Promise<{ siblings: string[]; unanswered: number }> {
+      return resolveSiblings(input);
     },
 
     /**
@@ -7780,47 +7817,85 @@ export function createPluginStore(options: PluginStoreOptions) {
           unreadable: "reports it as asked for too, which is the claim that cannot be too weak";
         }
       >;
-      const fieldScheme = (await brokeredAppKind(input.toolkit)) === "key";
+      /*
+       * THE APPS THIS REVOCATION ENDS BESIDES THE ONE ASKED ABOUT, read BEFORE anything is revoked.
+       * Where a connection is keyed `(identity, auth provider)` — Arcade — withdrawing one app's
+       * connection ends every app that shares it, so a local row left for one of them claims an
+       * account the vendor no longer holds, which is the other way to lie. Where each app is its
+       * own auth provider — Composio — this is always empty and nothing below differs from a
+       * disconnect of one. The question is {@link resolveSiblings}' and none of it is derived here.
+       */
+      const { siblings, unanswered } = await resolveSiblings({
+        toolkit: input.toolkit,
+        account: input.account,
+      });
+
+      // Read while the rows are still here: the scheme is on the row, and the delete below ends it.
+      const keyApps = new Set<string>();
+      for (const app of [input.toolkit, ...siblings]) {
+        if ((await brokeredAppKind(app)) === "key") keyApps.add(app);
+      }
 
       // Whether there was an account to end at all, which is what decides if anybody was
       // disconnected. Named apart from the field below because for a key the two differ: something
       // ended, and nothing was asked of the provider.
+      //
+      // REVOKE BEFORE ANY LOCAL DELETE, and ONE ask: it ends the siblings with it. It THROWS on a
+      // partial ask, which is the partial failure — the throw leaves this method before a single
+      // row is deleted or written, every app's row standing, so pressing Disconnect again is the
+      // recovery.
       const ended = await broker.revoke({
         account: input.account,
         toolkit: input.toolkit,
       });
 
-      const vendorRevocationRequested = fieldScheme ? false : ended;
+      // Every app that ended, the asked one first. Its audit row is its own; a sibling's names the
+      // app whose disconnect ended it.
+      for (const app of [input.toolkit, ...siblings]) {
+        const vendorRevocationRequested = keyApps.has(app) ? false : ended;
 
-      // `returning` because whether a row was here is half of what decides if anybody was
-      // disconnected, and a delete that answered nothing would leave the two cases indistinguishable.
-      const [deleted] = await database
-        .delete(brokeredConnections)
-        .where(accountRow(input.toolkit, input.account))
-        .returning({ app: brokeredConnections.app });
+        // `returning` because whether a row was here is half of what decides if anybody was
+        // disconnected, and a delete that answered nothing would leave the two cases
+        // indistinguishable.
+        const [deleted] = await database
+          .delete(brokeredConnections)
+          .where(accountRow(app, input.account))
+          .returning({ app: brokeredConnections.app });
 
-      if (deleted || ended) {
-        await recordAuditEvent(auditStore, {
-          eventType: "mcp.account_disconnected",
-          targetType: "mcp_server",
-          targetId: input.toolkit,
-          payload: {
-            actor: input.by,
-            server: input.toolkit,
-            // Whose account this was, which is not always who ended it: an administrator
-            // offboarding somebody and a person disconnecting themselves write the same shape of
-            // row, and only these two fields tell them apart. The deployment's own account has no
-            // person behind it, so it is named as the deployment rather than as whoever pressed.
-            owner:
-              input.account.holder === "person"
-                ? input.account.userId
-                : "deployment",
-            reason: input.reason,
-            vendorRevocationRequested,
-          },
-        });
+        if (deleted || ended) {
+          await recordAuditEvent(auditStore, {
+            eventType: "mcp.account_disconnected",
+            targetType: "mcp_server",
+            targetId: app,
+            payload: {
+              actor: input.by,
+              server: app,
+              // Whose account this was, which is not always who ended it: an administrator
+              // offboarding somebody and a person disconnecting themselves write the same shape of
+              // row, and only these two fields tell them apart. The deployment's own account has
+              // no person behind it, so it is named as the deployment rather than as whoever
+              // pressed.
+              owner:
+                input.account.holder === "person"
+                  ? input.account.userId
+                  : "deployment",
+              reason: input.reason,
+              vendorRevocationRequested,
+              /*
+               * HOW MANY apps on this identity could not be asked about and so were left out of
+               * the set above, never their names. An integer, so an operator can see that "we did
+               * not know" happened; see {@link resolveSiblings}.
+               */
+              unansweredSiblings: unanswered,
+              ...(app === input.toolkit ? {} : { endedWith: input.toolkit }),
+            },
+          });
+        }
       }
 
+      const vendorRevocationRequested = keyApps.has(input.toolkit)
+        ? false
+        : ended;
       return { vendorRevocationRequested };
     },
 

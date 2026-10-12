@@ -156,7 +156,7 @@ describe("revocation siblings are keyed on (vendor identity, auth provider)", ()
         toolkit: gmail,
         account: { holder: "deployment", vendorUserId: gmailIdentity },
       }),
-    ).toEqual([]);
+    ).toEqual({ siblings: [], unanswered: 0 });
   });
 
   test("two apps genuinely sharing the pair are siblings, and an app on another provider is not", async () => {
@@ -170,7 +170,7 @@ describe("revocation siblings are keyed on (vendor identity, auth provider)", ()
         toolkit: gmail,
         account: { holder: "person", userId, vendorUserId: userId },
       }),
-    ).toEqual([calendar]);
+    ).toEqual({ siblings: [calendar], unanswered: 0 });
   });
 
   test("an app with no co-tenant has an empty list, never itself", async () => {
@@ -182,7 +182,7 @@ describe("revocation siblings are keyed on (vendor identity, auth provider)", ()
         toolkit: lonely,
         account: { holder: "person", userId, vendorUserId: userId },
       }),
-    ).toEqual([]);
+    ).toEqual({ siblings: [], unanswered: 0 });
   });
 
   /**
@@ -206,7 +206,7 @@ describe("revocation siblings are keyed on (vendor identity, auth provider)", ()
         toolkit: gmail,
         account: { holder: "person", userId: mine, vendorUserId: mine },
       }),
-    ).toEqual([calendar]);
+    ).toEqual({ siblings: [calendar], unanswered: 0 });
 
     // The asking toolkit, plus its own two rows. Never `slack`, never `lonely`.
     expect(asked.toSorted()).toEqual([calendar, gmail, gmail].toSorted());
@@ -248,6 +248,6 @@ describe("siblingApps under Composio", () => {
         toolkit: gmail,
         account: { holder: "person", userId, vendorUserId: userId },
       }),
-    ).toEqual([]);
+    ).toEqual({ siblings: [], unanswered: 0 });
   });
 });
