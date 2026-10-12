@@ -6,7 +6,7 @@ import {
   IntelligenceAgentRunner,
 } from "@copilotkit/runtime/v2";
 import { serve } from "bun";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import { COMPUTER_GUIDANCE } from "../../shared/bot-prompt";
 import { DICTATION_HTTP_IDLE_SECONDS } from "../../shared/dictation";
@@ -155,6 +155,7 @@ import {
 } from "./credentials";
 import { createDatabase } from "./db/client";
 import {
+  brokeredConnections,
   channelAgents,
   channelMemberships,
   channels,
@@ -192,8 +193,10 @@ import { createPasswordStore } from "./passwords/store";
 import { createOnboardingStore } from "./people/onboarding";
 import { createPeopleStore } from "./people/store";
 import { createAccountModeSwitch } from "./plugins/account-mode";
-import { activeProvider } from "./plugins/broker";
+import { activeProvider, assertActivatable } from "./plugins/broker";
 import { useRoutineTools } from "./plugins/builtin-routines";
+import { useArcadeClient } from "./plugins/arcade";
+import { createArcadeClient } from "./plugins/arcade-adapter";
 import { useComposioClient } from "./plugins/composio";
 import { createComposioClient } from "./plugins/composio-adapter";
 import { backfillBrokeredLogos } from "./plugins/logos";
@@ -202,6 +205,7 @@ import {
   createSharedUseGate,
   createSharedUseStore,
 } from "./plugins/shared-use-store";
+import { selectProviderWiring } from "./plugins/provider-wiring";
 import { createPluginStore } from "./plugins/store";
 import {
   grantedSkills,
@@ -668,10 +672,34 @@ const sandboxedStore = createSandboxedStore(database, bootAuditStore);
  * Installing a client built from an absent key would turn all of that into a vendor error at first
  * use, which sends an operator looking for a broken Composio instead of at their own configuration.
  */
-const composio = config.composioApiKey
-  ? createComposioClient(config.composioApiKey)
-  : null;
-if (composio) useComposioClient(composio.actions);
+/*
+ * EXACTLY ONE PROVIDER, DECIDED ONCE. `selectProviderWiring` answers which transport client is
+ * installed and which broker goes on to the store and the routes; the other client is installed as
+ * an explicit `null`, so a deployment holding both keys (legal, and needed to end accounts at the
+ * old vendor) never has two seams live. It refuses a named provider whose key is unset.
+ */
+const providerWiring = selectProviderWiring(config, {
+  composio: createComposioClient,
+  arcade: createArcadeClient,
+});
+useComposioClient(providerWiring.install.composio);
+useArcadeClient(providerWiring.install.arcade);
+const wiredProvider = providerWiring.provider;
+const composio =
+  wiredProvider && providerWiring.broker
+    ? { broker: providerWiring.broker, provider: wiredProvider }
+    : null;
+/*
+ * Activation is refused while the OTHER provider still holds connection rows. Keyed on rows, never
+ * on keys: having both keys set is the expected state while a sunset is in progress.
+ */
+if (wiredProvider) {
+  const [{ count: otherProviderRows }] = await database
+    .select({ count: sql<number>`count(*)::int` })
+    .from(brokeredConnections)
+    .where(ne(brokeredConnections.provider, wiredProvider));
+  assertActivatable(wiredProvider, otherProviderRows);
+}
 
 /**
  * The private sign-in form and the Passwords vault. A Bot asks to be signed in; the person answers
@@ -793,13 +821,15 @@ const accountModes = createAccountModeSwitch({
 
 // Logo metadata is optional; a vendor outage must not prevent the API from starting.
 if (composio) {
-  void backfillBrokeredLogos(database, "composio", composio.broker).catch(
-    () => {
-      console.warn(
-        "Composio app logos could not be updated. Existing icons remain available; missing logos will be retried on the next restart.",
-      );
-    },
-  );
+  void backfillBrokeredLogos(
+    database,
+    composio.provider,
+    composio.broker,
+  ).catch(() => {
+    console.warn(
+      "Composio app logos could not be updated. Existing icons remain available; missing logos will be retried on the next restart.",
+    );
+  });
 }
 
 /**
@@ -2987,7 +3017,7 @@ const app = createApp(
   // The app directory, behind the same client the plugin store and the transport already share.
   // Absent without a key, which leaves the routes reporting no broker rather than listing apps
   // nobody could connect.
-  composio ? { broker: composio.broker } : undefined,
+  composio ?? undefined,
   process.env.OPENBOT_MODEL_OAUTH_FILE?.trim()
     ? createProviderOAuthProxy(process.env.OPENBOT_MODEL_OAUTH_FILE.trim())
     : undefined,

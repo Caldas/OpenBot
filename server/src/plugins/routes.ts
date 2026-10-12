@@ -6,6 +6,7 @@ import type { AppVariables } from "../auth/guards";
 import { requireAdmin } from "../auth/guards";
 import { reasonWithoutStatement } from "../db/query-failure";
 import type { AccountModeSwitch } from "./account-mode";
+import type { BrokerProvider } from "./access";
 import {
   type BrokerApp,
   type BrokerField,
@@ -201,7 +202,7 @@ export function createPluginRoutes(
    * trap `connect` documents applies here with one more argument in it — every parameter from that
    * position on is optional, so a misplaced one typechecks and quietly does nothing.
    */
-  composio?: { broker: ComposioBroker },
+  composio?: { broker: ComposioBroker; provider: BrokerProvider },
   /**
    * Who may use an app's one shared account, and the switch that makes an app Shared or Personal.
    *
