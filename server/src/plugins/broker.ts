@@ -13,6 +13,7 @@
  * the import graph of every test that touches enablement. `AccountRef`, below, is the one import
  * that crosses this file's boundary, and it is a type this deployment names, never the vendor's.
  */
+import type { BrokerProvider } from "./access";
 import type { AccountRef } from "./shared-accounts";
 
 /**
@@ -761,4 +762,26 @@ function webAddress(value: string): URL | null {
  */
 export function brokerSentence(error: unknown): string | null {
   return error instanceof BrokerRefusalError ? error.message : null;
+}
+
+/**
+ * Which broker this deployment runs, from configuration alone (no database access).
+ *
+ * One key set selects that provider. Both set is legal and expected, since ending an account at
+ * the old vendor needs its key, so `brokerProvider` decides and unset means `null`. A
+ * `brokerProvider` naming a provider whose key is unset is refused (`null`), never selected.
+ */
+export function activeProvider(c: {
+  composioApiKey?: string;
+  arcadeApiKey?: string;
+  brokerProvider?: BrokerProvider;
+}): BrokerProvider | null {
+  const composio = c.composioApiKey !== undefined;
+  const arcade = c.arcadeApiKey !== undefined;
+  const configured: BrokerProvider[] = [];
+  if (composio) configured.push("composio");
+  if (arcade) configured.push("arcade");
+  const named = c.brokerProvider;
+  if (named !== undefined) return configured.includes(named) ? named : null;
+  return configured.length === 1 ? configured[0] : null;
 }
