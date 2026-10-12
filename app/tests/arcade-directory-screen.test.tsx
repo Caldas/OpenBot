@@ -194,4 +194,11 @@ test("the Arcade directory draws nothing until the page names a provider", async
   expect(view.queryByText("the plugins index")).toBeNull();
   expect(view.queryByRole("alert")).toBeNull();
   release();
+  // Drain what the release started. The deferred stub answers `{ apps: [] }`, which carries no
+  // `provider`, so `pluginsProvider` defaults to "composio" and this route redirects to the decoy.
+  // Awaiting that here is what keeps React's scheduled work INSIDE the test: released and then
+  // abandoned, the render lands after `cleanup` and after `GlobalRegistrator.unregister()` has
+  // removed `window`, and `scheduler`'s `window.event` throws into the runner — three passes and
+  // an exit code of 1, on the one file that proves wave 8's deliverable.
+  await view.findByText("the plugins index");
 });
