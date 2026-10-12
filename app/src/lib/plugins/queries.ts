@@ -1,5 +1,9 @@
 import { queryOptions } from "@tanstack/react-query";
 import { client } from "@/lib/client";
+import {
+  directoryReadFailure,
+  type PluginsProvider,
+} from "./provider-vocabulary";
 
 /**
  * Re-exported, not re-declared.
@@ -414,18 +418,21 @@ export function pluginsPageQueryOptions() {
 }
 
 /**
- * Composio's app directory, narrowed by a search term.
+ * The active broker's app directory, narrowed by a search term.
  *
  * The term goes to our own endpoint because the vendor's client drops a search parameter and
  * answers with an unfiltered page, so filtering has to happen somewhere that admits to doing it.
  */
-export function composioAppsQueryOptions(query: string) {
+export function composioAppsQueryOptions(
+  query: string,
+  provider: PluginsProvider,
+) {
   return queryOptions({
     queryKey: pluginKeys.composioApps(query),
     queryFn: async (): Promise<{ apps: ComposioApp[] }> => {
       const response = await client(
         `/api/plugins/composio/apps?q=${encodeURIComponent(query)}`,
-        { fallback: "Composio's app directory could not be read." },
+        { fallback: directoryReadFailure(provider) },
       );
       return response.json();
     },

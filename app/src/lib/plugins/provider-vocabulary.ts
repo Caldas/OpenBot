@@ -70,6 +70,16 @@ export function providerVocabulary(
   return VOCABULARY[provider];
 }
 
+/**
+ * What a failed directory read says when the server sent no message of its own.
+ *
+ * ONE SENTENCE FOR BOTH THE QUERY AND THE SCREEN, so the two layers cannot drift: the query layer's
+ * fallback once spelled a vendor on its own and printed Composio's name on an Arcade deployment.
+ */
+export function directoryReadFailure(provider: PluginsProvider): string {
+  return `${VOCABULARY[provider].name}'s app directory could not be read.`;
+}
+
 /** The "More apps" section's own sentence. */
 export function moreAppsSectionDescription(provider: PluginsProvider): string {
   return `A directory this deployment has not reviewed, reached through ${VOCABULARY[provider].name}.`;

@@ -28,6 +28,7 @@ import {
   invalidatePlugins,
 } from "@/lib/plugins/mutations";
 import {
+  directoryReadFailure,
   type PluginsProvider,
   providerVocabulary,
 } from "@/lib/plugins/provider-vocabulary";
@@ -69,7 +70,7 @@ export function BrokerDirectory({ provider }: { provider: PluginsProvider }) {
     return () => clearTimeout(timer);
   }, [search]);
 
-  const apps = useQuery(composioAppsQueryOptions(query));
+  const apps = useQuery(composioAppsQueryOptions(query, provider));
   /*
    * WHAT A FAILED ADD SAID, KEPT WHERE A SECOND ADD CANNOT ERASE IT.
    *
@@ -154,7 +155,7 @@ export function BrokerDirectory({ provider }: { provider: PluginsProvider }) {
              * the single thing an operator who reached this URL needs to read; the derived line
              * stays as the fallback for a failure that arrived carrying no message of its own.
              */}
-            {apps.error.message || `${name}'s app directory could not be read.`}
+            {apps.error.message || directoryReadFailure(provider)}
           </p>
         ) : listed.length === 0 ? (
           <PageEmpty>
