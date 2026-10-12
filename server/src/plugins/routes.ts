@@ -2214,6 +2214,136 @@ export function createPluginRoutes(
   });
 
   /**
+   * Begin authorizing ONE ACTION of a brokered app, for a provider that grants action by action.
+   * Answers `{ authorizationUrl }` and nothing else.
+   *
+   * ORDERING PRINCIPLE: EVERYTHING THAT CAN FAIL WITHOUT THE VENDOR RUNS BEFORE THE CLAIM; THE
+   * CLAIM IS THE LAST THING BEFORE THE MINT. A bad `OPENBOT_APP_URL` must not leave a live attempt
+   * with no mint behind it, and the mint runs after the insert so a mint can never exist without a
+   * row to correlate it.
+   *
+   * THE CAPABILITY GATE IS FIRST, BEFORE `brokeredAccountFor` AND BEFORE ANYTHING IS WRITTEN. A
+   * broker that declares no authorization flow cannot complete one, so claiming a row for it would
+   * block the actor for the full attempt lifetime over a flow that was never possible; a gate after
+   * the claim does not prevent that. It is a presence test on a declared capability and never a
+   * vendor name. 503 and not 404 or 400: the route exists, so 404 would lie, and the request is not
+   * what is wrong; 503 is this file's vocabulary for a capability this deployment does not have.
+   *
+   * `actorId` IS THE SESSION SUBJECT (`users.id`) AND NEVER A CREDENTIAL ACTOR: the verifier finds
+   * the attempt from the returning browser's session.
+   *
+   * THE URL IS A BEARER CAPABILITY — answered to this browser and to nothing else. It is never
+   * logged, audited or put in an error body. No `next_uri` is sent: the vendor refuses every value,
+   * and the landing page comes from the attempt row instead.
+   *
+   * NOT HERE: what a failed mint does to its attempt, and cancelling one.
+   */
+  routes.post("/servers/:id/authorize", requireUser, async (context) => {
+    const serverId = context.req.param("id");
+
+    if (!composio) {
+      return context.json(
+        { error: new BrokerUnconfiguredError().message },
+        503,
+      );
+    }
+    const flow = composio.broker.authorizations;
+    if (!flow) {
+      return context.json(
+        {
+          error:
+            "This deployment's apps are connected once for the whole app, with the Connect button on the app's page; they are not authorized one action at a time.",
+        },
+        503,
+      );
+    }
+
+    const resolved = await brokeredAccountFor(context, serverId);
+    if (resolved.refusal) {
+      return context.json(
+        { error: resolved.refusal.error },
+        resolved.refusal.status,
+      );
+    }
+    const { account, toolkit, title } = resolved;
+
+    const body = await context.req.json().catch(() => null);
+    const action =
+      body && typeof body === "object" && "action" in body
+        ? (body as { action: unknown }).action
+        : undefined;
+    // Exact `===` against the stored names: Arcade's are case-sensitive and never normalized.
+    if (
+      typeof action !== "string" ||
+      !(await store.serverPublishesAction(serverId, action))
+    ) {
+      return context.json(
+        { error: `${title} does not publish an action by that name.` },
+        400,
+      );
+    }
+
+    if (!connect?.appUrl) {
+      return context.json(
+        {
+          error:
+            "This deployment has no app URL configured, so there is nowhere to send you back to. Set OPENBOT_APP_URL.",
+        },
+        503,
+      );
+    }
+    const returnTo: ConnectOrigin =
+      account.holder === "deployment"
+        ? "admin"
+        : context.req.query("returnTo") === "admin"
+          ? "admin"
+          : "settings";
+    let returnUrl: string;
+    try {
+      returnUrl = brokerReturnUrl(
+        connectedAccountsUrlFor(connect.appUrl, { serverId }, returnTo),
+      );
+    } catch (error) {
+      const refusal = brokerRefusal(
+        error,
+        "This deployment could not build the address to send you back to, so nothing was started.",
+      );
+      return context.json({ error: refusal.error }, refusal.status);
+    }
+
+    const claim = await store.claimAuthorizationAttempt({
+      actorId: context.var.actor.id,
+      serverId,
+      action,
+      account,
+    });
+    if (!claim.claimed) {
+      return context.json(
+        {
+          error: claim.live
+            ? `An authorization for ${claim.live.action} is already in progress. Finish it, or wait for it to expire, before starting another.`
+            : "An authorization is already in progress. Finish it, or wait for it to expire, before starting another.",
+        },
+        409,
+      );
+    }
+
+    const minted = await composio.broker.authorize({
+      account,
+      toolkit,
+      action,
+      returnUrl,
+    });
+    // A null id is recorded as NULL: an attempt holding none can never complete and simply expires.
+    await store.recordAuthorizationMint({
+      actorId: context.var.actor.id,
+      createdAt: claim.attempt.createdAt,
+      authId: minted.authorizationId,
+    });
+    return context.json({ authorizationUrl: minted.redirectUrl });
+  });
+
+  /**
    * Where the vendor sends somebody back.
    *
    * Deliberately not behind `requireUser`. The person arrives on a redirect from another company's

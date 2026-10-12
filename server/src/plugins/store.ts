@@ -4849,6 +4849,27 @@ export function createPluginStore(options: PluginStoreOptions) {
       return row !== undefined;
     },
 
+    /**
+     * Whether this server publishes an action named EXACTLY this.
+     *
+     * One indexed read on `mcp_tools`' `(server_id, name)` key, and deliberately not `listServers`,
+     * which materialises every tool and every grant in the deployment to answer. The comparison is
+     * `=` on the stored text and so CASE-SENSITIVE: Arcade names are dotted and case-sensitive and
+     * are never normalized, and `Gmail.SendEmail` is not `gmail.sendemail`.
+     */
+    async serverPublishesAction(
+      serverId: string,
+      action: string,
+    ): Promise<boolean> {
+      if (!serverId || !action) return false;
+      const [row] = await database
+        .select({ name: mcpTools.name })
+        .from(mcpTools)
+        .where(and(eq(mcpTools.serverId, serverId), eq(mcpTools.name, action)))
+        .limit(1);
+      return row !== undefined;
+    },
+
     async agentOwner(agentId: string): Promise<string | null | undefined> {
       const [row] = await database
         .select({ ownerUserId: agentProfiles.ownerUserId })
@@ -6067,7 +6088,8 @@ export function createPluginStore(options: PluginStoreOptions) {
     async recordAuthorizationMint(input: {
       actorId: string;
       createdAt: Date;
-      authId: string;
+      /** Null when the vendor answered with no id: the attempt then can never complete. */
+      authId: string | null;
     }): Promise<boolean> {
       const written = await database
         .update(pendingAuthorizations)
