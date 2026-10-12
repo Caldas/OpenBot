@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import Arcade from "@arcadeai/arcadejs";
 import { useArcadeClient } from "../src/plugins/arcade";
 import { createArcadeClient } from "../src/plugins/arcade-adapter";
@@ -11,9 +11,17 @@ const connectionsProto = (): Methods =>
     new Arcade({ apiKey: "never-dialled" }).admin.userConnections,
   ) as Methods;
 
+const toolsProto = (): Methods =>
+  Object.getPrototypeOf(
+    new Arcade({ apiKey: "never-dialled" }).tools,
+  ) as Methods;
+
 const restores: (() => void)[] = [];
-function stub(name: string, impl: (...args: unknown[]) => unknown) {
-  const on = connectionsProto();
+function stub(
+  name: string,
+  impl: (...args: unknown[]) => unknown,
+  on: Methods = connectionsProto(),
+) {
   const was = on[name];
   on[name] = impl;
   restores.push(() => {
@@ -38,6 +46,38 @@ const row = (n: number, provider: string, info?: unknown) => ({
   provider_user_info: info,
 });
 
+/**
+ * What the toolkit's listing says its auth provider is, keyed by the toolkit asked about. A toolkit
+ * absent from the map is answered by a listing that names no provider, i.e. UNRESOLVED. Counts the
+ * listing reads so a test can pin that a call resolves once.
+ */
+function providers(byToolkit: Record<string, string>) {
+  const asked: unknown[] = [];
+  stub(
+    "list",
+    (query) => {
+      asked.push(query);
+      const toolkit = (query as { toolkit: string }).toolkit;
+      const provider = byToolkit[toolkit];
+      return Promise.resolve({
+        items: [
+          {
+            qualified_name: `${toolkit}.A`,
+            requirements: {
+              authorization: {
+                id: "x",
+                ...(provider ? { provider_id: provider } : {}),
+              },
+            },
+          },
+        ],
+      });
+    },
+    toolsProto(),
+  );
+  return asked;
+}
+
 function listing(rows: unknown[]) {
   stub("list", () =>
     (async function* () {
@@ -46,7 +86,18 @@ function listing(rows: unknown[]) {
   );
 }
 
+/** The world every earlier case lived in: each provider is named after its own toolkit. */
+const NAMED_AFTER_TOOLKIT = {
+  Github: "github",
+  GitHub: "github",
+  Google: "google",
+};
+
 describe("arcade adapter connection lifecycle", () => {
+  beforeEach(() => {
+    providers(NAMED_AFTER_TOOLKIT);
+  });
+
   test("isConnected is true on a non-empty list and false on an empty one", async () => {
     const rows: unknown[] = [row(1, "github")];
     listing(rows);
@@ -142,5 +193,78 @@ describe("arcade adapter connection lifecycle", () => {
     listing([row(1, "github", {}), row(2, "google", { name: "Grace" })]);
     const { broker } = createArcadeClient("never-dialled");
     expect(await broker.accountName({ account, toolkit: "Github" })).toBeNull();
+  });
+
+  test("a Gmail row under provider `google` is FOUND by all three members", async () => {
+    providers({ Gmail: "google" });
+    listing([row(4, "google", { name: "Grace" })]);
+    const deleted: unknown[] = [];
+    stub("delete", (id) => {
+      deleted.push(id);
+      return Promise.resolve();
+    });
+    const { broker } = createArcadeClient("never-dialled");
+    const toolkit = "Gmail";
+    expect(await broker.isConnected({ account, toolkit })).toBe(true);
+    expect(await broker.accountName({ account, toolkit })).toBe("Grace");
+    expect(await broker.revoke({ account, toolkit })).toBe(true);
+    expect(deleted).toEqual(["ac_4"]);
+  });
+
+  test("the provider is compared case-insensitively", async () => {
+    providers({ Gmail: "Google" });
+    listing([row(4, "google", { name: "Grace" })]);
+    const { broker } = createArcadeClient("never-dialled");
+    expect(await broker.isConnected({ account, toolkit: "Gmail" })).toBe(true);
+  });
+
+  test("a different provider on the same identity is still excluded", async () => {
+    providers({ Gmail: "google" });
+    listing([row(1, "github", { name: "Ada" }), row(2, "google", {})]);
+    const deleted: unknown[] = [];
+    stub("delete", (id) => {
+      deleted.push(id);
+      return Promise.resolve();
+    });
+    const { broker } = createArcadeClient("never-dialled");
+    expect(await broker.accountName({ account, toolkit: "Gmail" })).toBeNull();
+    expect(await broker.revoke({ account, toolkit: "Gmail" })).toBe(true);
+    expect(deleted).toEqual(["ac_2"]);
+  });
+
+  test("an UNRESOLVED toolkit answers as no rows and never falls back to its name", async () => {
+    // `Gmail` is unresolved, and a row whose provider IS literally `gmail` exists: a fallback to
+    // the toolkit name would find it.
+    providers({});
+    listing([row(1, "gmail", { name: "Grace" })]);
+    const deleted: unknown[] = [];
+    stub("delete", (id) => {
+      deleted.push(id);
+      return Promise.resolve();
+    });
+    const { broker } = createArcadeClient("never-dialled");
+    const toolkit = "Gmail";
+    expect(await broker.isConnected({ account, toolkit })).toBe(false);
+    expect(await broker.accountName({ account, toolkit })).toBeNull();
+    expect(await broker.revoke({ account, toolkit })).toBe(false);
+    expect(deleted).toEqual([]);
+  });
+
+  test("a malformed listing THROWS out of the lifecycle members rather than answering no rows", async () => {
+    stub("list", () => Promise.resolve({ items: "nope" }), toolsProto());
+    listing([row(1, "gmail")]);
+    const { broker } = createArcadeClient("never-dialled");
+    await expect(broker.revoke({ account, toolkit: "Gmail" })).rejects.toThrow(
+      /action list/,
+    );
+  });
+
+  test("each call resolves the provider once, however many rows there are", async () => {
+    const asked = providers({ Gmail: "google" });
+    listing([row(1, "google"), row(2, "google"), row(3, "google")]);
+    stub("delete", () => Promise.resolve());
+    const { broker } = createArcadeClient("never-dialled");
+    await broker.revoke({ account, toolkit: "Gmail" });
+    expect(asked).toHaveLength(1);
   });
 });

@@ -217,16 +217,29 @@ const FIELDS_REFUSAL =
 type ConnectionRow = Arcade.Admin.UserConnectionResponse;
 
 /**
- * THE ONE PLACE the toolkit to `provider_id` mapping lives. It is read off each row's own
- * `provider_id` in the `admin.userConnections` listing the adapter already performs (no extra
- * vendor call), compared case-insensitively. A row for another app is never returned.
+ * The connections an account holds under a toolkit's AUTH PROVIDER.
+ *
+ * FILTERED ON THE PROVIDER, NOT THE TOOLKIT NAME. A row's `provider_id` is the auth-provider id,
+ * which equals the toolkit only when an operator happened to name it so (`Github`, `Asana`,
+ * `Attio`); one Google connection serves `Gmail` and `GoogleCalendar` both. So the toolkit is
+ * resolved through `authProviderOf`, which is where that mapping lives, and the rows are compared
+ * to THAT, case-insensitively (Amendment 16's client-side fold stands). The provider is resolved
+ * ONCE per call, never per row.
+ *
+ * AN UNRESOLVED TOOLKIT (`null`) ANSWERS AS NO ROWS and does NOT fall back to the toolkit name: a
+ * fallback would silently restore the defect under a different spelling, invisibly against every
+ * fixture in the tree. Callers then answer `isConnected` false, `revoke` false (no delete spent),
+ * `accountName` null. A malformed listing is different: `authProviderOf` THROWS, and that
+ * propagates, onto the Disconnect path included.
  */
 async function connectionsFor(
   client: Arcade,
   vendorUserId: string,
   toolkit: string,
 ): Promise<ConnectionRow[]> {
-  const wanted = toolkit.toLowerCase();
+  const provider = await authProviderOf(client, toolkit);
+  if (provider === null) return [];
+  const wanted = provider.toLowerCase();
   const rows: ConnectionRow[] = [];
   for await (const row of client.admin.userConnections.list({
     user_id: vendorUserId,

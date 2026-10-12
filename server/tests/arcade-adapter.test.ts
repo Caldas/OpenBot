@@ -174,6 +174,17 @@ describe("createArcadeClient", () => {
         for (const r of rows) yield r;
       })(),
     );
+    // The toolkit's own listing names the provider its connections are held under.
+    stub(toolsProto(), "list", () =>
+      Promise.resolve({
+        items: [
+          {
+            qualified_name: "Github.A0",
+            requirements: { authorization: { id: "x", provider_id: "github" } },
+          },
+        ],
+      }),
+    );
     const { broker } = createArcadeClient("never-dialled");
     const ask = () => broker.accountName({ account, toolkit: "Github" });
     rows.push({
