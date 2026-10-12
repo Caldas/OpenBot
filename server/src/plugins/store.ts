@@ -1107,6 +1107,29 @@ const CLIENT_REREGISTRATION_BACKOFF_MS = 5 * 60_000;
  */
 const IDENTITY_ACTION = /(_GET_ME|_PROFILE|_CURRENT_USER|_USER_INFO|_WHOAMI)$/;
 
+/**
+ * What each broker's rows are minted as: the url scheme, the id namespace and the vendor label.
+ *
+ * ONE ROW PER PROVIDER, KEYED ON {@link BrokerProvider}, so a third broker cannot be enabled until
+ * it says how its rows are spelled. The provenance column is the provider's own name and needs no
+ * entry here. The id prefix is what prefixes every tool name and what a grant and a policy rule are
+ * written against, which is why {@link BROKERED_ID_PREFIXES} reserves every provider's, not only the
+ * active one's: a deployment that switches broker must not find a typed server already sitting in
+ * the namespace the other path mints into.
+ */
+const BROKERED_PROFILE: Record<
+  BrokerProvider,
+  { scheme: string; idPrefix: string; vendor: string }
+> = {
+  composio: {
+    scheme: "composio://",
+    idPrefix: "composio-",
+    vendor: "Composio",
+  },
+  arcade: { scheme: "arcade://", idPrefix: "arcade-", vendor: "Arcade" },
+};
+const BROKERED_ID_PREFIXES = Object.values(BROKERED_PROFILE);
+
 /** What a vendor's token endpoint gave back for a refresh token. */
 export type AccessToken = {
   accessToken: string;
@@ -2715,7 +2738,7 @@ export function createPluginStore(options: PluginStoreOptions) {
   async function brokeredAppRow(
     toolkit: string,
   ): Promise<BrokeredAppRow | null> {
-    const url = `composio://${toolkit}`;
+    const url = `${BROKERED_PROFILE[brokerProvider].scheme}${toolkit}`;
     return (await brokeredAppRowsAt([url])).get(url) ?? null;
   }
 
@@ -2960,8 +2983,8 @@ export function createPluginStore(options: PluginStoreOptions) {
        * NOR THE NAMESPACE THE BROKERED ROWS ARE MINTED IN, which is the reservation above one step
        * further out.
        *
-       * CRITERION. No server added by URL may take an id beginning `composio-`, whether or not a row
-       * is sitting there today.
+       * CRITERION. No server added by URL may take an id beginning `composio-` or `arcade-`, whether
+       * or not a row is sitting there today, and on whichever broker this deployment runs.
        *
        * REASON. {@link addBrokeredApp} composes its id as `composio-<slug>` from the app an
        * administrator enabled, so that space is already spoken for by a path that writes
@@ -2980,10 +3003,12 @@ export function createPluginStore(options: PluginStoreOptions) {
        * and a policy rule are written against, so a row shadowing another path's namespace inherits
        * rules that were written about something else.
        */
-      if (input.id.startsWith("composio-")) {
-        throw new CustomServerRefusedError(
-          `Names beginning composio- belong to the Composio apps this deployment enables, so ${input.id} is not a name a server added by URL can take. Choose another.`,
-        );
+      for (const { idPrefix, vendor } of BROKERED_ID_PREFIXES) {
+        if (input.id.startsWith(idPrefix)) {
+          throw new CustomServerRefusedError(
+            `Names beginning ${idPrefix} belong to the ${vendor} apps this deployment enables, so ${input.id} is not a name a server added by URL can take. Choose another.`,
+          );
+        }
       }
       if (!/^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$/.test(input.id)) {
         throw new CustomServerRefusedError(
@@ -3157,7 +3182,7 @@ export function createPluginStore(options: PluginStoreOptions) {
      *
      * NO URL IS TAKEN FROM A CALLER, WHICH IS WHY THERE IS NO HOST RULE HERE. `addCustomServer`
      * guards the address because the address is what an administrator typed and what a credential
-     * would then be spent at; this one composes `composio://<slug>` itself, and a brokered row is
+     * would then be spent at; this one composes `<scheme>://<slug>` itself from the store's provider, and a brokered row is
      * never dialled at a host at all — the transport reads the app off that url and asks Composio,
      * over the deployment's own key. So the only thing left to check about the url is that it says
      * what this call meant, and {@link toolkitOfFor} is what checks it: the slug goes in, the url comes
@@ -3201,10 +3226,12 @@ export function createPluginStore(options: PluginStoreOptions) {
       // chosen from, so there is nothing here to half-do and nothing to say but the setting.
       if (!broker) throw new BrokerUnconfiguredError();
 
-      const url = `composio://${input.slug}`;
+      const profile = BROKERED_PROFILE[brokerProvider];
+      const url = `${profile.scheme}${input.slug}`;
+      const rowId = `${profile.idPrefix}${input.slug}`;
       if (toolkitOfFor(brokerProvider, url) !== input.slug) {
         throw new CustomServerRefusedError(
-          `${input.slug} is not a name a Composio app can have. An app is named in letters, numbers, underscores and hyphens, because that name is read back out of this row's url to decide which app a call is against.`,
+          `${input.slug} is not a name ${brokerProvider === "arcade" ? "an" : "a"} ${profile.vendor} app can have. An app is named in letters, numbers, underscores and hyphens, because that name is read back out of this row's url to decide which app a call is against.`,
         );
       }
 
@@ -3265,14 +3292,14 @@ export function createPluginStore(options: PluginStoreOptions) {
       await database
         .insert(mcpServers)
         .values({
-          id: `composio-${input.slug}`,
+          id: rowId,
           title: input.title,
           logo: input.logo ?? null,
           // The broker, whoever publishes the app behind it. `vendor` is what the first-party rule
           // is checked against, and Composio is who this deployment is actually talking to.
-          vendor: "Composio",
+          vendor: profile.vendor,
           url,
-          provenance: "composio",
+          provenance: brokerProvider,
           // Nothing for the vault to hold. A brokered call runs as the person asking, on their own
           // connection at the vendor, which is a `composio_connections` row rather than a secret.
           credentialId: null,
@@ -3346,8 +3373,8 @@ export function createPluginStore(options: PluginStoreOptions) {
              * host somebody typed is answering that rule about a server this deployment no longer
              * dials.
              */
-            provenance: "composio",
-            vendor: "Composio",
+            provenance: brokerProvider,
+            vendor: profile.vendor,
             addedBy: input.by,
             updatedAt: new Date(),
             /*
@@ -3397,8 +3424,7 @@ export function createPluginStore(options: PluginStoreOptions) {
        * insert above and this read disagree about what was stored; it is respelled rather than held
        * in a binding so that nothing below can take it by mistake.
        */
-      const answering =
-        (await brokeredAppRow(input.slug))?.id ?? `composio-${input.slug}`;
+      const answering = (await brokeredAppRow(input.slug))?.id ?? rowId;
 
       /**
        * WHICH ROW EACH ACT OF AN ENABLE NAMES, WRITTEN DOWN BECAUSE NOTHING ELSE CAN SAY IT.
@@ -3482,7 +3508,7 @@ export function createPluginStore(options: PluginStoreOptions) {
         .from(brokeredConnections)
         .where(
           and(
-            eq(brokeredConnections.provider, "composio"),
+            eq(brokeredConnections.provider, brokerProvider),
             eq(brokeredConnections.app, input.slug),
           ),
         )
@@ -3536,7 +3562,7 @@ export function createPluginStore(options: PluginStoreOptions) {
           // Named for the same reason the custom path names its own: "who enabled an app whose
           // actions nobody reviewed" is a question somebody will ask, and the answer should not
           // require knowing how ids were spelled in a past build.
-          provenance: "composio",
+          provenance: brokerProvider,
         },
       });
 
