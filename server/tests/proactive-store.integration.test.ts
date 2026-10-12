@@ -30,6 +30,7 @@ const server = `${prefix}-connector`;
 const ref = `${server}/list_issues`;
 const auditStore = createAuditStore(database);
 const plugins = createPluginStore({
+  brokerProvider: "composio",
   database,
   auditStore,
   credentials: createCredentialStore(database),

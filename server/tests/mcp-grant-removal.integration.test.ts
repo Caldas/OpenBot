@@ -47,6 +47,7 @@ const auditStore = {
 };
 
 const store = createPluginStore({
+  brokerProvider: "composio",
   database,
   auditStore,
   credentials: {

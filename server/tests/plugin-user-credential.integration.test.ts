@@ -92,6 +92,7 @@ let toolWasAlreadyAdvertised = false;
 const credentialIds: string[] = [];
 
 const store = createPluginStore({
+  brokerProvider: "composio",
   database,
   auditStore: createAuditStore(database),
   credentials: {

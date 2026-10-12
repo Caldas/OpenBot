@@ -776,6 +776,7 @@ const broker: ComposioBroker = {
 };
 
 const store = createPluginStore({
+  brokerProvider: "composio",
   database,
   auditStore,
   broker,

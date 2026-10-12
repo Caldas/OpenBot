@@ -159,6 +159,7 @@ const credentialsStub = {
 };
 
 const store = createPluginStore({
+  brokerProvider: "composio",
   database,
   auditStore: createAuditStore(database),
   credentials: credentialsStub,
@@ -1331,6 +1332,7 @@ describe("refresh token rotation", () => {
   };
 
   const rotationStore = createPluginStore({
+    brokerProvider: "composio",
     database,
     auditStore: createAuditStore(database),
     credentials: vault,
@@ -1361,6 +1363,7 @@ describe("refresh token rotation", () => {
    */
   function replica(exchange: (refreshToken: string) => Promise<AccessToken>) {
     return createPluginStore({
+      brokerProvider: "composio",
       database,
       auditStore: createAuditStore(database),
       credentials: vault,
@@ -2411,6 +2414,7 @@ describe("a dynamic client the vendor has evicted", () => {
   };
 
   const dynamicStore = createPluginStore({
+    brokerProvider: "composio",
     database,
     auditStore: createAuditStore(database),
     credentials: vault,
@@ -2432,6 +2436,7 @@ describe("a dynamic client the vendor has evicted", () => {
    * complete a consent flow.
    */
   const storeWithNoRedirect = createPluginStore({
+    brokerProvider: "composio",
     database,
     auditStore: createAuditStore(database),
     credentials: vault,
@@ -2884,6 +2889,7 @@ describe("a dynamic client the vendor has evicted", () => {
    * a stub asserting the value the real code is assumed to produce.
    */
   const storeWithRealRegistration = createPluginStore({
+    brokerProvider: "composio",
     database,
     auditStore: createAuditStore(database),
     credentials: vault,
@@ -4060,6 +4066,7 @@ async function freshStore(options: { broker?: ComposioBroker } = {}) {
   };
 
   const store = createPluginStore({
+    brokerProvider: "composio",
     database,
     auditStore,
     credentials: credentialsStub,
@@ -6115,6 +6122,7 @@ describe("a listing this database would not have taken", () => {
     });
 
     const failing = createPluginStore({
+      brokerProvider: "composio",
       database: refusing,
       auditStore: { insert: async () => {} },
       credentials: credentialsStub,
@@ -6250,6 +6258,7 @@ describe("a query of this deployment's own that failed", () => {
       },
     });
     const failing = createPluginStore({
+      brokerProvider: "composio",
       database: refusing,
       auditStore: { insert: async () => {} },
       credentials: credentialsStub,
@@ -6380,6 +6389,7 @@ describe("a query of this deployment's own that failed", () => {
      * throw is classify it, which is the property.
      */
     const failing = createPluginStore({
+      brokerProvider: "composio",
       database,
       auditStore: {
         insert: async (event) => {
@@ -6523,6 +6533,7 @@ test("an app with nothing recorded against it can be refreshed to no actions at 
 test("an audit write that fails is not recorded as the vendor misbehaving", async () => {
   const database = await freshDatabase();
   const failing = createPluginStore({
+    brokerProvider: "composio",
     database,
     auditStore: {
       insert: async (event) => {
@@ -7801,6 +7812,7 @@ describe("a vault read that fails on a query of this deployment's own", () => {
    * left it somewhere else cannot decide whether this call gets as far as the vault.
    */
   const faultStore = createPluginStore({
+    brokerProvider: "composio",
     database,
     auditStore: createAuditStore(database),
     credentials: createCredentialStore(

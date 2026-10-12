@@ -41,6 +41,7 @@ const ref = `${serverId}/${toolName}`;
 let policy: ActionPolicy = { mode: "enforce", deny: [], allow: ["true"] };
 
 const store = createPluginStore({
+  brokerProvider: "composio",
   database,
   auditStore: createAuditStore(database),
   credentials: { readSecret: async () => null },

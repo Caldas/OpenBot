@@ -40,6 +40,7 @@ const broker: ConnectedAppBroker = {
 function build(options: { shared: boolean }) {
   const auditStore = createAuditStore(database);
   const pluginStore = createPluginStore({
+    brokerProvider: "composio",
     database,
     auditStore,
     credentials: {} as never,

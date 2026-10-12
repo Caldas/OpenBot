@@ -192,6 +192,7 @@ import { createPasswordStore } from "./passwords/store";
 import { createOnboardingStore } from "./people/onboarding";
 import { createPeopleStore } from "./people/store";
 import { createAccountModeSwitch } from "./plugins/account-mode";
+import { activeProvider } from "./plugins/broker";
 import { useRoutineTools } from "./plugins/builtin-routines";
 import { useComposioClient } from "./plugins/composio";
 import { createComposioClient } from "./plugins/composio-adapter";
@@ -765,6 +766,14 @@ const pluginStore = createPluginStore({
    * attempted.
    */
   broker: composio?.broker,
+  /*
+   * `activeProvider` answers `null` only when this deployment has no broker at all: no key is set,
+   * so no broker reaches the store, no brokered row exists, and the value merely names which empty
+   * slice an unreachable query would read. That is why the one `??` in the system is HERE and only
+   * here — the single place where "which provider" has no answer, visible at the deployment boundary
+   * instead of asserted forty times over inside a constructor.
+   */
+  brokerProvider: activeProvider(config) ?? "composio",
 });
 
 /*

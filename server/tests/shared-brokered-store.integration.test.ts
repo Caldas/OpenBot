@@ -52,6 +52,7 @@ const credentialsStub = {} as never;
 
 function freshStore() {
   return createPluginStore({
+    brokerProvider: "composio",
     database,
     auditStore: createAuditStore(database),
     credentials: credentialsStub,
@@ -234,6 +235,7 @@ describe("a shared app", () => {
     const events: { eventType: string; payload: Record<string, unknown> }[] =
       [];
     const store = createPluginStore({
+      brokerProvider: "composio",
       database,
       auditStore: { insert: async (event) => void events.push(event as never) },
       credentials: credentialsStub,
@@ -266,6 +268,7 @@ describe("a shared app", () => {
 
   test("with no audience gate configured, a shared call is refused rather than allowed", async () => {
     const store = createPluginStore({
+      brokerProvider: "composio",
       database,
       auditStore: createAuditStore(database),
       credentials: credentialsStub,
@@ -374,6 +377,7 @@ describe("a duplicate row at an app's url", () => {
     const events: { eventType: string; payload: Record<string, unknown> }[] =
       [];
     const store = createPluginStore({
+      brokerProvider: "composio",
       database,
       auditStore: { insert: async (event) => void events.push(event as never) },
       credentials: credentialsStub,
@@ -419,6 +423,7 @@ describe("a duplicate row at an app's url", () => {
     const events: { eventType: string; payload: Record<string, unknown> }[] =
       [];
     const store = createPluginStore({
+      brokerProvider: "composio",
       database,
       auditStore: { insert: async (event) => void events.push(event as never) },
       credentials: credentialsStub,
@@ -473,6 +478,7 @@ describe("a duplicate row at an app's url", () => {
   test("asks the approval gate under the app's id for a write granted through it", async () => {
     const gateSaw: { toolRef: string; scope: string }[] = [];
     const store = createPluginStore({
+      brokerProvider: "composio",
       database,
       auditStore: createAuditStore(database),
       credentials: credentialsStub,

@@ -63,6 +63,7 @@ const broker: ConnectedAppBroker = {
 
 function appAs(role: "admin" | "user", id = `${role}-${suite}`) {
   const store = createPluginStore({
+    brokerProvider: "composio",
     database,
     auditStore: createAuditStore(database),
     credentials: {} as never,

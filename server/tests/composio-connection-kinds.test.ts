@@ -709,6 +709,7 @@ const broker: ConnectedAppBroker = {
 };
 
 const store = createPluginStore({
+  brokerProvider: "composio",
   database,
   auditStore: createAuditStore(database),
   broker,

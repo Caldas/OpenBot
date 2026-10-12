@@ -50,6 +50,7 @@ const broker = {
 } satisfies ConnectedAppBroker;
 
 const store = createPluginStore({
+  brokerProvider: "composio",
   database,
   auditStore: createAuditStore(database),
   credentials: {} as never,

@@ -1202,17 +1202,21 @@ export type PluginStoreOptions = {
    * offboarding sweep swept the wrong table slice. That is the failure this field exists to make
    * impossible to reach by accident.
    *
-   * OPTIONAL ONLY BECAUSE NOTHING PASSES IT YET, AND THE FALLBACK IS THE ONLY VENDOR ANY DEPLOYMENT
-   * RUNS TODAY. `activeProvider` in `./broker` is what decides this from configuration, and wiring
-   * it through the routes that build a store is a later change; until then every store is a Composio
-   * store and `composio` is what it always wrote. The fallback is HERE, at the deployment boundary
-   * where the answer is knowable, and nowhere else: no function below defaults it, because a default
-   * deeper in is a second answer to this question that nothing holds equal to this one.
+   * REQUIRED, UNLIKE `broker` ABOVE, BECAUSE FORGETTING IT HAS NO SYMPTOM. An absent `broker` says
+   * one true thing — this deployment has not configured one — and every path that needs it raises.
+   * An absent provider would have had to be guessed, and the only guess available was `composio`:
+   * an Arcade deployment built by forgetting this field would then read and write the COMPOSIO slice
+   * of `brokered_connections`, hand its own rows back through a composio filter, and APPEAR TO WORK.
+   * Spec D3's "the other provider holds rows" refusal would never fire, because nothing would ever
+   * be filed under the other name, and the offboarding sweep would sweep a slice that is not this
+   * deployment's. Nothing goes red. There is no error to raise later, so the compiler asks now.
    *
-   * TODO: pass `activeProvider(config)` at every `createPluginStore` call and make this required, so
-   * that an Arcade deployment cannot be built by forgetting a field.
+   * SO THERE IS NO DEFAULT ANYWHERE — not here, not in {@link createPluginStore}, not in a test
+   * helper. A function that cannot reach the provider takes it as a parameter; a second answer to
+   * "which provider" is a second thing that can be wrong while agreeing with nothing. `activeProvider`
+   * in `./broker` decides it from configuration at the one deployment boundary that knows.
    */
-  brokerProvider?: BrokerProvider;
+  brokerProvider: BrokerProvider;
   /** Where the vendor sends people back; needed to (re)register a dynamic client. */
   redirectUri?: string;
   /**
@@ -1260,12 +1264,11 @@ export function createPluginStore(options: PluginStoreOptions) {
   // to, and a deployment with no Composio key is supposed to have no broker. See `./broker`.
   const broker = options.broker;
   /*
-   * The broker this store is for, resolved once so that every read of `brokered_connections`, every
-   * `provenance` test and the connection writer below are reading ONE value rather than each
-   * re-deciding. See {@link PluginStoreOptions.brokerProvider} for why the fallback is here and only
-   * here.
+   * The broker this store is for: every read of `brokered_connections`, every `provenance` test and
+   * the connection writer below read THIS rather than each re-deciding. Taken as given, never
+   * defaulted — see {@link PluginStoreOptions.brokerProvider} for why there is no fallback here.
    */
-  const brokerProvider: BrokerProvider = options.brokerProvider ?? "composio";
+  const brokerProvider: BrokerProvider = options.brokerProvider;
 
   /*
    * One exchange at a time per (server, person). A rotating vendor invalidates the refresh

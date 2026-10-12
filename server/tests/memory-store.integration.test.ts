@@ -27,6 +27,7 @@ let vendorText =
 let vendorError = false;
 const calls: { actorId?: string; botId?: string }[] = [];
 const plugins = createPluginStore({
+  brokerProvider: "composio",
   database,
   auditStore: createAuditStore(database),
   credentials: createCredentialStore(database),

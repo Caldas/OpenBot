@@ -97,6 +97,7 @@ describe("connectionTokenFor's gatedMode guard", () => {
       },
     });
     const store = createPluginStore({
+      brokerProvider: "composio",
       database,
       auditStore: createAuditStore(database),
       credentials: credentialsStub,
