@@ -84,6 +84,53 @@ export function CoverageNote({ app }: { app: ComposioApp }) {
 }
 
 /**
+ * The D32 consent-breadth line for an app, or null when there is nothing to say.
+ *
+ * Read off the counts the server measured from the same listing, never recomputed here. `null` is
+ * NOT MEASURED and draws nothing; a measured zero is a different sentence, so no count is ever
+ * defaulted with `?? 0`.
+ *
+ * An action with no scopes is not its own permission: the connection itself is the grant, so any
+ * approval covers it. That is why a mixed app says how many actions need no permission of their own,
+ * rather than letting one permission over two actions read as "one permission covering both".
+ *
+ * It states breadth and never confinement. Whether one approval stays inside the action that asked
+ * for it is the provider's property, measured per app, so nothing here promises it.
+ */
+export function consentBreadth(
+  app: Pick<
+    ComposioApp,
+    "actionCount" | "permissionCount" | "scopedActionCount"
+  >,
+): string | null {
+  const { actionCount, permissionCount, scopedActionCount } = app;
+  if (permissionCount === null || scopedActionCount === null) return null;
+  if (actionCount <= 0) return null;
+  if (permissionCount === 0) {
+    return `Approving any action in this app approves all ${actionCount} of them.`;
+  }
+  const permissions = `${permissionCount} separate ${permissionCount === 1 ? "permission" : "permissions"}`;
+  const actions = `${actionCount} ${actionCount === 1 ? "action" : "actions"}`;
+  const base = `This app uses ${permissions} across ${actions}.`;
+  const unscoped = actionCount - scopedActionCount;
+  if (unscoped <= 0) return base;
+  return unscoped === 1
+    ? `${base} A further 1 requests no permission of its own and becomes callable with any approval here.`
+    : `${base} A further ${unscoped} request no permission of their own and become callable with any approval here.`;
+}
+
+/** The breadth line on a row, shown before Add is pressed. Draws nothing when there is none. */
+export function BreadthNote({ app }: { app: ComposioApp }) {
+  const breadth = consentBreadth(app);
+  if (!breadth) return null;
+  return (
+    <p className="text-muted-foreground text-xs" data-testid="breadth-note">
+      {breadth}
+    </p>
+  );
+}
+
+/**
  * The apps to draw, in the order to draw them.
  *
  * A function rather than a `.sort()` inside the map, so the two things a row is decided from — the
@@ -244,6 +291,7 @@ function ComposioDirectory() {
                       <ItemTitle>{entry.name}</ItemTitle>
                       <ItemDescription>{entry.description}</ItemDescription>
                       {entry.enabled ? null : <CoverageNote app={entry} />}
+                      {entry.enabled ? null : <BreadthNote app={entry} />}
                     </ItemContent>
                     <ItemActions>
                       {/* The size of the decision, stated before it is made: an app is not one
