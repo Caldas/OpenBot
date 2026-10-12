@@ -70,11 +70,17 @@ describe("assertActivatable", () => {
     expect(() => assertActivatable("composio", 0)).not.toThrow();
   });
 
-  test("both keys being set, on its own, does not trigger the refusal", () => {
-    const keys = { composioApiKey: "c", arcadeApiKey: "a" };
-    expect(activeProvider({ ...keys, brokerProvider: "arcade" })).toBe(
-      "arcade",
-    );
-    expect(() => assertActivatable("arcade", 0)).not.toThrow();
+  test("one row for the other provider refuses, in the other direction and in the singular", () => {
+    let caught: unknown;
+    try {
+      assertActivatable("composio", 1);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(BrokerRefusalError);
+    const sentence = brokerSentence(caught);
+    expect(sentence).toContain("Composio cannot be activated");
+    expect(sentence).toContain("1 brokered connection still belongs to Arcade");
+    expect(sentence).toContain("sunset");
   });
 });

@@ -5,7 +5,7 @@
  *
  * `access.ts` is the one exempt file because it is where the vocabulary lives.
  *
- * EXPECTED TO FAIL until micro-task 3.2 clears the last offender.
+ * This guard is green and must stay green; `access.ts` is the only exemption.
  */
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";

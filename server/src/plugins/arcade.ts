@@ -165,6 +165,7 @@ export async function listTools(connection: {
 
   const raw: unknown[] = [];
   let total: number | undefined;
+  let exhausted = true;
   for (let page = 0; page < MAX_PAGES; page++) {
     const answer = await installed.listTools({
       toolkit,
@@ -179,7 +180,15 @@ export async function listTools(connection: {
     }
     raw.push(...items);
     if (typeof answer.total_count === "number") total = answer.total_count;
-    if (items.length < PAGE_SIZE) break;
+    if (items.length < PAGE_SIZE) {
+      exhausted = false;
+      break;
+    }
+  }
+  if (exhausted) {
+    throw new Error(
+      `Arcade's listing for ${toolkit} never ended after ${MAX_PAGES} pages, so it is not trusted to be a list of this app's actions. Nothing was refreshed and the actions already recorded for this app are kept.`,
+    );
   }
   if (total !== undefined && raw.length < total) {
     throw new Error(

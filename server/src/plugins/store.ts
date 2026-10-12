@@ -3183,8 +3183,8 @@ export function createPluginStore(options: PluginStoreOptions) {
      * NO URL IS TAKEN FROM A CALLER, WHICH IS WHY THERE IS NO HOST RULE HERE. `addCustomServer`
      * guards the address because the address is what an administrator typed and what a credential
      * would then be spent at; this one composes `<scheme>://<slug>` itself from the store's provider, and a brokered row is
-     * never dialled at a host at all — the transport reads the app off that url and asks Composio,
-     * over the deployment's own key. So the only thing left to check about the url is that it says
+     * never dialled at a host at all — the transport reads the app off that url and asks the active
+     * broker, over the deployment's own key. So the only thing left to check about the url is that it says
      * what this call meant, and {@link toolkitOfFor} is what checks it: the slug goes in, the url comes
      * back out through the very function `accessFor` will read it with, and a slug those two
      * disagree about is refused rather than stored. A pattern written here instead would be a second

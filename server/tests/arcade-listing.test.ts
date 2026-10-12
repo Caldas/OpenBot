@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import fixture from "./fixtures/arcade-catalogue.json";
 import { listTools, useArcadeClient } from "../src/plugins/arcade";
 
 afterEach(() => useArcadeClient(null));
@@ -78,6 +79,36 @@ describe("listTools scopes", () => {
   });
 });
 
+describe("listTools against the captured catalogue", () => {
+  /*
+   * The captured fixture carries TWO tools with `requirements.met: true` (Asana.AttachFileToTask and
+   * Attio.RemoveFromList), so the "no met" assertion here is strictly stronger than the one the
+   * hand-built tools above give it.
+   */
+  test("keeps scopes intact, reads an unscoped oauth2 as none, and never carries met", async () => {
+    const entries = Object.values(
+      (fixture as { tools: Record<string, unknown> }).tools,
+    );
+    recording(async () => ({ items: entries }));
+    const tools = await listTools({ url: "arcade://Captured" });
+    const byName = (n: string) => tools.find((t) => t.name === n);
+
+    expect(byName("Attio.RemoveFromList")?.scopes).toEqual([
+      "call_recording:read",
+      "list_configuration:read-write",
+      "list_entry:read-write",
+      "meeting:read",
+      "note:read-write",
+      "object_configuration:read-write",
+      "record_permission:read-write",
+      "task:read-write",
+      "user_management:read",
+    ]);
+    expect(byName("AirtableApi.ListBases")?.scopes).toEqual([]);
+    expect(JSON.stringify(tools)).not.toContain('"met"');
+  });
+});
+
 describe("listTools pagination", () => {
   test("stops on a short page, with no total_count", async () => {
     const sent = recording(async (q) => pagesOf(250)(q));
@@ -97,5 +128,14 @@ describe("listTools identity", () => {
       expect("user_id" in q).toBe(false);
       expect(q.toolkit).toBe("GithubApi");
     }
+  });
+});
+
+describe("listTools runaway guard", () => {
+  test("a vendor that ignores offset and always returns full pages throws", async () => {
+    recording(async () => pagesOf(100)({ offset: 0, limit: 100 }));
+    await expect(listTools({ url: "arcade://Runaway" })).rejects.toThrow(
+      /never ended/,
+    );
   });
 });
