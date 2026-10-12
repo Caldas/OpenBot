@@ -125,3 +125,58 @@ describe("listTools failures", () => {
     expect(error!.cause).toBe(vendor);
   });
 });
+
+function answering(answer: unknown) {
+  useArcadeClient({
+    listTools: async () => {
+      throw new Error("not listing");
+    },
+    execute: async () => answer as never,
+  });
+}
+
+describe("callTool successes", () => {
+  test("a 200 carrying an authorization envelope leaks neither the url nor the token", async () => {
+    answering({
+      success: true,
+      output: {
+        value: { ok: 1 },
+        authorization: {
+          url: "https://example.test/auth?state=SECRET",
+          context: { token: "tok-LEAKME" },
+        },
+      },
+    });
+    const result = await callTool(connection, "Gmail.SendEmail", {});
+    expect(result.text).not.toContain("http");
+    expect(result.text).not.toContain("SECRET");
+    expect(result.text).not.toContain("LEAKME");
+    expect(result.text).toBe(
+      "Gmail.SendEmail has not been authorized on this account yet. Authorize it in Settings → Connected accounts and ask again.",
+    );
+    expect(result.isError).toBe(true);
+  });
+
+  test("an Arcade-reported failure is an error, in this deployment's words", async () => {
+    answering({ success: false, output: { error: { message: "LEAKME" } } });
+    const result = await callTool(connection, "Gmail.SendEmail", {});
+    expect(result.isError).toBe(true);
+    expect(result.text).toBe("Arcade could not run Gmail.SendEmail.");
+    expect(result.text).not.toContain("LEAKME");
+  });
+
+  test("a plain success returns output.value and nothing else from the envelope", async () => {
+    answering({
+      success: true,
+      execution_id: "exec-LEAKME",
+      duration: 12.5,
+      output: { value: { rows: [1, 2] } },
+    });
+    const result = await callTool(connection, "Gmail.SendEmail", {});
+    expect(result.isError).toBe(false);
+    expect(result.text).toBe(JSON.stringify({ rows: [1, 2] }, null, 2));
+    expect(result.text).not.toContain("execution_id");
+    expect(result.text).not.toContain("exec-LEAKME");
+    expect(result.text).not.toContain("duration");
+  });
+});

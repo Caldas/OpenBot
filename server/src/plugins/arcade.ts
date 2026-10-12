@@ -81,7 +81,14 @@ export type ArcadeActions = {
     tool_name: string;
     input: Record<string, unknown>;
     user_id: string;
-  }): Promise<unknown>;
+  }): Promise<{
+    success?: boolean;
+    output?: {
+      value?: unknown;
+      error?: { message?: string };
+      authorization?: unknown;
+    };
+  }>;
 };
 
 let installed: ArcadeActions | null = null;
@@ -247,6 +254,22 @@ export function isAuthorizationRequired(failure: ArcadeFailure): boolean {
   return failure.name === "tool_authorization_required";
 }
 
+/**
+ * The thrown value, READ AS A SHAPE rather than cast into one. `record` is a plain-object coercion
+ * that normalizes nothing and walks no `cause`, so a cast through it would let any object at all
+ * stand in for a normalized failure. Only a `name` string is required, since that is the one field
+ * `isAuthorizationRequired` keys on; the rest are read as-is or left undefined.
+ */
+function arcadeFailure(thrown: unknown): ArcadeFailure | null {
+  const raw = record(thrown);
+  if (!raw || typeof raw.name !== "string") return null;
+  return {
+    status: typeof raw.status === "number" ? raw.status : undefined,
+    name: raw.name,
+    message: typeof raw.message === "string" ? raw.message : undefined,
+  };
+}
+
 const failureResult = (text: string): McpCallResult => ({
   text,
   isError: true,
@@ -259,12 +282,22 @@ const failureResult = (text: string): McpCallResult => ({
  * THE ACTION IN THE REFUSAL COMES FROM THE CALL SITE, never from the error: `APIError` in
  * `@arcadeai/arcadejs@2.4.1` carries `status`, `headers` and `error` and nothing naming the tool.
  *
- * NO URL IS EVER IN THE SENTENCE. The 403 envelope's `authorization.url` is a bearer capability:
+ * NO URL IS EVER IN THE SENTENCE, ON ANY PATH. The `authorization.url` is a bearer capability:
  * whoever opens it attaches an account to the identity the flow was minted for. It is never
  * returned to a model, logged, put in an error body or written to an audit row. The refusal names
  * the Settings page, where the link is minted by an authenticated request whose actor is known.
  *
- * NOTHING THE VENDOR SAID IS REPEATED either: the ordinary failure is this deployment's sentence.
+ * THE SUCCESS PATH IS COVERED BY THAT SAME PROMISE, and this is where it is easiest to break. A 200
+ * is not a safe envelope: `ExecuteToolResponse.output.authorization` is the SAME
+ * `AuthorizationResponse` the 403 carries, with the url and a `context.token` that is a LIVE OAUTH
+ * ACCESS TOKEN for the end user's account. `output.value` IS THE ONLY PART OF THE ENVELOPE THAT MAY
+ * CROSS INTO `text`; the envelope is never stringified whole, because `text` is returned to a model
+ * and copied into the audit row. An answer carrying an `authorization` at all is the refusal, not a
+ * result: it means the call was not run as an authorized actor.
+ *
+ * NOTHING THE VENDOR SAID IS REPEATED either: the ordinary failure is this deployment's sentence,
+ * and `output.error` is read only as a BOOLEAN — its `message`, `developer_message` and
+ * `stacktrace` are the vendor's words and stay out of `text`.
  */
 export async function callTool(
   connection: { url: string; actorId?: string },
@@ -287,11 +320,22 @@ export async function callTool(
       input: args,
       user_id: connection.actorId,
     });
-    const text = typeof answer === "string" ? answer : JSON.stringify(answer);
-    return { text: text ?? "", isError: false, truncated: false };
+    if (answer.output?.authorization) {
+      return failureResult(
+        `${toolName} has not been authorized on this account yet. Authorize it in Settings → Connected accounts and ask again.`,
+      );
+    }
+    if (answer.success === false || answer.output?.error) {
+      return failureResult(`Arcade could not run ${toolName}.`);
+    }
+    return {
+      text: JSON.stringify(answer.output?.value ?? null, null, 2),
+      isError: false,
+      truncated: false,
+    };
   } catch (thrown) {
-    const failure = record(thrown) as Partial<ArcadeFailure> | null;
-    if (failure && isAuthorizationRequired(failure as ArcadeFailure)) {
+    const failure = arcadeFailure(thrown);
+    if (failure && isAuthorizationRequired(failure)) {
       return failureResult(
         `${toolName} has not been authorized on this account yet. Authorize it in Settings → Connected accounts and ask again.`,
       );
