@@ -1,0 +1,525 @@
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  expect,
+  test,
+} from "bun:test";
+import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  Outlet,
+  RouterProvider,
+} from "@tanstack/react-router";
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { consentCopy } from "@/lib/plugins/enablement-notes";
+import type { GrantState } from "@/lib/plugins/grants";
+import type { PluginServer, PluginsPage } from "@/lib/plugins/queries";
+import { Route as ConnectedAccountRoute } from "@/routes/_authed/settings/connected-accounts/$key";
+
+/**
+ * THE GRANT LIST on an app's own page, drawn by `GrantState`, grouped by permission, with the consent
+ * copy rendered before any redirect.
+ *
+ * Every assertion is on RENDERED markup: a sentence computed and never drawn is not shipped.
+ */
+/**
+ * (harness below is shared in shape with connected-account-confirmation.test.tsx)
+ *
+ * Three things are pinned, and the first two are RENDERED markup because a sentence computed and
+ * never drawn is not shipped: the sibling list names what a Disconnect would also end and draws
+ * NOTHING when there is none; an Arcade deployment's page never says Composio, in text or in
+ * attributes; and a Composio deployment's three vendor sentences are character-for-character what
+ * they were. The fourth is the landing parameter the verifier's redirect carries.
+ */
+
+beforeAll(() => GlobalRegistrator.register());
+afterEach(cleanup);
+afterAll(async () => {
+  // Let React's scheduler drain before the DOM globals it reads go away.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await GlobalRegistrator.unregister();
+});
+
+const APP = "gmail";
+
+function captureRouteState(route: object): Record<string, unknown> {
+  return { ...route, options: { ...(route as { options: object }).options } };
+}
+function restoreRouteState(
+  route: object,
+  snapshot: Record<string, unknown>,
+): void {
+  for (const key of Object.keys(route)) {
+    if (!(key in snapshot)) {
+      delete (route as Record<string, unknown>)[key];
+    }
+  }
+  Object.assign(route, snapshot);
+}
+const pristine = captureRouteState(ConnectedAccountRoute);
+let snapshot: Record<string, unknown>;
+beforeEach(() => {
+  snapshot = captureRouteState(pristine);
+});
+afterEach(() => {
+  restoreRouteState(ConnectedAccountRoute, snapshot);
+});
+
+type Provider = "composio" | "arcade";
+
+function server(
+  provider: Provider,
+  accountMode: "shared" | null = null,
+): PluginServer {
+  return {
+    authScheme: "OAUTH2",
+    id: APP,
+    title: "Gmail",
+    vendor: "Google",
+    url: provider === "arcade" ? "arcade://gmail" : "https://example.invalid",
+    summary: "Mail.",
+    docsUrl: "",
+    provenance: provider,
+    hasCredential: false,
+    toolsRefreshedAt: null,
+    lastError: null,
+    addedBy: null,
+    dynamicClient: false,
+    accountMode,
+    sharedVendorConnected: false,
+    tools: [],
+    withdrawn: [],
+  };
+}
+
+type Setup = {
+  provider: Provider;
+  connected: boolean;
+  configured?: boolean;
+  siblings?: { siblings: string[]; unanswered: number };
+  /** Whether the siblings read answers 500. */
+  siblingsFail?: boolean;
+  grants?: GrantState[];
+  /** Whether the grants read answers 500. */
+  accountMode?: "shared" | null;
+  role?: "admin" | "user";
+};
+
+const authorizeCalls: string[] = [];
+
+const siblingReads: string[] = [];
+
+function install(setup: Setup) {
+  siblingReads.length = 0;
+  const page: PluginsPage = {
+    catalogue: [],
+    servers: [server(setup.provider, setup.accountMode ?? null)],
+    skills: [],
+    botsMayCallBack: true,
+    redirectUri: null,
+    composioConfigured: setup.configured ?? true,
+    provider: setup.provider,
+  };
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), {
+      headers: { "content-type": "application/json" },
+      status,
+    });
+  authorizeCalls.length = 0;
+  global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input).split("?")[0] ?? "";
+    if (path.endsWith("/grants")) return json({ actions: setup.grants ?? [] });
+    if (path.endsWith("/authorize")) {
+      authorizeCalls.push(String(init?.body));
+      return json({ authorizationUrl: "https://vendor.invalid/consent" });
+    }
+    if (path === "/api/me")
+      return json({
+        user: { id: "u", role: setup.role ?? "user", email: "u@x.io" },
+      });
+    if (path === "/api/plugins") return json(page);
+    if (path.startsWith("/api/plugins/connections")) {
+      return json({
+        connections: setup.connected
+          ? [
+              {
+                serverId: APP,
+                scope: "",
+                connectedAt: "2026-09-10T00:00:00.000Z",
+                verified: true,
+                verifiedAt: null,
+                checkable: false,
+              },
+            ]
+          : [],
+        redirectUri: null,
+      });
+    }
+    if (path.endsWith("/connection/siblings")) {
+      siblingReads.push(path);
+      if (setup.siblingsFail) return json({ error: "no" }, 500);
+      return json(setup.siblings ?? { siblings: [], unanswered: 0 });
+    }
+    if (path.endsWith("/connection/confirm"))
+      return json({ connected: setup.connected });
+    return json({ error: "unexpected" }, 404);
+  }) as typeof fetch;
+}
+
+function renderScreen(search = "") {
+  const rootRoute = createRootRoute({ component: Outlet });
+  const authedRoute = createRoute({
+    id: "/_authed",
+    getParentRoute: () => rootRoute,
+    component: Outlet,
+  });
+  const settingsRoute = createRoute({
+    path: "/settings",
+    getParentRoute: () => authedRoute,
+    component: Outlet,
+  });
+  const indexRoute = createRoute({
+    path: "/connected-accounts/",
+    getParentRoute: () => settingsRoute,
+    component: () => null,
+  });
+  const wired = (
+    ConnectedAccountRoute as unknown as {
+      update: (options: unknown) => typeof ConnectedAccountRoute;
+    }
+  ).update({
+    id: "/connected-accounts/$key",
+    path: "/connected-accounts/$key",
+    getParentRoute: () => settingsRoute,
+  });
+  const router = createRouter({
+    routeTree: rootRoute.addChildren([
+      authedRoute.addChildren([settingsRoute.addChildren([indexRoute, wired])]),
+    ]),
+    history: createMemoryHistory({
+      initialEntries: [`/settings/connected-accounts/${APP}${search}`],
+    }),
+  });
+  return render(
+    <QueryClientProvider
+      client={
+        new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      }
+    >
+      <RouterProvider router={router as never} />
+    </QueryClientProvider>,
+  );
+}
+
+/** Every string the page puts in front of anyone: its text AND its markup, attributes included. */
+function everythingRendered(view: ReturnType<typeof render>): string {
+  return `${view.container.textContent ?? ""}\n${view.container.innerHTML}`;
+}
+
+const GMAIL: GrantState[] = [
+  {
+    action: "Gmail.ListEmails",
+    state: "authorized",
+    scopes: ["gmail.readonly"],
+  },
+  {
+    action: "Gmail.ListThreads",
+    state: "authorized",
+    scopes: ["gmail.readonly"],
+  },
+  { action: "Gmail.SendEmail", state: "needs-consent", scopes: ["gmail.send"] },
+  {
+    action: "Gmail.Setup",
+    state: "needs-operator",
+    missing: ["GOOGLE_CLIENT_SECRET"],
+  },
+  { action: "Gmail.Flaky", state: "unknown", reason: "Try again in a moment." },
+];
+
+function row(view: ReturnType<typeof render>, action: string): HTMLElement {
+  const found = view.container.querySelector<HTMLElement>(
+    `[data-action="${action}"]`,
+  );
+  if (!found) throw new Error(`no row for ${action}`);
+  return found;
+}
+
+async function showAll(view: ReturnType<typeof render>) {
+  await view.findByLabelText("Search actions");
+  await userEvent.type(view.getByLabelText("Search actions"), "Gmail.");
+}
+
+// ---- 1: each action renders by its GrantState ----
+
+test("Authorize appears for needs-consent and for nothing else", async () => {
+  install({ provider: "arcade", connected: true, grants: GMAIL });
+  const view = renderScreen();
+  await showAll(view);
+  await waitFor(() => row(view, "Gmail.SendEmail"));
+  const buttons = (action: string) =>
+    [...row(view, action).querySelectorAll("button")].map((b) => b.textContent);
+  expect(buttons("Gmail.SendEmail")).toEqual(["Authorize"]);
+  expect(buttons("Gmail.ListEmails")).toEqual([]);
+  expect(buttons("Gmail.Setup")).toEqual([]);
+  expect(buttons("Gmail.Flaky")).not.toContain("Authorize");
+});
+
+test("needs-operator names the missing secret, says an administrator sets it, and offers no Authorize", async () => {
+  install({
+    provider: "arcade",
+    connected: true,
+    grants: [
+      {
+        action: "Gmail.Setup",
+        state: "needs-operator",
+        missing: ["GOOGLE_CLIENT_SECRET"],
+      },
+    ],
+  });
+  const view = renderScreen();
+  await showAll(view);
+  await waitFor(() => row(view, "Gmail.Setup"));
+  const text = row(view, "Gmail.Setup").textContent ?? "";
+  expect(text).toContain("GOOGLE_CLIENT_SECRET");
+  expect(text).toContain("An administrator sets it");
+  expect(row(view, "Gmail.Setup").querySelector("button")).toBeNull();
+  expect(view.queryByText("Authorize")).toBeNull();
+});
+
+test("unknown offers Retry and never a speculative Authorize", async () => {
+  install({
+    provider: "arcade",
+    connected: true,
+    grants: [
+      {
+        action: "Gmail.Flaky",
+        state: "unknown",
+        reason: "Try again in a moment.",
+      },
+      {
+        action: "Gmail.ListEmails",
+        state: "authorized",
+        scopes: ["gmail.readonly"],
+      },
+    ],
+  });
+  const view = renderScreen();
+  await showAll(view);
+  await waitFor(() => row(view, "Gmail.Flaky"));
+  const labels = [...row(view, "Gmail.Flaky").querySelectorAll("button")].map(
+    (b) => b.textContent,
+  );
+  expect(labels).toEqual(["Retry"]);
+  expect(view.queryByText("Authorize")).toBeNull();
+});
+
+test("the route's synthetic toolkit-named unknown reads as could not read and never as an action", async () => {
+  install({
+    provider: "arcade",
+    connected: true,
+    grants: [
+      {
+        action: "Gmail",
+        state: "unknown",
+        reason:
+          "This deployment could not read what this account holds just now, so nothing is said about it either way. Try again in a moment.",
+      },
+    ],
+  });
+  const view = renderScreen();
+  const notice = await view.findByRole("status");
+  expect(notice.textContent?.toLowerCase()).toContain("could not read");
+  expect(view.container.querySelector("[data-action]")).toBeNull();
+  expect(view.container.querySelector('[data-action="Gmail"]')).toBeNull();
+  expect(
+    [...view.container.querySelectorAll("button")].map((b) => b.textContent),
+  ).toContain("Retry");
+});
+
+// ---- 2: grouped by permission ----
+
+test("actions are grouped by the permission they require", async () => {
+  install({ provider: "arcade", connected: true, grants: GMAIL });
+  const view = renderScreen();
+  await showAll(view);
+  await waitFor(() => row(view, "Gmail.SendEmail"));
+  const group = (scope: string) =>
+    view.container.querySelector<HTMLElement>(`[data-grant-group="${scope}"]`);
+  const readonly = group("gmail.readonly");
+  expect(
+    readonly?.querySelector('[data-action="Gmail.ListEmails"]'),
+  ).not.toBeNull();
+  expect(
+    readonly?.querySelector('[data-action="Gmail.ListThreads"]'),
+  ).not.toBeNull();
+  expect(readonly?.querySelector('[data-action="Gmail.SendEmail"]')).toBeNull();
+  expect(
+    group("gmail.send")?.querySelector('[data-action="Gmail.SendEmail"]'),
+  ).not.toBeNull();
+});
+
+test("an all-or-nothing app renders as ONE group containing everything", async () => {
+  install({
+    provider: "arcade",
+    connected: true,
+    grants: [
+      { action: "Github.A", state: "authorized", scopes: [] },
+      { action: "Github.B", state: "needs-consent", scopes: [] },
+      { action: "Github.C", state: "authorized", scopes: [] },
+    ],
+  });
+  const view = renderScreen();
+  await userEvent.type(await view.findByLabelText("Search actions"), "Github.");
+  await waitFor(() => row(view, "Github.B"));
+  const groups = view.container.querySelectorAll("[data-grant-group]");
+  expect(groups.length).toBe(1);
+  expect(groups[0]?.querySelectorAll("[data-action]").length).toBe(3);
+  expect(groups[0]?.getAttribute("data-grant-group")).toBe("whole-app");
+});
+
+// ---- 3: ordering ----
+
+test("authorized actions are listed first and the rest wait behind a search", async () => {
+  install({ provider: "arcade", connected: true, grants: GMAIL });
+  const view = renderScreen();
+  await view.findByText(/more actions not yet authorized/);
+  expect(row(view, "Gmail.ListEmails")).toBeTruthy();
+  expect(
+    view.container.querySelector('[data-action="Gmail.SendEmail"]'),
+  ).toBeNull();
+  expect(view.container.textContent).toContain(
+    "3 more actions not yet authorized",
+  );
+  await userEvent.type(view.getByLabelText("Search actions"), "send");
+  await waitFor(() => row(view, "Gmail.SendEmail"));
+  expect(
+    view.container.querySelector('[data-action="Gmail.ListEmails"]'),
+  ).toBeNull();
+});
+
+// ---- 4: Shared ----
+
+test("a Shared app shows state to a member but Authorize only to an administrator", async () => {
+  install({
+    provider: "arcade",
+    connected: false,
+    accountMode: "shared",
+    role: "user",
+    grants: GMAIL,
+  });
+  const member = renderScreen();
+  await showAll(member);
+  await waitFor(() => row(member, "Gmail.SendEmail"));
+  expect(row(member, "Gmail.ListEmails").textContent).toContain("Authorized");
+  expect(member.queryByText("Authorize")).toBeNull();
+  cleanup();
+
+  install({
+    provider: "arcade",
+    connected: false,
+    accountMode: "shared",
+    role: "admin",
+    grants: GMAIL,
+  });
+  const admin = renderScreen();
+  await showAll(admin);
+  await waitFor(() => row(admin, "Gmail.SendEmail"));
+  await waitFor(() => expect(admin.queryByText("Authorize")).not.toBeNull());
+});
+
+// ---- Part B: the consent copy is RENDERED before the redirect ----
+
+test("pressing Authorize renders consentCopy's sentence and redirects nowhere yet", async () => {
+  install({ provider: "arcade", connected: true, grants: GMAIL });
+  const view = renderScreen();
+  await showAll(view);
+  await waitFor(() => row(view, "Gmail.SendEmail"));
+  fireEvent.click(view.getByText("Authorize"));
+  const expected = consentCopy("Gmail.SendEmail", [
+    { name: "Gmail.ListEmails", scopes: ["gmail.readonly"] },
+    { name: "Gmail.ListThreads", scopes: ["gmail.readonly"] },
+    { name: "Gmail.SendEmail", scopes: ["gmail.send"] },
+  ]).sentence;
+  const panel = await view.findByRole("group", {
+    name: /Before you authorize/,
+  });
+  expect(panel.textContent).toContain(expected);
+  expect(panel.textContent).toContain(
+    "Approving Gmail.SendEmail asks the provider for the permission gmail.send.",
+  );
+  // Nothing was minted by merely looking at the copy.
+  expect(authorizeCalls).toEqual([]);
+  fireEvent.click(view.getByText("Continue to consent"));
+  await waitFor(() =>
+    expect(authorizeCalls).toEqual([
+      JSON.stringify({ action: "Gmail.SendEmail" }),
+    ]),
+  );
+});
+
+test("the consent copy never promises that only the named action becomes usable", async () => {
+  install({
+    provider: "arcade",
+    connected: true,
+    grants: [
+      {
+        action: "Github.CountStargazers",
+        state: "needs-consent",
+        scopes: ["repo"],
+      },
+      {
+        action: "Github.CreateIssue",
+        state: "needs-consent",
+        scopes: ["repo"],
+      },
+    ],
+  });
+  const view = renderScreen();
+  await userEvent.type(await view.findByLabelText("Search actions"), "Github.");
+  await waitFor(() => row(view, "Github.CountStargazers"));
+  fireEvent.click(
+    row(view, "Github.CountStargazers").querySelector("button") as HTMLElement,
+  );
+  const panel = await view.findByRole("group", {
+    name: /Before you authorize/,
+  });
+  expect(panel.textContent).toContain(
+    "It also enables this other action requiring it: Github.CreateIssue.",
+  );
+  expect(panel.textContent?.toLowerCase()).not.toMatch(
+    /only (this|that|the named)|just this/,
+  );
+});
+
+// ---- 12.1's rule, on the new markup ----
+
+test("on Arcade the grant list says nothing of Composio, in text or attributes", async () => {
+  install({
+    provider: "arcade",
+    connected: true,
+    grants: GMAIL,
+    siblings: { siblings: ["googledocs"], unanswered: 0 },
+  });
+  const view = renderScreen("?action=Gmail.ListEmails");
+  await showAll(view);
+  await waitFor(() => row(view, "Gmail.SendEmail"));
+  fireEvent.click(view.getByText("Authorize"));
+  await view.findByRole("group", { name: /Before you authorize/ });
+  expect(everythingRendered(view)).not.toMatch(/composio/i);
+});
+
+test("a Composio deployment draws no grant list and never reads the grants", async () => {
+  install({ provider: "composio", connected: true, grants: GMAIL });
+  const view = renderScreen();
+  await view.findByText("Disconnect");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(view.container.querySelector("[data-action]")).toBeNull();
+  expect(view.queryByLabelText("Search actions")).toBeNull();
+});

@@ -12,6 +12,7 @@ import {
   BrokeredAccountRow,
   useBrokeredAccount,
 } from "@/components/plugins/brokered-account-row";
+import { GrantList } from "@/components/plugins/grant-list";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -27,6 +28,7 @@ import {
   ItemTitle,
 } from "@/components/ui/item";
 import { Separator } from "@/components/ui/separator";
+import { currentUserQueryOptions } from "@/lib/auth/queries";
 import { connectAccountMutationOptions } from "@/lib/plugins/mutations";
 import {
   connectionSiblingsQueryOptions,
@@ -180,6 +182,21 @@ function RouteComponent() {
       ? disconnectSiblingsNotice(siblings.data)
       : null;
   const landedAction = landedActionFrom(action);
+  /*
+   * THE GRANT LIST IS DRAWN FOR ARCADE ONLY. It is per-action and Arcade is the broker that grants
+   * per action; Composio's auth config fixes one state for the whole toolkit, its route answers the
+   * same degenerate entry N times, and the authorize route refuses it with 503. Gating on the NAME
+   * is what keeps every Composio render byte-identical.
+   */
+  const perActionGrants = provider === "arcade";
+  /* Who is asking only matters to a Shared app's Authorize, so it is not read for anything else. */
+  const sharedHere = server?.accountMode === "shared";
+  const me = useQuery({
+    ...currentUserQueryOptions(),
+    enabled: perActionGrants && sharedHere,
+  }).data;
+  const isAdmin = me?.role === "admin";
+  const appNames = [key, server?.title ?? key];
 
   /* Everything the brokered row below reads and does. See `brokered-account-row.tsx`. */
   const brokeredAccount = useBrokeredAccount({
@@ -302,6 +319,17 @@ function RouteComponent() {
             </Item>
           </PageRows>
         </PageSection>
+
+        {/* State is shown to everyone; minting a consent is the administrator's act. */}
+        {perActionGrants ? (
+          <GrantList
+            appNames={appNames}
+            canAuthorize={isAdmin}
+            landedAction={landedAction}
+            returnTo="settings"
+            serverId={key}
+          />
+        ) : null}
       </PageShell>
     );
   }
@@ -361,6 +389,16 @@ function RouteComponent() {
             />
           </PageRows>
         </PageSection>
+
+        {perActionGrants ? (
+          <GrantList
+            appNames={appNames}
+            canAuthorize
+            landedAction={landedAction}
+            returnTo="settings"
+            serverId={key}
+          />
+        ) : null}
       </PageShell>
     );
   }
