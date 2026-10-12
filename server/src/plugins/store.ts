@@ -46,6 +46,7 @@ import {
 import type { CheckPrivateShare } from "../proactive/private-share";
 import {
   accessFor,
+  type BrokerProvider,
   type ServerAccess,
   ServerUnresolvableError,
 } from "./access";
@@ -1188,6 +1189,30 @@ export type PluginStoreOptions = {
    * above — invent a broker to get a store.
    */
   broker?: ComposioBroker;
+  /**
+   * Which broker this deployment runs, which is the slice of `brokered_connections` this store
+   * reads and the word its connection writer stamps on every row it mints.
+   *
+   * THE ONE PLACE THE VENDOR IS NAMED. Every read of `brokered_connections` below and the insert in
+   * {@link createPluginStore}'s `recordBrokeredConnection` used to spell `composio` for themselves —
+   * eleven comparisons that were each correct while there was one broker and each silently wrong on
+   * the day there were two. They now all read this. A deployment running Arcade whose store was
+   * still filtering on `composio` would not fail: it would read an empty slice, write rows nobody
+   * reads back, and leave the "the other provider holds rows" refusal permanently unfired while the
+   * offboarding sweep swept the wrong table slice. That is the failure this field exists to make
+   * impossible to reach by accident.
+   *
+   * OPTIONAL ONLY BECAUSE NOTHING PASSES IT YET, AND THE FALLBACK IS THE ONLY VENDOR ANY DEPLOYMENT
+   * RUNS TODAY. `activeProvider` in `./broker` is what decides this from configuration, and wiring
+   * it through the routes that build a store is a later change; until then every store is a Composio
+   * store and `composio` is what it always wrote. The fallback is HERE, at the deployment boundary
+   * where the answer is knowable, and nowhere else: no function below defaults it, because a default
+   * deeper in is a second answer to this question that nothing holds equal to this one.
+   *
+   * TODO: pass `activeProvider(config)` at every `createPluginStore` call and make this required, so
+   * that an Arcade deployment cannot be built by forgetting a field.
+   */
+  brokerProvider?: BrokerProvider;
   /** Where the vendor sends people back; needed to (re)register a dynamic client. */
   redirectUri?: string;
   /**
@@ -1234,6 +1259,13 @@ export function createPluginStore(options: PluginStoreOptions) {
   // No default, unlike the seams above: there is no real implementation in this tree to fall back
   // to, and a deployment with no Composio key is supposed to have no broker. See `./broker`.
   const broker = options.broker;
+  /*
+   * The broker this store is for, resolved once so that every read of `brokered_connections`, every
+   * `provenance` test and the connection writer below are reading ONE value rather than each
+   * re-deciding. See {@link PluginStoreOptions.brokerProvider} for why the fallback is here and only
+   * here.
+   */
+  const brokerProvider: BrokerProvider = options.brokerProvider ?? "composio";
 
   /*
    * One exchange at a time per (server, person). A rotating vendor invalidates the refresh
@@ -1436,7 +1468,7 @@ export function createPluginStore(options: PluginStoreOptions) {
      * so only a removal racing this read gets here, and it is refused as the missing row is above.
      */
     const toolkit =
-      dialled.provenance === "composio" ? toolkitOf(dialled.url) : null;
+      dialled.provenance === brokerProvider ? toolkitOf(dialled.url) : null;
     const app = toolkit ? await brokeredAppRow(toolkit) : null;
     if (toolkit && !app)
       return {
@@ -1494,13 +1526,13 @@ export function createPluginStore(options: PluginStoreOptions) {
   const accountRow = (toolkit: string, account: AccountRef) =>
     account.holder === "person"
       ? and(
-          eq(brokeredConnections.provider, "composio"),
+          eq(brokeredConnections.provider, brokerProvider),
           eq(brokeredConnections.app, toolkit),
           eq(brokeredConnections.holder, "person"),
           eq(brokeredConnections.userId, account.userId),
         )
       : and(
-          eq(brokeredConnections.provider, "composio"),
+          eq(brokeredConnections.provider, brokerProvider),
           eq(brokeredConnections.app, toolkit),
           eq(brokeredConnections.holder, "deployment"),
         );
@@ -2610,7 +2642,8 @@ export function createPluginStore(options: PluginStoreOptions) {
      * with it, so the audience gate decides on and keys its approval by the row that answers rather
      * than the one that was dialled. Null for every row that is not a brokered app.
      */
-    const toolkit = row.provenance === "composio" ? toolkitOf(row.url) : null;
+    const toolkit =
+      row.provenance === brokerProvider ? toolkitOf(row.url) : null;
     const app = toolkit ? await brokeredAppRow(toolkit) : null;
     const access = accessFor(
       app
@@ -3712,7 +3745,7 @@ export function createPluginStore(options: PluginStoreOptions) {
           .from(brokeredConnections)
           .where(
             and(
-              eq(brokeredConnections.provider, "composio"),
+              eq(brokeredConnections.provider, brokerProvider),
               eq(brokeredConnections.app, toolkit),
             ),
           )
@@ -3761,7 +3794,7 @@ export function createPluginStore(options: PluginStoreOptions) {
           .delete(brokeredConnections)
           .where(
             and(
-              eq(brokeredConnections.provider, "composio"),
+              eq(brokeredConnections.provider, brokerProvider),
               eq(brokeredConnections.app, toolkit),
             ),
           );
@@ -4354,7 +4387,7 @@ export function createPluginStore(options: PluginStoreOptions) {
             .from(brokeredConnections)
             .where(
               and(
-                eq(brokeredConnections.provider, "composio"),
+                eq(brokeredConnections.provider, brokerProvider),
                 eq(brokeredConnections.holder, "deployment"),
               ),
             )
@@ -4537,7 +4570,7 @@ export function createPluginStore(options: PluginStoreOptions) {
         .from(brokeredConnections)
         .where(
           and(
-            eq(brokeredConnections.provider, "composio"),
+            eq(brokeredConnections.provider, brokerProvider),
             eq(brokeredConnections.app, toolkit),
           ),
         );
@@ -5432,7 +5465,7 @@ export function createPluginStore(options: PluginStoreOptions) {
         .leftJoin(users, eq(users.id, brokeredConnections.connectedBy))
         .where(
           and(
-            eq(brokeredConnections.provider, "composio"),
+            eq(brokeredConnections.provider, brokerProvider),
             eq(brokeredConnections.app, toolkit),
             eq(brokeredConnections.holder, "deployment"),
           ),
@@ -5774,7 +5807,21 @@ export function createPluginStore(options: PluginStoreOptions) {
       await database
         .insert(brokeredConnections)
         .values({
-          provider: "composio",
+          /*
+           * THE BROKER THIS ROW WAS ACTUALLY MINTED AT, which is this store's own, because this
+           * insert only ever runs behind a connection just made at the broker this store holds.
+           *
+           * CRITERION. A row inserted here carries the provider whose grant it stands for, so the
+           * reads keyed on `provider` above find exactly the rows this writer wrote.
+           *
+           * REASON. The literal `composio` here was the one line that could not fail loudly. An
+           * Arcade deployment writing it would read its own rows back through a `composio` filter
+           * and APPEAR TO WORK, while the refusal that is supposed to fire when the other provider
+           * holds rows never fired — nothing would ever be filed under the other name — and the
+           * offboarding sweep, keyed the same way, would sweep a slice of the table that was not
+           * this deployment's. Every symptom of that is silence.
+           */
+          provider: brokerProvider,
           app: input.toolkit,
           holder: input.account.holder,
           userId:
