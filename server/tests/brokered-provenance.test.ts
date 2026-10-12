@@ -23,6 +23,10 @@ const PATTERNS: RegExp[] = [
   /provenance\s*[!=]==\s*"(composio|arcade)"/,
   /brokeredConnections\.provider\s*,\s*"(composio|arcade)"/,
   /provider:\s*"(composio|arcade)"/,
+  // `eq(mcpServers.provenance, "composio")`: the drizzle spelling of the same mistake as the
+  // `provenance === "composio"` pattern above. A guard catching one spelling of a mistake and not
+  // the other is worse than none, because it is read as coverage.
+  /(mcpServers|\w+)\.provenance\s*,\s*"(composio|arcade)"/,
 ];
 
 test("no plugin module hard-codes a brokered vendor name outside access.ts", () => {

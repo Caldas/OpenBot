@@ -195,7 +195,7 @@ import { createAccountModeSwitch } from "./plugins/account-mode";
 import { useRoutineTools } from "./plugins/builtin-routines";
 import { useComposioClient } from "./plugins/composio";
 import { createComposioClient } from "./plugins/composio-adapter";
-import { backfillComposioLogos } from "./plugins/logos";
+import { backfillBrokeredLogos } from "./plugins/logos";
 import { redirectUriFor } from "./plugins/oauth";
 import {
   createSharedUseGate,
@@ -782,11 +782,13 @@ const accountModes = createAccountModeSwitch({
 
 // Logo metadata is optional; a vendor outage must not prevent the API from starting.
 if (composio) {
-  void backfillComposioLogos(database, composio.broker).catch(() => {
-    console.warn(
-      "Composio app logos could not be updated. Existing icons remain available; missing logos will be retried on the next restart.",
-    );
-  });
+  void backfillBrokeredLogos(database, "composio", composio.broker).catch(
+    () => {
+      console.warn(
+        "Composio app logos could not be updated. Existing icons remain available; missing logos will be retried on the next restart.",
+      );
+    },
+  );
 }
 
 /**
