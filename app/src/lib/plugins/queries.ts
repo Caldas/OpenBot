@@ -183,7 +183,33 @@ export type PluginsPage = {
    * server.
    */
   composioConfigured: boolean;
+  /**
+   * Which vendor brokers this deployment's apps, as a NAME. Read it through {@link pluginsProvider}.
+   *
+   * A screen that FILTERS by brokered-ness needs no provider name: one provider holds rows at a
+   * time (spec D3), which is why `brokeredAccountsListedOn` is a predicate over `provenance`. A
+   * screen that NAMES a vendor ("Browse Composio", the `/admin/plugins/composio` route,
+   * `COMPOSIO_API_KEY`, "Reached through Composio") cannot derive that name from a row, and this
+   * field is the only thing that answers it. Separate from `composioConfigured`, which asks whether
+   * the directory can be browsed at all.
+   *
+   * A name, never a key and never a capability: nothing about the vendor key travels with it.
+   * Optional because a payload from an older server does not carry it.
+   */
+  provider?: "composio" | "arcade";
 };
+
+/**
+ * The provider a payload names, `"composio"` when the server did not say.
+ *
+ * So a Composio deployment renders byte-identically and a page served by an older server does not
+ * blank. Also `"composio"` before the page has loaded.
+ */
+export function pluginsProvider(
+  page: PluginsPage | undefined,
+): "composio" | "arcade" {
+  return page?.provider ?? "composio";
+}
 
 /** What one Bot holds, which is all the runtime needs to offer it. */
 export type GrantedPlugins = {

@@ -278,6 +278,24 @@ export function createPluginRoutes(
        * screen needs is whether to draw the app directory, which is a yes or a no.
        */
       composioConfigured: Boolean(composio),
+      /*
+       * WHICH vendor brokers this deployment's apps, as a name.
+       *
+       * Handed in with the broker, never read off it: the broker declares what it can do, not who
+       * it is, and a name sniffed from it would be the comparison the store argues against.
+       *
+       * A screen that FILTERS by brokered-ness needs no provider name. One provider holds rows at a
+       * time, so a predicate over a row's provenance is enough. A screen that NAMES a vendor
+       * ("Browse Composio", the `/admin/plugins/composio` route, the key's setting, "Reached
+       * through Composio") cannot derive that name from a row, and this is the only thing that
+       * answers it. It is separate from `composioConfigured`, which asks whether the directory can
+       * be browsed at all.
+       *
+       * A NAME, never a key and never a capability. The Plugins page is reachable by any signed-in
+       * person, so nothing about the vendor key (its presence, shape or anything derived from it)
+       * travels with this. Composio when no broker is configured, so that deployment is unchanged.
+       */
+      provider: composio?.provider ?? "composio",
       servers: await store.listServers(),
       // Scoped: the deployment's skills plus this person's own. An administrator sees them all.
       skills: await store.listSkills(skillActor(context)),

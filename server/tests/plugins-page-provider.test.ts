@@ -1,0 +1,114 @@
+import { describe, expect, test } from "bun:test";
+import { createApp } from "../src/app";
+import { DEV_ACTOR } from "../src/auth/dev-actor";
+import { loadConfig } from "../src/config";
+import type { BrokerProvider } from "../src/plugins/access";
+import type { PluginStore } from "../src/plugins/store";
+import { testEnvironment } from "./support/environment";
+
+/** A stand-in for the deployment's vendor key. It must never appear in the page payload. */
+const VENDOR_KEY = "vendor-key-sentinel-0123456789";
+
+/** `createApp`'s positions 4-14, which this surface does not supply. */
+const UP_TO_PLUGIN_STORE = [
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+] as const;
+
+/** `createApp`'s positions 16-29, between the plugin store and the broker. */
+const UP_TO_BROKER = [
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+] as const;
+
+async function pageFor(composio?: {
+  broker: unknown;
+  provider: BrokerProvider;
+}) {
+  const store = {
+    listServers: async () => [],
+    listSkills: async () => [],
+  } as unknown as PluginStore;
+  const app = createApp(
+    loadConfig(testEnvironment()),
+    {
+      handler: () => new Response(null, { status: 204 }),
+      api: { getSession: async () => ({ user: DEV_ACTOR }) },
+    } as never,
+    { rolesForUser: async () => [] },
+    ...UP_TO_PLUGIN_STORE,
+    store,
+    ...UP_TO_BROKER,
+    composio as never,
+  );
+  const response = await app.request("http://openbot.test/api/plugins");
+  expect(response.status).toBe(200);
+  return (await response.json()) as Record<string, unknown>;
+}
+
+describe("the Plugins page names the active provider", () => {
+  test("an Arcade deployment serves arcade", async () => {
+    const page = await pageFor({
+      broker: { key: VENDOR_KEY },
+      provider: "arcade",
+    });
+    expect(page.provider).toBe("arcade");
+  });
+
+  test("a Composio deployment serves composio", async () => {
+    const page = await pageFor({
+      broker: { key: VENDOR_KEY },
+      provider: "composio",
+    });
+    expect(page.provider).toBe("composio");
+    expect(page.composioConfigured).toBe(true);
+  });
+
+  test("a deployment with no broker still serves composio", async () => {
+    const page = await pageFor(undefined);
+    expect(page.provider).toBe("composio");
+    expect(page.composioConfigured).toBe(false);
+  });
+
+  test("the name travels, the key and anything derived from it do not", async () => {
+    const page = await pageFor({
+      broker: { key: VENDOR_KEY, grantIsLocal: true },
+      provider: "arcade",
+    });
+    expect(Object.keys(page).sort()).toEqual(
+      [
+        "botsMayCallBack",
+        "catalogue",
+        "composioConfigured",
+        "provider",
+        "redirectUri",
+        "servers",
+        "skills",
+      ].sort(),
+    );
+    const body = JSON.stringify(page);
+    expect(body).not.toContain(VENDOR_KEY);
+    expect(body).not.toContain("grantIsLocal");
+  });
+});
