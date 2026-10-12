@@ -263,6 +263,7 @@ export const pluginKeys = {
   page: () => ["plugins", "page"] as const,
   forAgent: (agentId: string) => ["plugins", "for-agent", agentId] as const,
   connections: () => ["plugins", "connections"] as const,
+  siblings: (serverId: string) => ["plugins", "siblings", serverId] as const,
   composioApps: (query: string) =>
     ["plugins", "composio", "apps", query] as const,
 };
@@ -411,6 +412,41 @@ export function connectionsQueryOptions() {
         fallback: "Your connected accounts could not be loaded.",
       });
       return response.json();
+    },
+  });
+}
+
+/**
+ * What disconnecting this app would also end, as the server computed it.
+ *
+ * `siblings` are other apps' toolkit names (never this one) and `unanswered` is a COUNT of apps that
+ * could not be asked about. A deployment whose broker holds one account per app always answers
+ * empty.
+ */
+export type ConnectionSiblings = { siblings: string[]; unanswered: number };
+
+export function connectionSiblingsQueryOptions(serverId: string) {
+  return queryOptions({
+    queryKey: pluginKeys.siblings(serverId),
+    queryFn: async (): Promise<ConnectionSiblings> => {
+      const response = await client(
+        `/api/plugins/servers/${encodeURIComponent(serverId)}/connection/siblings`,
+        {
+          fallback: "Which other apps share this connection could not be read.",
+        },
+      );
+      const body: Partial<ConnectionSiblings> = await response.json();
+      /*
+       * NARROWED RATHER THAN TRUSTED: an answer that is not this shape is read as "nothing to say",
+       * which draws no warning, rather than a throw that takes the whole page down for a sentence.
+       */
+      return {
+        siblings: Array.isArray(body.siblings) ? body.siblings : [],
+        unanswered:
+          typeof body.unanswered === "number" && body.unanswered > 0
+            ? body.unanswered
+            : 0,
+      };
     },
   });
 }

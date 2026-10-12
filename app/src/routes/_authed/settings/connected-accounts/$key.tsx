@@ -1,6 +1,6 @@
 import { IconArrowUpRight, IconChevronDown } from "@tabler/icons-react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { createFileRoute, useParams } from "@tanstack/react-router";
+import { createFileRoute, useParams, useSearch } from "@tanstack/react-router";
 import { useState } from "react";
 import {
   PageEmpty,
@@ -29,11 +29,20 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { connectAccountMutationOptions } from "@/lib/plugins/mutations";
 import {
+  connectionSiblingsQueryOptions,
   connectionsQueryOptions,
   type PluginServer,
   personalConnections,
   pluginsPageQueryOptions,
+  pluginsProvider,
 } from "@/lib/plugins/queries";
+import {
+  brokeredAccountPageDescription,
+  brokeredConsentTrip,
+  brokeredDisconnectNote,
+  brokeredProvenance,
+  disconnectSiblingsNotice,
+} from "@/lib/plugins/provider-vocabulary";
 
 /**
  * Whether this server is reached through Composio AS THIS PERSON.
@@ -44,7 +53,38 @@ import {
  * pin the distinction without rendering the page.
  */
 export function brokeredFor(server: PluginServer | undefined): boolean {
-  return server?.provenance === "composio" && server.accountMode !== "shared";
+  /*
+   * A FILTER, so it asks whether the row came through a broker at all and needs no vendor name: one
+   * provider holds rows at a time (spec D3). Naming the vendor on this page is a different question
+   * and reads the active provider, below.
+   */
+  return (
+    server !== undefined &&
+    brokeredProvenance(server.provenance) &&
+    server.accountMode !== "shared"
+  );
+}
+
+/** The longest action name this page will repeat back. Real ones are far shorter. */
+const MAX_LANDED_ACTION = 200;
+
+/**
+ * The action the verifier's redirect says was just authorized, or null.
+ *
+ * A TRIMMED, BOUNDED NAME AND NOTHING ELSE: it is read off a query string, which anybody can write
+ * on this origin, so it is only ever drawn as a quoted name inside this page's own sentence and
+ * never as a sentence of its own.
+ */
+export function landedActionFrom(action: string | undefined): string | null {
+  const trimmed = (action ?? "").trim();
+  return trimmed.length > 0 && trimmed.length <= MAX_LANDED_ACTION
+    ? trimmed
+    : null;
+}
+
+/** What the landing says about the action somebody has just come back from authorizing. */
+export function landedActionNotice(action: string): string {
+  return `You just authorized ${action}.`;
 }
 
 /**
@@ -57,10 +97,22 @@ export function brokeredFor(server: PluginServer | undefined): boolean {
  */
 export const Route = createFileRoute(
   "/_authed/settings/connected-accounts/$key",
-)({ component: RouteComponent });
+)({
+  component: RouteComponent,
+  /*
+   * `?action=` is the verifier's redirect saying WHICH action the consent just completed was for,
+   * so the page can land on it rather than on the app. The key is omitted when absent rather than
+   * set to undefined, which would make `search` a required prop on every Link to this route.
+   */
+  validateSearch: (search: Record<string, unknown>): { action?: string } =>
+    typeof search.action === "string" ? { action: search.action } : {},
+});
 
 function RouteComponent() {
   const { key } = useParams({
+    from: "/_authed/settings/connected-accounts/$key",
+  });
+  const { action } = useSearch({
     from: "/_authed/settings/connected-accounts/$key",
   });
   const plugins = useQuery(pluginsPageQueryOptions());
@@ -109,6 +161,25 @@ function RouteComponent() {
    * only thing here that knows.
    */
   const brokered = brokeredFor(server);
+  /*
+   * THE VENDOR'S NAME, from the active provider and never from a row: a deployment with the key set
+   * and nothing enabled has no row, and a row cannot say which broker holds the account.
+   */
+  const provider = pluginsProvider(plugins.data);
+  /*
+   * WHAT A DISCONNECT WOULD ALSO END, asked only while there is an account for it to end. The query
+   * is gated on the connection and its answer is read only through the same gate, so a cached answer
+   * from before a disconnect is never drawn beside "Connect".
+   */
+  const siblings = useQuery({
+    ...connectionSiblingsQueryOptions(key),
+    enabled: brokered && connection !== undefined,
+  });
+  const siblingsNotice =
+    brokered && connection !== undefined && siblings.data
+      ? disconnectSiblingsNotice(siblings.data)
+      : null;
+  const landedAction = landedActionFrom(action);
 
   /* Everything the brokered row below reads and does. See `brokered-account-row.tsx`. */
   const brokeredAccount = useBrokeredAccount({
@@ -251,12 +322,22 @@ function RouteComponent() {
     return (
       <PageShell
         backButton={back}
-        description="Reached through Composio, which holds the account, so a Bot sees only what you can see."
+        description={brokeredAccountPageDescription(provider)}
         title={server.title}
       >
         {notice ? (
           <p className="text-destructive text-sm" role="alert">
             {notice}
+          </p>
+        ) : null}
+
+        {landedAction ? (
+          <p
+            className="text-sm"
+            data-landed-action={landedAction}
+            role="status"
+          >
+            {landedActionNotice(landedAction)}
           </p>
         ) : null}
 
@@ -268,12 +349,14 @@ function RouteComponent() {
               /* Said beside the button rather than after it: disconnecting ends the account at
                  Composio, so what it undoes is not the row here but the grant on your own mailbox,
                  and connecting again is a fresh consent. */
-              connectedDescription={`A Bot granted its tools reads your ${server.title} as you. Disconnecting ends the account at Composio, not just here.`}
-              disconnectedDescription={`${reassurance} Connecting takes you to Composio and then to the vendor to consent.`}
+              connectedDescription={`A Bot granted its tools reads your ${server.title} as you. ${brokeredDisconnectNote(provider)}`}
+              disconnectedDescription={`${reassurance} ${brokeredConsentTrip(provider)}`}
               /* What is true either way. The trip to Composio is not — an app whose key somebody
                  types never leaves this page — but which Bots can read this person's mail is the
                  whole point of the screen and holds for both kinds. */
               disconnectedReassurance={reassurance}
+              notice={siblingsNotice ?? undefined}
+              provider={provider}
               title={server.title}
             />
           </PageRows>

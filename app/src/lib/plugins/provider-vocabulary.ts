@@ -144,6 +144,67 @@ export function brokeredDisconnectNote(provider: PluginsProvider): string {
 }
 
 /**
+ * The line under a brokered app's own page title on a person's connected-accounts screen.
+ *
+ * NOT {@link brokeredConnectionDescription}, which is the admin Connection card's sentence and says
+ * something different ("each person's own account"). This one speaks to the person reading their
+ * own page: the broker holds the account, so a Bot sees only what they can see.
+ */
+export function brokeredAccountPageDescription(
+  provider: PluginsProvider,
+): string {
+  return `Reached through ${VOCABULARY[provider].name}, which holds the account, so a Bot sees only what you can see.`;
+}
+
+/** What Connect does on a consent app, said before the press: where it goes first. */
+export function brokeredConsentTrip(provider: PluginsProvider): string {
+  return `Connecting takes you to ${VOCABULARY[provider].name} and then to the vendor to consent.`;
+}
+
+/** What a person is told where the deployment has no key for the active broker. */
+export function brokeredKeyMissing(provider: PluginsProvider): string {
+  return `Set ${VOCABULARY[provider].envVar} on this deployment. Without it there is no broker to reach, so this account can be neither connected nor ended from here. The app stays enabled and every grant on its tools still stands.`;
+}
+
+/**
+ * What a Disconnect would also end, said beside the Disconnect, from the server's computed answer.
+ *
+ * NULL WHEN THERE IS NOTHING TO SAY. An app with no siblings gets no warning block at all, not an
+ * empty one: a warning about apps that will not be touched teaches people to dismiss the one that
+ * matters. `unanswered` is a COUNT and never names, because an app that could not be asked about
+ * has no name this deployment could vouch for.
+ *
+ * It names the apps and promises nothing about confinement (D30): which other apps a consent covers
+ * is the provider's property, and this sentence reports what the server counted rather than what it
+ * hopes.
+ */
+export function disconnectSiblingsNotice(answer: {
+  siblings: readonly string[];
+  unanswered: number;
+}): string | null {
+  const { siblings, unanswered } = answer;
+  const parts: string[] = [];
+  if (siblings.length > 0) {
+    parts.push(
+      `Disconnecting also ends your access to ${joinNames(siblings)}, which ${siblings.length === 1 ? "shares" : "share"} this connection.`,
+    );
+  }
+  if (unanswered > 0) {
+    parts.push(
+      siblings.length > 0
+        ? `${unanswered} other ${unanswered === 1 ? "app" : "apps"} could not be checked and may be affected too.`
+        : `${unanswered} ${unanswered === 1 ? "app" : "apps"} on this connection could not be checked, so disconnecting may end ${unanswered === 1 ? "it" : "them"} too.`,
+    );
+  }
+  return parts.length > 0 ? parts.join(" ") : null;
+}
+
+function joinNames(names: readonly string[]): string {
+  if (names.length <= 2) return names.join(" and ");
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+/**
  * Whether a directory route may answer on this deployment.
  *
  * `pending` until the page has said which provider this is: the default of `"composio"` is right for

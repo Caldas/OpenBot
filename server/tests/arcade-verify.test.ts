@@ -198,7 +198,7 @@ const refusedTo = (reason: string) =>
   `${APP_URL}/settings/connected-accounts?authorized=${reason}`;
 
 /** Where a completion lands: the app's own page, built from the attempt row's `server_id`. */
-const LANDING = `${APP_URL}/settings/connected-accounts/${APP}`;
+const LANDING = `${APP_URL}/settings/connected-accounts/${APP}?action=${encodeURIComponent(ACTION)}`;
 
 /**
  * A refusal, named by its code and not merely by the fact that something redirected.

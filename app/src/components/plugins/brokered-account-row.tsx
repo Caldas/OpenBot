@@ -18,6 +18,11 @@ import {
   ItemTitle,
 } from "@/components/ui/item";
 import {
+  type PluginsProvider,
+  brokeredKeyMissing,
+  providerVocabulary,
+} from "@/lib/plugins/provider-vocabulary";
+import {
   type BrokerField,
   brokeredConnectionFieldsMutationOptions,
   confirmBrokeredConnectionMutationOptions,
@@ -685,17 +690,20 @@ function accountSentence(input: {
   connectedDescription: string;
   disconnectedDescription: string;
   disconnectedReassurance: string | undefined;
+  provider: PluginsProvider;
 }): string {
   const {
     account,
     connectedDescription,
     disconnectedDescription,
     disconnectedReassurance,
+    provider,
     title,
   } = input;
+  const vendor = providerVocabulary(provider).name;
 
   if (!account.configured) {
-    return "Set COMPOSIO_API_KEY on this deployment. Without it there is no broker to reach, so this account can be neither connected nor ended from here. The app stays enabled and every grant on its tools still stands.";
+    return brokeredKeyMissing(provider);
   }
 
   if (account.kind === "no-auth") {
@@ -735,7 +743,7 @@ function accountSentence(input: {
        * is worth a second press rather than a second connection.
        */
       if (account.probe && !account.verified) {
-        return `A check against ${title} was made with your key and did not come back clean — that may be the key, and it may be ${title} itself. The account still stands at Composio, so press Re-check to try again, or disconnect it here and connect again with a fresh key.`;
+        return `A check against ${title} was made with your key and did not come back clean — that may be the key, and it may be ${title} itself. The account still stands at ${vendor}, so press Re-check to try again, or disconnect it here and connect again with a fresh key.`;
       }
       /*
        * NOTHING WAS SPENT ON IT, WHICH IS A FACT ABOUT THE CHECK AND ABOUT THE APP AT THE TIME. The
@@ -775,7 +783,7 @@ function accountSentence(input: {
      * have live, so the row names the step this deployment cannot take for them.
      */
     if (account.disconnected) {
-      return `Removed from Composio. Your key still works at ${title} — rotate it there if you meant to end its access.`;
+      return `Removed from ${vendor}. Your key still works at ${title} — rotate it there if you meant to end its access.`;
     }
     /*
      * NOT THE SCREEN'S OWN SENTENCE, which is written for the kind that leaves: one of the two says
@@ -818,6 +826,7 @@ export function BrokeredAccountRow({
   disconnectedReassurance,
   heading,
   notice,
+  provider = "composio",
   title,
 }: {
   account: BrokeredAccount;
@@ -849,6 +858,13 @@ export function BrokeredAccountRow({
    * that it is shared, say — which holds regardless of which of those two is showing.
    */
   notice?: string;
+  /**
+   * Which broker's name the sentences that name one use. A NAME, never a key or a capability.
+   *
+   * Defaults to Composio so a screen that has not been taught about the second broker renders as it
+   * always did; a screen on an Arcade deployment passes its own.
+   */
+  provider?: PluginsProvider;
   /**
    * The app's own name, for the sentences that name it.
    *
@@ -896,6 +912,7 @@ export function BrokeredAccountRow({
               connectedDescription,
               disconnectedDescription,
               disconnectedReassurance,
+              provider,
               title,
             })}
           </ItemDescription>

@@ -2974,11 +2974,11 @@ export function createPluginRoutes(
        * started from, as the mint's own return address does.
        */
       return context.redirect(
-        connectedAccountsUrlFor(
+        `${connectedAccountsUrlFor(
           connect?.appUrl,
           { serverId: attempt.serverId },
           fresh.account.holder === "deployment" ? "admin" : "settings",
-        ),
+        )}?action=${encodeURIComponent(attempt.action)}`,
         303,
       );
     } catch {
