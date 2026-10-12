@@ -3,6 +3,7 @@ import { type ApprovalGate, currentApprovalContext } from "../approvals/types";
 import {
   type AuditInitiator,
   type AuditStore,
+  createAuditStore,
   recordAuditEvent,
 } from "../audit";
 import {
@@ -1583,6 +1584,31 @@ export function createPluginStore(options: PluginStoreOptions) {
           eq(brokeredConnections.app, toolkit),
           eq(brokeredConnections.holder, "deployment"),
         );
+
+  /**
+   * The one statement behind `failAuthorizationAttempt` and `markAuthorizationUnreconciled`, so the
+   * two verdicts cannot drift into two row shapes. `completed_at` is truncated to milliseconds for
+   * the reason `claimAuthorizationAttempt` truncates `created_at`.
+   */
+  const closeAuthorizationAttempt = async (
+    input: { actorId: string; authId: string },
+    outcome: "failed" | "unreconciled",
+  ) => {
+    const written = await database
+      .update(pendingAuthorizations)
+      .set({
+        completedAt: sql`date_trunc('milliseconds', now())`,
+        outcome,
+      })
+      .where(
+        and(
+          eq(pendingAuthorizations.actorId, input.actorId),
+          eq(pendingAuthorizations.authId, input.authId),
+        ),
+      )
+      .returning({ actorId: pendingAuthorizations.actorId });
+    return written.length > 0;
+  };
 
   /**
    * The token one call goes out with, and whose it is — decided from `access.credential`, so that
@@ -6075,6 +6101,189 @@ export function createPluginStore(options: PluginStoreOptions) {
         )
         .returning({ actorId: pendingAuthorizations.actorId });
       return deleted.length > 0;
+    },
+
+    /**
+     * Finish one Arcade authorization: consume the attempt, record the connection and file the
+     * trail, ALL THREE IN ONE TRANSACTION OR NONE OF THEM.
+     *
+     * THE ATTEMPT ROW IS THE SERIALIZATION POINT AND THE DATABASE ENFORCES IT. The first statement
+     * is a conditional `UPDATE ... WHERE actor_id = $1 AND auth_id = $2 AND completed_at IS NULL
+     * RETURNING`, and it is what makes completion happen exactly once. A read of the attempt
+     * followed by a write would not: two callbacks can both read the row before either consumes it,
+     * and both would then write a connection and a second `mcp.account_connected`. The second
+     * caller's UPDATE instead waits on the first's row lock, re-evaluates `completed_at IS NULL`
+     * against the committed row, and matches nothing.
+     *
+     * AN `auth_id` IN AN AUDIT PAYLOAD ENFORCES NOTHING, which is the shape this replaces.
+     * {@link auditEvents.id} is `uuid().defaultRandom()`, so the trail has no key a second callback
+     * could collide with — it would simply hold two rows for one connection, and the connection
+     * upsert would have run twice on the way there.
+     *
+     * ZERO ROWS MEANS STOP, AND THE CALLER IS TOLD NOTHING, which is deliberate. Zero rows is
+     * either somebody else completing this attempt first or a callback naming an attempt that is
+     * not this one, and NEITHER is a thing this deployment can tell apart or should act on
+     * differently: both wrote nothing and both leave the browser looking at an account that is
+     * connected. So this answers the same for the loser as for the winner, and a replayed callback
+     * is a no-op rather than an error somebody has to explain. A caller wanting to know what the
+     * row says reads {@link authorizationAttemptFor}.
+     *
+     * THE CONNECTION AND THE AUDIT ROW ARE IN THE SAME TRANSACTION AS THAT UPDATE and not merely
+     * after it. A failure between them used to leave the attempt consumed and nothing recording
+     * what it was consumed FOR: the person's account is live at the vendor, this deployment holds
+     * no `brokered_connections` row — which is the whole of the permission a brokered call is
+     * decided on — and the attempt can never be completed again. The audit insert is bound to the
+     * transaction for the same reason, through {@link createAuditStore} over the transaction handle
+     * rather than the store's own `auditStore`, which holds the pool and would commit on its own.
+     *
+     * `scopes` IS WHAT THE VENDOR GRANTED, AND IT IS THE ONLY THING FROM THAT ANSWER THAT IS
+     * WRITTEN ANYWHERE. Arcade's `auth.status` carries a live provider access token and an
+     * authorization URL beside it; neither reaches this row, this method's arguments, a log line or
+     * an error. What the trail gets is the action the attempt was for and the scopes that came
+     * back, which is exactly what is needed later to explain a tool call refused for want of a
+     * scope — the question {@link mcpUserCredentials.scope} exists to answer for a `user-oauth`
+     * grant. `provider` is the authorization provider this deployment ASKED for, carried down from
+     * the attempt rather than read back out of the vendor's reply.
+     */
+    async completeAuthorizationAttempt(input: {
+      actorId: string;
+      authId: string;
+      toolkit: string;
+      account: AccountRef;
+      action: string;
+      scopes: string[];
+      provider: string;
+    }): Promise<void> {
+      await database.transaction(async (transaction) => {
+        /*
+         * ONE STATEMENT, AND THE FIRST ONE. `completed_at` is truncated to milliseconds for the
+         * reason `claimAuthorizationAttempt` truncates `created_at`: a `Date` carries only
+         * milliseconds, and a column this deployment writes at microsecond precision is one no
+         * later `Date`-valued filter can ever match. Nothing matches on this column today; writing
+         * it the same way is what keeps that true if something does.
+         */
+        const claimed = await transaction.execute(sql`
+          UPDATE pending_authorizations
+             SET completed_at = date_trunc('milliseconds', now()),
+                 outcome = 'completed'
+           WHERE actor_id = ${input.actorId}
+             AND auth_id = ${input.authId}
+             AND completed_at IS NULL
+          RETURNING actor_id
+        `);
+        if (claimed.length === 0) return;
+
+        // Read inside the transaction, under the attempt's lock, so the answer the audit row
+        // carries is the one this very write acted on rather than one a rival moved underneath it.
+        const [existing] = await transaction
+          .select({ app: brokeredConnections.app })
+          .from(brokeredConnections)
+          .where(accountRow(input.toolkit, input.account));
+
+        const verifiedAt = new Date();
+        const set = {
+          verified: true,
+          verifiedAt,
+          // NOTHING WAS SPENT TO EARN THAT FLAG. A consent screen is the vendor's own yes, and no
+          // action of the app's is ever called against it; see `confirmBrokeredConnection`, which
+          // writes the same pair for the same reason.
+          probeAction: null,
+          updatedAt: verifiedAt,
+        };
+        await transaction
+          .insert(brokeredConnections)
+          .values({
+            // The broker this row was actually minted at, which is this store's own — never a
+            // literal, for the reason `recordBrokeredConnection` sets out at length.
+            provider: brokerProvider,
+            app: input.toolkit,
+            holder: input.account.holder,
+            userId:
+              input.account.holder === "person" ? input.account.userId : null,
+            vendorUserId: input.account.vendorUserId,
+            ...set,
+          })
+          .onConflictDoUpdate(
+            input.account.holder === "person"
+              ? {
+                  target: [
+                    brokeredConnections.provider,
+                    brokeredConnections.app,
+                    brokeredConnections.userId,
+                  ],
+                  targetWhere: sql`${brokeredConnections.holder} = 'person'`,
+                  set,
+                }
+              : {
+                  target: [
+                    brokeredConnections.provider,
+                    brokeredConnections.app,
+                  ],
+                  targetWhere: sql`${brokeredConnections.holder} = 'deployment'`,
+                  set,
+                },
+          );
+
+        await recordAuditEvent(
+          createAuditStore(transaction as unknown as Database),
+          {
+            eventType: "mcp.account_connected",
+            targetType: "mcp_server",
+            // The app, the id every other writer of this event files a brokered connection under,
+            // so one query answers what happened to one person's access to one app however it
+            // began and however it ended.
+            targetId: input.toolkit,
+            payload: {
+              actor: input.actorId,
+              server: input.toolkit,
+              /*
+               * WHAT THE VENDOR GRANTED, WHICH A BROKERED ROW HAS NEVER BEEN ABLE TO SAY BEFORE.
+               * Both Composio writers carry `""` because Composio holds the grant and never tells
+               * this deployment what it covers; Arcade does tell us, on the key all four writers
+               * already agree on, so the same query reads both.
+               */
+              scope: input.scopes.join(" "),
+              // The action the attempt was for: what this grant was obtained in order to call.
+              action: input.action,
+              provider: input.provider,
+              reconnected: Boolean(existing),
+              holder: input.account.holder,
+            },
+          },
+        );
+      });
+    },
+
+    /**
+     * Close an attempt as `failed` or `unreconciled`, matched on `(actor_id, auth_id)`.
+     *
+     * ON THE PAIR AND NOT ON `created_at`, unlike {@link recordAuthorizationMint} and
+     * {@link discardAuthorizationAttempt}, because the caller here is the returning callback and
+     * all it holds is the `ar_...`. An attempt with no `auth_id` matches nothing, which is correct:
+     * no callback can be about an attempt that never minted one.
+     *
+     * NOT CONDITIONAL ON `completed_at IS NULL`, unlike the completion above, and the asymmetry is
+     * the point. Completion is the write that must happen exactly once because it hands out access;
+     * these two record that it did not, and a second one re-stamping the same verdict grants
+     * nothing to anybody.
+     */
+    async failAuthorizationAttempt(input: {
+      actorId: string;
+      authId: string;
+    }): Promise<boolean> {
+      return await closeAuthorizationAttempt(input, "failed");
+    },
+
+    /**
+     * Mark an attempt whose outcome this deployment could not settle — the vendor answered, and
+     * what it answered could not be reconciled with the attempt. Kept apart from `failed` so an
+     * operator can tell "the person declined" from "we do not know what happened".
+     */
+    async markAuthorizationUnreconciled(input: {
+      actorId: string;
+      authId: string;
+    }): Promise<boolean> {
+      return await closeAuthorizationAttempt(input, "unreconciled");
     },
 
     /**
