@@ -1,10 +1,10 @@
 import Arcade, { APIError } from "@arcadeai/arcadejs";
-import { classify, type ArcadeActions, type ArcadeFailure } from "./arcade";
+import { type ArcadeActions, type ArcadeFailure, classify } from "./arcade";
 import {
-  BrokerRefusalError,
-  flagOf,
   type BrokerApp,
+  BrokerRefusalError,
   type ConnectedAppBroker,
+  flagOf,
   type GrantState,
 } from "./broker";
 
@@ -188,6 +188,13 @@ const CLOSED_VERDICT = { effect: "write", destructive: true } as const;
  * so an unannotated action is approved like a deletion. That fallback is exactly what must not be
  * counted — counted, `AirtableApi`'s `metadata: null` actions would report as classified, and the
  * coverage warning that exists to name them would never fire.
+ *
+ * AN EMPTY `behavior` IS NOT A CLASSIFICATION EITHER, and `classify` is where that is decided: a
+ * block stating neither flag answers the closed verdict, so it arrives here as the fallback it is
+ * and the `flagOf(behavior.destructive, false)` below — the collision-breaker, not a second reading
+ * of the wire — answers `false` for it. Were `{}` read as a plain write, every such action would
+ * report as classified and the coverage warning would miss exactly the actions it exists to name,
+ * the same way `AirtableApi`'s `metadata: null` actions would.
  *
  * THE CLOSED VERDICT IS ALSO A REAL ANSWER, which is the only subtlety here: `Attio.RemoveFromList`
  * genuinely publishes `destructive: true` and lands on the same pair. So the verdict is read first,
@@ -550,7 +557,32 @@ function grantStateOf(item: unknown): GrantState[] {
   if (!action) return [];
   const requirements = record(tool?.requirements);
 
+  /*
+   * A SECRETS FIELD THAT IS NOT A LIST IS UNREADABLE, NOT EMPTY — the same judgement `classify`
+   * makes about an empty `behavior`, one requirement description along. `secrets` absent is the
+   * ordinary case and genuinely means this action needs no deployment secret; `secrets: {}`, or any
+   * other non-list, is Arcade describing requirements in a shape this cannot read, and silently
+   * folding it to "no secrets, none missing" lets the function go on to answer `authorized` for an
+   * action that may be waiting on an unset `GITHUB_SERVER_URL`. Nobody is then told to set it: the
+   * `needs-operator` state that exists to name it cannot fire, and the person is left with an
+   * action the screen says they hold and the vendor refuses. `unknown` with a reason is what the
+   * docblock's "anything the listing does not say clearly" already promises.
+   */
   const rawSecrets = requirements?.secrets;
+  if (
+    rawSecrets !== undefined &&
+    rawSecrets !== null &&
+    !Array.isArray(rawSecrets)
+  ) {
+    return [
+      {
+        action,
+        state: "unknown",
+        reason:
+          "Arcade listed this action's deployment secrets as something other than a list, so whether any is unset could not be read.",
+      },
+    ];
+  }
   const missing: string[] = [];
   let secretUnreadable = false;
   for (const raw of Array.isArray(rawSecrets) ? rawSecrets : []) {
