@@ -1031,9 +1031,28 @@ export function assertActivatable(
   candidate: BrokerProvider,
   otherProviderRows: number,
 ): void {
-  if (otherProviderRows <= 0) return;
   const other = candidate === "arcade" ? "Composio" : "Arcade";
+  const self = candidate === "arcade" ? "Arcade" : "Composio";
+  /*
+   * A COUNT THAT IS NOT A COUNT REFUSES, AND IS NEVER REPEATED BACK. `NaN <= 0` is false, so a
+   * `<= 0` test alone lets a NaN through to the sentence below, where it reads as the literal
+   * words "NaN brokered connections" — a refusal that tells a person a number they cannot act on.
+   * A negative or fractional count is the same failure wearing different clothes: whatever
+   * produced it was not counting rows. So the only counts allowed past here are the ones a row
+   * count can actually be, and anything else refuses saying what is true — the count was not
+   * taken — rather than printing the sentinel it was handed.
+   *
+   * REFUSING, NOT PROCEEDING, because this guard exists to keep a deployment from reaching the
+   * vendor with rows it could no longer revoke. Not knowing how many rows the other provider
+   * holds is not the same as knowing it holds none.
+   */
+  if (!Number.isInteger(otherProviderRows) || otherProviderRows < 0) {
+    throw new BrokerRefusalError(
+      `${self} cannot be activated: the connections belonging to ${other} could not be counted. Keep both API keys set, check that the database is reachable, and start again; activating without that count could leave accounts nobody can revoke.`,
+    );
+  }
+  if (otherProviderRows === 0) return;
   throw new BrokerRefusalError(
-    `${candidate === "arcade" ? "Arcade" : "Composio"} cannot be activated while ${otherProviderRows} brokered connection${otherProviderRows === 1 ? "" : "s"} still belong${otherProviderRows === 1 ? "s" : ""} to ${other}. Keep both API keys set, and end those connections through the ${other} sunset flow first; switching providers by changing the environment would leave accounts nobody can revoke.`,
+    `${self} cannot be activated while ${otherProviderRows} brokered connection${otherProviderRows === 1 ? "" : "s"} still belong${otherProviderRows === 1 ? "s" : ""} to ${other}. Keep both API keys set, and end those connections through the ${other} sunset flow first; switching providers by changing the environment would leave accounts nobody can revoke.`,
   );
 }

@@ -52,4 +52,26 @@ describe("brokered_connections.provider", () => {
       ),
     ).toMatch(/brokered_connections_provider_check/);
   });
+
+  /**
+   * A row with no provider cannot exist, which is what makes the startup activation count sound.
+   *
+   * The count behind `assertActivatable` (server/src/index.ts) asks for the rows that are
+   * `ne(provider, <the wired provider>)`. A SQL inequality never matches NULL, so a nullable
+   * `provider` would make exactly the ambiguous rows invisible to the guard that exists to see
+   * them. It is not nullable, and this is the test that keeps it so: drop the NOT NULL and this
+   * fails, which is the warning that the guard's predicate has to grow an `IS NULL` arm.
+   */
+  test("a row with no provider is refused by NOT NULL, so no row hides from the count", async () => {
+    expect(
+      await outcome(() =>
+        database.insert(brokeredConnections).values({
+          provider: null as unknown as "arcade",
+          app,
+          holder: "deployment",
+          vendorUserId: "v",
+        }),
+      ),
+    ).toMatch(/null value in column "provider"/);
+  });
 });
