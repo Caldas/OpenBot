@@ -780,6 +780,56 @@ describe("a return leg that completes", () => {
   });
 
   /**
+   * A DEPLOYMENT-HELD ACCOUNT LANDS ON THE SAME SCREEN, which is the branch that had no test and
+   * so shipped pointing at `/admin/plugins/:key` — a route with no `validateSearch` for `action`,
+   * no landing notice and no grant list. The whole Shared-app flow, the one case whose Authorize
+   * is admin-only, finished a consent at the vendor and came back to a page that said nothing
+   * about it. The destination is asserted CHARACTER FOR CHARACTER against the settings landing,
+   * including the single `?`, because that is the only address any screen reads `?action=` off.
+   */
+  test("a consent the DEPLOYMENT holds lands on the same settings page, not on admin", async () => {
+    await database
+      .update(mcpServers)
+      .set({ accountMode: "shared", sharedVendorUserId: SHARED_IDENTITY })
+      .where(eq(mcpServers.id, APP));
+    await database.insert(pendingAuthorizations).values({
+      actorId: ACTOR,
+      serverId: APP,
+      action: ACTION,
+      holder: "deployment",
+      userId: null,
+      vendorUserId: SHARED_IDENTITY,
+      authId: MINTED,
+      createdAt: new Date(Math.floor(Date.now() / 1000) * 1000),
+    });
+    statusAnswer = async () => ({
+      status: "completed",
+      userId: SHARED_IDENTITY,
+      scopes: ["gmail.read"],
+    });
+
+    const response = await verify(ACTOR, "?flow_id=flow-abc", {
+      roles: ["admin"],
+    });
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe(LANDING);
+    expect(response.headers.get("location")).not.toContain("/admin/");
+    // One query parameter, so the appended `?action=` cannot have met a path that already had one.
+    expect(response.headers.get("location")?.split("?").length).toBe(2);
+
+    // AND IT IS THE DEPLOYMENT'S GRANT THAT WAS WRITTEN, so this is the holder whose landing is
+    // being asserted and not a personal one dressed up as it.
+    const { connections } = await written();
+    expect(connections.length).toBe(1);
+    expect(connections[0]?.holder).toBe("deployment");
+    expect(connections[0]?.userId).toBeNull();
+    expect(connections[0]?.vendorUserId).toBe(SHARED_IDENTITY);
+
+    const row = await attemptRow();
+    expect(row?.outcome).toBe("completed");
+  });
+
+  /**
    * A VENDOR THAT DOES NOT SAY WHICH AUTH PROVIDER IT IS records that it did not say, and the
    * consent still completes: the grant is already live at the vendor, and an audit label is not
    * worth refusing it over. Guessing the toolkit name here is the thing the seam forbids.

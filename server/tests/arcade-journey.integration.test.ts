@@ -945,9 +945,15 @@ describe("two separately-shared apps", () => {
 
       const response = await minting.returning();
       expect(response.status).toBe(303);
-      // A deployment's account goes back to the admin screen it was started from.
+      /*
+       * AND IT LANDS WHERE THE ACTION IS READ, which for a deployment-held account is the same
+       * settings page a personal one lands on. It used to go to `/admin/plugins/:key`, the screen
+       * the Authorize was pressed from — but that route reads no `?action=` and draws no grant
+       * list, so the Shared-app flow ended on a page that said nothing about the consent just
+       * given.
+       */
       expect(response.headers.get("location")).toBe(
-        `${APP_URL}/admin/plugins/${rowId}?action=${encodeURIComponent(actionName)}`,
+        `${APP_URL}/settings/connected-accounts/${rowId}?action=${encodeURIComponent(actionName)}`,
       );
 
       const connections = await connectionsOf(app);

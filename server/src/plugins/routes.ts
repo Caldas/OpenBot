@@ -2990,15 +2990,23 @@ export function createPluginRoutes(
        * every `next_uri` at mint, and what `confirm_user` answers is the vendor's OWN success page
        * rather than ours. The row holds the app and the action this consent was for, and it cannot
        * be missing here — this handler refused long before it needed an address — so there is no
-       * fallback to specify. An account the deployment holds goes back to the admin screen it was
-       * started from, as the mint's own return address does.
+       * fallback to specify.
+       *
+       * AND BOTH HOLDERS LAND ON THE SAME SCREEN, which is the only one that reads `?action=`. An
+       * account the deployment holds used to be sent to `/admin/plugins/:key`, because that is
+       * where its Authorize button lives — but that route has no `validateSearch` for `action`, no
+       * landing notice and no grant list, so the whole Shared-app flow completed a consent at the
+       * vendor and landed somewhere that said nothing about it. The settings page draws the Shared
+       * app's grant list and the landing notice for either holder, so this is where the action
+       * somebody just authorized is actually named and marked.
+       *
+       * `connectedAccountsUrlFor` with `{ serverId }` answers a query-less path, so appending
+       * `?action=` here cannot produce a second `?`.
        */
       return context.redirect(
-        `${connectedAccountsUrlFor(
-          connect?.appUrl,
-          { serverId: attempt.serverId },
-          fresh.account.holder === "deployment" ? "admin" : "settings",
-        )}?action=${encodeURIComponent(attempt.action)}`,
+        `${connectedAccountsUrlFor(connect?.appUrl, {
+          serverId: attempt.serverId,
+        })}?action=${encodeURIComponent(attempt.action)}`,
         303,
       );
     } catch {

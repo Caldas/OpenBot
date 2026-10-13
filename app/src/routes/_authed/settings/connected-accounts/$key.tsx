@@ -309,6 +309,23 @@ function RouteComponent() {
   if (server?.accountMode === "shared") {
     return (
       <PageShell backButton={back} title={server.title}>
+        {/*
+         * THE LANDING NOTICE BELONGS HERE TOO, because a Shared app's account is the deployment's
+         * and the verifier lands BOTH holders on this page. Without it the one flow whose Authorize
+         * is admin-only completed a consent at the vendor and came back to a screen that named
+         * nothing — the grant list's mark alone, several rows down a search box, is not the page
+         * saying what just happened.
+         */}
+        {landedAction ? (
+          <p
+            className="text-sm"
+            data-landed-action={landedAction}
+            role="status"
+          >
+            {landedActionNotice(landedAction)}
+          </p>
+        ) : null}
+
         {/* One fact, so no heading and no actions: there is nothing here for this person to do. */}
         <PageSection>
           <PageRows className="mt-0">

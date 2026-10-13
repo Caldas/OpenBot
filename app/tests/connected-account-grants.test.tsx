@@ -493,6 +493,50 @@ test("a Shared app shows state to a member but Authorize only to an administrato
   await waitFor(() => expect(admin.queryByText("Authorize")).not.toBeNull());
 });
 
+/*
+ * THE SHARED APP'S LANDING, which is where a deployment-held consent now comes back to.
+ *
+ * The verifier used to send this holder to `/admin/plugins/:key`, a route with no `validateSearch`
+ * for `action`, no notice and no grant list — so the one flow whose Authorize is admin-only
+ * finished a consent at the vendor and landed on a screen that named nothing. Asserted on RENDERED
+ * markup for that reason: the destination mattering is exactly the claim.
+ */
+test("a Shared app landing from a consent names the action and marks its row", async () => {
+  install({
+    provider: "arcade",
+    connected: false,
+    accountMode: "shared",
+    role: "admin",
+    grants: GMAIL,
+  });
+  const view = renderScreen("?action=Gmail.ListEmails");
+
+  const notice = await view.findByRole("status");
+  expect(notice.textContent).toBe("You just authorized Gmail.ListEmails.");
+  expect(notice.getAttribute("data-landed-action")).toBe("Gmail.ListEmails");
+
+  // And the row itself is the marked one, with no search typed to find it by.
+  await waitFor(() => row(view, "Gmail.ListEmails"));
+  expect(row(view, "Gmail.ListEmails").hasAttribute("data-landed")).toBe(true);
+  expect(row(view, "Gmail.SendEmail").hasAttribute("data-landed")).toBe(false);
+  // The Shared branch is the one drawing this, not the personal-account branch.
+  expect(view.container.textContent).toContain("Team account");
+});
+
+test("a Shared app reached without an action says nothing about authorizing", async () => {
+  install({
+    provider: "arcade",
+    connected: false,
+    accountMode: "shared",
+    role: "admin",
+    grants: GMAIL,
+  });
+  const view = renderScreen();
+  await waitFor(() => row(view, "Gmail.ListEmails"));
+  expect(view.queryByRole("status")).toBeNull();
+  expect(view.container.textContent).not.toContain("just authorized");
+});
+
 // ---- Part B: the consent copy is RENDERED before the redirect ----
 
 test("pressing Authorize renders consentCopy's sentence and redirects nowhere yet", async () => {
