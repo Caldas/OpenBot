@@ -33,6 +33,25 @@
  * constructed here, because the journey needs two apps sharing ONE auth provider, which is the
  * live `Gmail`/`GoogleCalendar`-under-`google` shape the adapter's own docblock describes and which
  * no single recorded page carries.
+ *
+ * WHY NO `execute` UNDER A SHARED APP'S IDENTITY IS DRIVEN HERE: coverage, not scope. The identity
+ * hop is already pinned by name at `gate-grant-is-local.test.ts:183` ("a vendor-held grant on a
+ * Shared app still runs as the app's shared identity"), which drives `connectionTokenFor`'s
+ * `broker && !broker.grantIsLocal -> resolved.ref.vendorUserId` with a deployment ref; that ref
+ * itself comes from `store.accountRefFor`, which this suite drives four times over. A shared execute
+ * would add only provider-agnostic gate machinery, owned by `shared-gated-mode.integration.test.ts`.
+ * If that test is deleted, this is the gap to re-check.
+ *
+ * `events.length === 1` IS A PER-ACTOR FACT, NOT A SYSTEM INVARIANT. `ON CONFLICT (actor_id)` proves
+ * one actor cannot overlap himself. Two DIFFERENT admins pressing Authorize on the same Shared app
+ * hold two attempt rows, both minting under the one shared vendor identity, and both completions
+ * run: the connection upsert is idempotent so the row stays single, but the trail takes two
+ * `mcp.account_connected` rows for one connection. That is consistent with D10 ("at most one
+ * authorization in flight PER ACTOR") and is arguably the honest trail.
+ *
+ * THE TWO `describe` BLOCKS ARE ORDER-COUPLED: the merge-gate describe relies on the first having
+ * enabled and connected both apps, and fails if run alone with `--test-name-pattern "two
+ * separately-shared"`. That failure is not a defect.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
@@ -58,15 +77,10 @@ import type { ConnectedAppBroker } from "../src/plugins/broker";
 import { createSharedUseStore } from "../src/plugins/shared-use-store";
 import { createPluginStore } from "../src/plugins/store";
 import fixture from "./fixtures/arcade-catalogue.json";
-import { testDatabaseUrl } from "./support/database";
+import { TEST_POOL, testDatabaseUrl } from "./support/database";
 import { testEnvironment } from "./support/environment";
 
-/*
- * FOUR CONNECTIONS rather than the shared `TEST_POOL` of two: the completion transaction holds one
- * while the reads that check what it wrote take another, and `support/database.ts` says a file
- * wanting a different pool asks for one itself.
- */
-const database = createDatabase(testDatabaseUrl(), { max: 4 });
+const database = createDatabase(testDatabaseUrl(), TEST_POOL);
 
 const suite = randomUUID().slice(0, 8);
 /**
@@ -903,9 +917,7 @@ describe("two separately-shared apps", () => {
       connections: { serverId: string; holder: string; connected: boolean }[];
     };
     expect(
-      connections
-        .filter((row) => [MAIL_ROW, DIARY_ROW].includes(row.serverId))
-        .map((row) => ({ id: row.serverId, ...row, holder: row.holder })),
+      connections.filter((row) => [MAIL_ROW, DIARY_ROW].includes(row.serverId)),
     ).toMatchObject([
       { serverId: MAIL_ROW, holder: "deployment", connected: false },
       { serverId: DIARY_ROW, holder: "deployment", connected: false },
