@@ -5673,6 +5673,14 @@ export function createPluginStore(options: PluginStoreOptions) {
        * draw the deployment's shared account as one of them — a deployment row has no `user_id`,
        * and the filter keeps that a fact this query states rather than one it happens to rely on.
        */
+      /*
+       * NO PROVIDER PREDICATE HERE, DELIBERATELY, AND THAT IS NOT AN OVERSIGHT. Each row is resolved
+       * below at the ACTIVE provider's canonical url, so another provider's row would be silently
+       * dropped from the page. What keeps that unreachable is the startup activation refusal
+       * (`assertActivatable`, called from `server/src/index.ts`): it will not boot when the
+       * configured provider differs from the one on the existing rows. The provider sunset flow
+       * relaxes that refusal, and whoever builds it must add the `brokerProvider` predicate here.
+       */
       const connections = await database
         .select({
           toolkit: brokeredConnections.app,
@@ -8139,6 +8147,16 @@ export function createPluginStore(options: PluginStoreOptions) {
        * where the apps are — the reason the docblock gives for revoking first. Sorted, so two
        * retirements of the same person revoke in the same order and write their rows in the same
        * order.
+       */
+      /*
+       * NO PROVIDER PREDICATE HERE, DELIBERATELY, AND THAT IS NOT AN OVERSIGHT. The sweep below
+       * revokes through the ACTIVE broker, so a row filed under another provider would be a
+       * revocation requested at the wrong vendor, which would not recognise the connection, and an
+       * audit row claiming `vendorRevocationRequested` about access that was never removed. What
+       * keeps that unreachable is the startup activation refusal (`assertActivatable`, called from
+       * `server/src/index.ts`): a deployment holding both providers' rows cannot boot. The provider
+       * sunset flow relaxes that refusal, and whoever builds it must add the `brokerProvider`
+       * predicate here.
        */
       const brokered = await database
         .select({ toolkit: brokeredConnections.app })
