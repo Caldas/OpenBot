@@ -8,6 +8,157 @@ Newest first. `Unreleased` is what is on `main` and not yet tagged.
 
 ## Unreleased
 
+**Before upgrading.** Five things change for an existing deployment:
+- A hosted computer's browser is now headed by default. It uses a little more memory than headless
+  did; set `COMPUTER_BROWSER_MODE=headless` (Helm: `computers.browserMode: headless`) to keep the old
+  behaviour.
+- Migration `0054_memory_on_intelligence` adds two columns to `personal_memories`. On a deployment
+  entitled to Intelligence memory, the memory sweep then copies existing reviewed, switched-on memories
+  into Intelligence, a few people at a time each minute; it is idempotent and safe to interrupt.
+  Memories awaiting review, paused or forgotten stay local until that changes.
+- With nothing saved under Admin → Automatic Learning and no `CPK_INTELLIGENCE_LEARNING_CONTAINER_ID`,
+  the server assigns its Intelligence project's `openbot` container once it exists, and `scripts/start.sh`
+  creates that container. A saved setting, including off, is never changed;
+  `OPENBOT_LEARNING_AUTO_ASSIGN=false` (Helm: `config.learning.autoAssign: false`) prevents it.
+- Migration `0055_default_opt_outs` adds one table, `default_opt_outs`, where a person's removal of a
+  default memory source or background research is recorded. Memory sources and background research
+  then switch on for each person and Bot that talk (below), so expect background research turns, and
+  their model tokens, four hours after a person first talks to a Bot. Only removals from now on are
+  recorded: a source or research setting somebody deleted before the upgrade left no trace, so it
+  comes back on their next conversation with that Bot (one they turned off and kept stays off).
+  `OPENBOT_MEMORY_SOURCE_DEFAULTS=false` and `OPENBOT_PROACTIVE_DEFAULTS=false` (Helm: `config.memory.*`)
+  prevent it.
+- Migration `0056_sign_in_code_step` widens the check on `sign_in_requests.status` to allow
+  `code_required` (below). A server and a computer must be upgraded together: an older computer has
+  no `/sign-in/code`.
+
+### A sign-in's verification code is asked for after the password
+
+The private sign-in form used to ask for a username, a password and "a verification code, if the
+site asks for one" all at once, so a person had to guess whether a code was coming and type one
+before the site had sent it. Now the form asks only for the username and password. If the site,
+once it has the password, shows a one-time-code field, the request waits in a new `code_required`
+state and the form asks for the code the site just sent, on its own. A wrong code keeps asking; a
+code nobody enters expires with the request, and the person can still take over the browser or
+cancel. The Bot is told only how it ended, never the code, and a saved login still never stores one.
+The step is audited as `computer.sign_in_code_requested`, and a failed code as
+`computer.sign_in_failed` with `step: "code"`.
+
+### A licence token from a store reaches the server
+
+The Helm chart passed `COPILOTKIT_LICENSE_TOKEN` to the server only when `secrets.licenseToken` was
+written as a literal. A token synced through `externalSecrets`, which the chart's own EKS example
+does, reached the Secret and never the pod, so a self-hosted deployment ran unlicensed with nothing
+saying why. It is now passed whenever `externalSecrets.data` names `license-token`, and as an optional
+reference with `secrets.existingSecret`, where the chart cannot see the Secret's keys. The chart's
+CI check now also fails a render in which a store syncs a key that nothing reads.
+
+### OpenBot says at boot when Intelligence will refuse memory
+
+A self-hosted Intelligence needs its own licence. Without one it answers every runtime entitlement
+read with `RUNTIME_ENTITLEMENTS_SELF_HOSTED_MISCONFIGURED` and refuses memory, while conversations
+carry on and nothing in OpenBot's log says why. The server now asks once at start-up and logs
+`intelligence-entitlement-not-ready` with the code and where the licence goes, and
+`intelligence-entitlement-unreadable` when Intelligence cannot be asked. Start-up does not wait for
+the answer.
+
+### The server says at boot when its key cannot call the configured model
+
+A key without access to the tenant package's `default_model` passed every start-up check and failed at
+the first message, as "The model … does not exist or you do not have access to it", in front of
+whoever sent it. The server now asks the provider once at start-up and logs `model-unavailable` with
+the model and the fix, or `model-credential-rejected` for a refused key. It asks only OpenAI and
+Anthropic themselves, not an endpoint set by `OPENAI_BASE_URL` or `ANTHROPIC_BASE_URL`, says nothing
+while no key is configured, and never delays start-up.
+
+### The Helm chart pins by digest, mounts a tenant package, and takes a Composio key
+
+Three things a deployment on Kubernetes did by hand now have values of their own:
+
+- `image.digest` deploys exactly the image a release's `container-images.json` names, as
+  `repository:tag@digest`. It refuses anything that is not `sha256:` and 64 hex characters.
+- `config.extraVolumes` and `config.extraVolumeMounts` mount volumes on the server and on the routines
+  and computer-culler CronJobs, the pods that load the configuration. A tenant package from a
+  ConfigMap no longer needs a custom image.
+- `secrets.composioApiKey`, or `composio-api-key` named in `externalSecrets.data`, reaches the server
+  as `COMPOSIO_API_KEY`. Only the server receives it, not the CronJobs.
+
+With none of them set, every target renders exactly as before.
+
+### Fewer "Verify you are human" pages
+
+Sites behind Cloudflare challenged a Bot's browser on sight, and opening one could restart the
+computer and leave the person a blank page to solve. Now:
+- The computer no longer restarts on such a page, and a help request reopens the page the Bot was
+  on, so the person taking control always gets the check to solve. That handoff is the designed
+  fallback for a check a Bot cannot pass.
+- A hosted computer runs headed Chromium on its own virtual display, behind the same live screen.
+  Headless Chromium is what bot checks catch first. A computer still run headless no longer calls
+  itself `HeadlessChrome`.
+- Web Bot Auth, off unless switched on: with `WEB_BOT_AUTH=on` (Helm: `config.webBotAuth: "on"`)
+  and an https public URL, every request a Bot's browser sends is signed and the key is published at
+  `/.well-known/http-message-signatures-directory`. Register the deployment once
+  with Cloudflare (Bot Submission Form, Request Signature) for sites that allow signed agents to let
+  Bots through. See docs/configuration.md. Every site a Bot visits sees the deployment's URL.
+- A residential or ISP proxy is a first-class setting: `EGRESS_PROXY_DEFAULT`, or on Helm
+  `computers.egressProxy` with the URL in a Secret. Off by default; turning it on makes Bots' traffic
+  look like a person's home connection, which is the operator's choice to make.
+- Bun 1.4.3 throughout, which fixes the connection crash behind the restarts.
+
+### Memory sources and background research are on by default
+
+A fresh deployment used to remember only what a person told a Bot: connected-app memory sources and
+background research each waited for somebody to set them up, one Bot at a time. Now, when a person
+talks to one of their Bots in a conversation with that Bot alone, OpenBot switches on background
+research by that Bot (read-only as before, every four hours, first run one interval later). And from
+any turn a Bot takes for a person, each app the person connected in their own account, that the Bot
+can read, becomes a memory source for that Bot, except on a Team Bot somebody else published, where
+the person's own accounts need their consent. Sources read as the person, their facts reach that Bot only, and imported facts wait for the
+person's review before they go to Intelligence, exactly as a source made by hand. Shared apps and apps
+that need no account are not added; a person still adds those by hand.
+
+Turning either off keeps it off, and removing one is remembered: OpenBot never switches it back on,
+and resetting the Bot keeps both. Nothing already saved changes. Set `OPENBOT_MEMORY_SOURCE_DEFAULTS=false` or
+`OPENBOT_PROACTIVE_DEFAULTS=false` (Helm: `config.memory.sourceDefaults` / `researchDefaults`) to stop
+new defaults for the whole deployment.
+
+### Automatic Learning creates its container where OpenBot holds a credential that can
+
+The runtime key cannot create Learning containers, so a deployment without the `openbot` container
+collected nothing until somebody ran a helper. Now:
+- `bun scripts/setup-learning.ts` (and `scripts/start.sh` on every start) creates it with a CopilotKit
+  CLI login even when no project is selected in the checkout, choosing the runtime key's project.
+- `INTELLIGENCE_SERVICE_TOKEN` with `INTELLIGENCE_PROJECT_ID` lets the server create it by itself, on a
+  CopilotKit local evaluation install (the only kind where Intelligence accepts a service token for
+  Learning).
+- The Helm chart runs a setup Job when `config.learning.setup` names a CLI-login Secret or a service
+  token Secret.
+- Admin → Automatic Learning has a "Create the openbot container" button when the deployment holds one
+  of those, and otherwise, like the server log, says exactly what to run.
+
+### Automatic Learning assigns its container without a trip to Admin
+
+Learning was on by default but collected nothing until somebody assigned a container. Now, when
+nothing is saved under Admin → Automatic Learning and `CPK_INTELLIGENCE_LEARNING_CONTAINER_ID` is
+not set, the server assigns its Intelligence project's `openbot` container as the default as soon as
+that container exists, records it in the audit log, and the Admin page says so. A saved setting,
+including off, is never changed. The runtime key cannot create a container, so
+`bun scripts/setup-learning.ts` now creates `openbot` in an existing key's project instead of
+refusing, and `scripts/start.sh` runs that check on every start without a browser or prompt. Set
+`OPENBOT_LEARNING_AUTO_ASSIGN=false` (Helm: `config.learning.autoAssign: false`) to keep the old
+behaviour.
+
+### Memory lives in CopilotKit Intelligence
+
+A deployment entitled to Intelligence memory now keeps its people's memories there: Intelligence holds
+the content and ranks recall, and memories another app on the same project formed for a person appear
+in their Memory page and reach their Bots. OpenBot still records each memory's provenance, review state
+and which Bot or source it came from, and applies those rules to everything Intelligence returns, so a
+Bot-formed memory still reaches only the Bot that formed it. Without Intelligence memory nothing changes:
+OpenBot's own tables remain the store.
+
+## 0.2.0
+
 **Before upgrading.** Two things change for an existing deployment:
 - Migration `0052_shared_brokered_accounts` copies every Composio connection into a new
   `brokered_connections` table and leaves `composio_connections` in place, unwritten. Rolling back to
@@ -50,6 +201,15 @@ are gone; `/group/new` opens the new-conversation screen.
 Settings now also holds whether your Bots ask before acting, rules for every Bot, your memories, your
 devices and recent deliveries, and GitHub event sources. Team approval settings and shared account
 requests moved to Admin → Approvals.
+
+### People can link their Slack and GitHub accounts
+
+Settings → Connected accounts gains a Linked accounts section with one card per account a person can
+link. Slack links through a one-time code sent to the OpenTag app in a direct message; a code posted
+in a channel is cancelled. GitHub links through a GitHub App's user sign-in, set with
+`GITHUB_APP_CLIENT_ID` and `GITHUB_APP_CLIENT_SECRET` (both or neither); the server refuses to start
+with them and no public URL. Nothing reads the links yet: they are what GitHub alerts and reviews will
+build on. Migration `0053_identity_links` only adds tables.
 
 ### An app's account can belong to the team
 

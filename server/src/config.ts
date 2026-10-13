@@ -18,6 +18,7 @@ import {
 } from "./dictation/config";
 import type { BrokerProvider } from "./plugins/access";
 import { type VoiceConfig, voiceConfig } from "./voice/config";
+import { type WebBotAuth, webBotAuthFromEnv } from "./web-bot-auth";
 
 export type RuntimeCapabilities = {
   mode: "intelligence";
@@ -90,6 +91,11 @@ export type AuthProviderId = "google" | "microsoft" | "okta";
 
 /** An OAuth client, as every provider here needs one. */
 export type OAuthClient = { clientId: string; clientSecret: string };
+
+export type GithubAppConfig = {
+  clientId: string;
+  clientSecret: string;
+};
 
 export type AuthConfig = {
   baseUrl: string;
@@ -167,6 +173,30 @@ export type HandoffCaps = {
 export type DeploymentConfig = {
   /** Optional environment default. A saved Admin setting takes precedence. */
   learning?: LearningTarget;
+  /**
+   * Whether OpenBot assigns the Intelligence project's `openbot` Learning container as the default
+   * when nobody has chosen one (learning/auto-assign.ts). On unless OPENBOT_LEARNING_AUTO_ASSIGN is
+   * "false" or "0", and off whenever CPK_INTELLIGENCE_LEARNING_CONTAINER_ID names a container. It
+   * never overrides a saved Admin setting. It creates the container only with a credential that can
+   * (see `learningSetup`), never with the runtime key.
+   */
+  learningAutoAssign: boolean;
+  /**
+   * A credential that can create Learning containers, for a deployment whose operator supplied one.
+   *
+   * The runtime key cannot: Intelligence creates containers for a person's session, a CopilotKit CLI
+   * login, or, on a CopilotKit local evaluation install only, a service token. The server holds
+   * neither of the first two, so this is the service token, sent as `x-copilotkit-ei-service-token`
+   * to `/api/learning/projects/:projectId/containers` with the project it belongs to. Both or
+   * neither: a token without its project is refused at startup.
+   */
+  learningSetup?: { serviceToken: string; projectId: string };
+  /**
+   * Memory sources and background research OpenBot switches on for each person (memory/defaults.ts).
+   * Both on unless OPENBOT_MEMORY_SOURCE_DEFAULTS or OPENBOT_PROACTIVE_DEFAULTS is "false" or "0".
+   * Switching either off stops new defaults and leaves every existing row as it is.
+   */
+  memoryDefaults: { sources: boolean; research: boolean };
   /** Audio configuration is independent of agent model providers. */
   transcription?: TranscriptionConfig;
   voice?: VoiceConfig;
@@ -218,6 +248,8 @@ export type DeploymentConfig = {
    * where a key that was revoked last week would have surfaced regardless.
    */
   composioApiKey: string | undefined;
+  /** GitHub App user sign-in, so people can link their GitHub account. Both or neither of GITHUB_APP_CLIENT_ID / GITHUB_APP_CLIENT_SECRET. */
+  githubApp?: GithubAppConfig;
   /**
    * The Arcade API key, from `ARCADE_API_KEY`. Unset is the ordinary state. Trimmed and never
    * validated here, for the same reason as `composioApiKey`.
@@ -241,6 +273,11 @@ export type DeploymentConfig = {
    * deployment running without authentication — and there is nothing to connect there anyway.
    */
   publicUrl: string | undefined;
+  /**
+   * The key Bots' browsers sign their requests with, and the address its public half is published
+   * under. Undefined when Web Bot Auth is off; see `web-bot-auth.ts` for when that is.
+   */
+  webBotAuth?: WebBotAuth;
   /**
    * Where the browser app is served from, with no trailing slash.
    *
@@ -680,6 +717,23 @@ function oauthClient(
   if (Boolean(clientId) !== Boolean(clientSecret)) {
     throw new Error(
       `${provider}_OAUTH_CLIENT_ID and ${provider}_OAUTH_CLIENT_SECRET must be set together`,
+    );
+  }
+
+  return clientId && clientSecret ? { clientId, clientSecret } : undefined;
+}
+
+function githubAppConfig(
+  environment: Environment,
+): GithubAppConfig | undefined {
+  const clientId = optional(environment, "GITHUB_APP_CLIENT_ID");
+  const clientSecret = optional(environment, "GITHUB_APP_CLIENT_SECRET");
+
+  // Both or neither. One alone is a half-configured sign-in that fails at the first attempt rather
+  // than at start-up, which is the worst moment to discover it.
+  if (Boolean(clientId) !== Boolean(clientSecret)) {
+    throw new Error(
+      "GITHUB_APP_CLIENT_ID and GITHUB_APP_CLIENT_SECRET must be set together",
     );
   }
 
@@ -1291,23 +1345,39 @@ export function loadConfig(
     ? organizationAuthority(organizationAuthValue)
     : undefined;
   const managedAgent = managedAgentConfig(environment);
+  const githubApp = githubAppConfig(environment);
+  const publicUrl = (
+    optional(environment, "OPENBOT_PUBLIC_URL") ?? auth?.baseUrl
+  )?.replace(/\/+$/, "");
+  // GitHub sends people back to this address after they approve. Without it linking is silently
+  // switched off, so say so at start-up instead.
+  if (githubApp && !publicUrl) {
+    throw new Error(
+      "GITHUB_APP_CLIENT_ID needs OPENBOT_PUBLIC_URL (or BETTER_AUTH_URL) so GitHub can send people back to this server.",
+    );
+  }
   const workerSharedSecret = optional(environment, "WORKER_SHARED_SECRET");
+  const deploymentKey = keyEncryptionKey(environment);
+  const webBotAuth = webBotAuthFromEnv(environment, {
+    publicUrl,
+    keyEncryptionKey: deploymentKey,
+  });
 
   return {
     port: serverPort(environment),
     transcription: transcriptionConfig(environment),
     voice: voiceConfig(environment),
     databaseUrl: required(environment, "DATABASE_URL"),
-    keyEncryptionKey: keyEncryptionKey(environment),
+    keyEncryptionKey: deploymentKey,
+    ...(webBotAuth ? { webBotAuth } : {}),
     ...(managedAgent ? { managedAgent } : {}),
+    ...(githubApp ? { githubApp } : {}),
     agentEndpointAllowedHosts: agentEndpointAllowedHosts(environment),
     deploymentId: optional(environment, "DEPLOYMENT_ID"),
     composioApiKey: optional(environment, "COMPOSIO_API_KEY"),
     arcadeApiKey: optional(environment, "ARCADE_API_KEY"),
     brokerProvider: brokerProvider(environment),
-    publicUrl: (
-      optional(environment, "OPENBOT_PUBLIC_URL") ?? auth?.baseUrl
-    )?.replace(/\/+$/, ""),
+    publicUrl,
     appUrl: (
       optional(environment, "OPENBOT_APP_URL") ??
       commaSeparated(environment, "TRUSTED_ORIGINS")[0] ??
@@ -1318,6 +1388,12 @@ export function loadConfig(
       optional(environment, "TENANT_PACKAGE_DIR") ?? "../examples/fintech",
     runtime: runtimeCapabilities(environment),
     learning: learningDefault(environment),
+    learningAutoAssign: learningAutoAssignEnabled(environment),
+    ...learningSetupCredential(environment),
+    memoryDefaults: {
+      sources: switchedOn(environment, "OPENBOT_MEMORY_SOURCE_DEFAULTS"),
+      research: switchedOn(environment, "OPENBOT_PROACTIVE_DEFAULTS"),
+    },
     agentStallTimeoutMs: agentStallTimeoutMs(environment),
     auditRetentionDays: auditRetentionDays(environment),
     oauth: { google },
@@ -1344,6 +1420,41 @@ export function loadConfig(
       : {}),
     ...(workerSharedSecret ? { workerSharedSecret } : {}),
   };
+}
+
+/**
+ * Same rule as generated interfaces: on unless explicitly "false" or "0". A container named in the
+ * environment is a choice, so there is nothing to assign.
+ */
+function learningAutoAssignEnabled(environment: Environment): boolean {
+  if (optional(environment, "CPK_INTELLIGENCE_LEARNING_CONTAINER_ID"))
+    return false;
+  const value = optional(environment, "OPENBOT_LEARNING_AUTO_ASSIGN");
+  return value !== "false" && value !== "0";
+}
+
+/** On unless the variable is "false" or "0", the rule every default-on switch here follows. */
+function switchedOn(environment: Environment, name: string): boolean {
+  const value = optional(environment, name);
+  return value !== "false" && value !== "0";
+}
+
+/** The service token and its project, both or neither. See `DeploymentConfig.learningSetup`. */
+function learningSetupCredential(environment: Environment): {
+  learningSetup?: { serviceToken: string; projectId: string };
+} {
+  const serviceToken = optional(environment, "INTELLIGENCE_SERVICE_TOKEN");
+  const projectId = optional(environment, "INTELLIGENCE_PROJECT_ID");
+  if (!serviceToken && !projectId) return {};
+  if (!serviceToken || !projectId)
+    throw new Error(
+      "INTELLIGENCE_SERVICE_TOKEN and INTELLIGENCE_PROJECT_ID go together: the token creates the openbot Learning container in that project. Set both, or neither.",
+    );
+  if (!/^[1-9][0-9]{0,15}$/.test(projectId))
+    throw new Error(
+      "INTELLIGENCE_PROJECT_ID must be the Intelligence project's numeric ID.",
+    );
+  return { learningSetup: { serviceToken, projectId } };
 }
 
 /** Optional container default; the enabled preference alone does not collect or deliver. */

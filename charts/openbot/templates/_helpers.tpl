@@ -190,7 +190,50 @@ actually exists. A named `image.tag` is used verbatim.
 */}}
 {{- define "openbot.image" -}}
 {{- $tag := .Values.image.tag | default (printf "v%s" .Chart.AppVersion) -}}
+{{- with .Values.image.digest -}}
+{{- if not (regexMatch "^sha256:[a-f0-9]{64}$" .) -}}
+{{- fail (printf "image.digest must be sha256: followed by 64 hex characters, as in a release's container-images.json; got %q." .) -}}
+{{- end -}}
+{{- printf "%s:%s@%s" $.Values.image.repository $tag . -}}
+{{- else -}}
 {{- printf "%s:%s" .Values.image.repository $tag -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Where a key of this chart's Secret comes from, for an optional credential.
+
+`chart` and `store` mean the key is certainly there: this chart writes it from the literal, or
+`externalSecrets.data` names it. `unknown` is `secrets.existingSecret`, which cannot be read at
+template time, so the reference is made optional and a Secret without the key still starts. Empty
+means nothing provides it and the variable is left out.
+
+Called with (dict "root" . "key" "composio-api-key" "literal" .Values.secrets.composioApiKey).
+*/}}
+{{- define "openbot.secretKeySource" -}}
+{{- $root := .root -}}
+{{- if .literal -}}
+chart
+{{- else if $root.Values.externalSecrets.enabled -}}
+{{- $named := list -}}
+{{- range $root.Values.externalSecrets.data }}{{- $named = append $named .secretKey }}{{- end -}}
+{{- if has .key $named }}store{{ end -}}
+{{- else if $root.Values.secrets.existingSecret -}}
+unknown
+{{- end -}}
+{{- end -}}
+
+{{/* `config.extraVolumeMounts` and `config.extraVolumes`, for the pods that load the configuration. */}}
+{{- define "openbot.extraVolumeMounts" -}}
+{{- with .Values.config.extraVolumeMounts }}
+{{ toYaml . }}
+{{- end }}
+{{- end -}}
+
+{{- define "openbot.extraVolumes" -}}
+{{- with .Values.config.extraVolumes }}
+{{ toYaml . }}
+{{- end }}
 {{- end -}}
 
 {{- define "openbot.secretName" -}}
@@ -261,6 +304,21 @@ and in whatever holds the release, which is not where `KEY_ENCRYPTION_KEY` belon
 - name: BETTER_AUTH_URL
   value: {{ .Values.config.publicUrl | quote }}
 {{- end }}
+{{- /* Guarded: absent on a release upgraded with --reuse-values, which leaves the server's default. */}}
+{{- with (.Values.config).webBotAuth }}
+- name: WEB_BOT_AUTH
+  value: {{ . | quote }}
+{{- end }}
+{{- /*
+  Optional on purpose: the server derives a key from KEY_ENCRYPTION_KEY when this one is absent, so
+  a Secret of your own, or the chart's without `secrets.webBotAuthKey`, simply does not carry it.
+*/}}
+- name: WEB_BOT_AUTH_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "openbot.secretName" . }}
+      key: web-bot-auth-key
+      optional: true
 {{- if .Values.config.initialAdminEmails }}
 - name: INITIAL_ADMIN_EMAILS
   value: {{ .Values.config.initialAdminEmails | quote }}
@@ -336,6 +394,21 @@ and in whatever holds the release, which is not where `KEY_ENCRYPTION_KEY` belon
 - name: CPK_INTELLIGENCE_SKILLS_REVISION
   value: {{ . | quote }}
 {{- end }}
+{{- /* Absent, as it is under `--reuse-values`, means on: only an explicit false is written. */}}
+{{- if eq (toString $learning.autoAssign) "false" }}
+- name: OPENBOT_LEARNING_AUTO_ASSIGN
+  value: "false"
+{{- end }}
+{{- /* Absent, as under `--reuse-values`, means on, like autoAssign: only an explicit false is written. */}}
+{{- $memory := .Values.config.memory | default dict }}
+{{- if eq (toString $memory.sourceDefaults) "false" }}
+- name: OPENBOT_MEMORY_SOURCE_DEFAULTS
+  value: "false"
+{{- end }}
+{{- if eq (toString $memory.researchDefaults) "false" }}
+- name: OPENBOT_PROACTIVE_DEFAULTS
+  value: "false"
+{{- end }}
 - name: INTELLIGENCE_API_URL
   value: {{ .Values.config.intelligence.apiUrl | quote }}
 - name: INTELLIGENCE_GATEWAY_WS_URL
@@ -345,12 +418,18 @@ and in whatever holds the release, which is not where `KEY_ENCRYPTION_KEY` belon
     secretKeyRef:
       name: {{ include "openbot.secretName" . }}
       key: intelligence-api-key
-{{- if .Values.secrets.licenseToken }}
+{{- /* From a store or an existingSecret too: emitted for the literal alone, a synced token reached
+     the Secret and never the pod, and a self-hosted Intelligence ran unlicensed. */}}
+{{- $license := include "openbot.secretKeySource" (dict "root" . "key" "license-token" "literal" .Values.secrets.licenseToken) }}
+{{- if $license }}
 - name: COPILOTKIT_LICENSE_TOKEN
   valueFrom:
     secretKeyRef:
       name: {{ include "openbot.secretName" . }}
       key: license-token
+      {{- if eq $license "unknown" }}
+      optional: true
+      {{- end }}
 {{- end }}
 {{- with .Values.config.managedAgent.url }}
 - name: MANAGED_AGENT_AG_UI_URL
@@ -597,6 +676,31 @@ podAntiAffinity:
 {{- end -}}
 
 {{/*
+The computer settings this chart has values for, as a JSON list of env entries.
+
+One definition, read by the shared StatefulSet and by the per-Bot sandbox template, so a computer
+cannot be headed in one mode and headless in the other, or proxied in one and not the other.
+
+Each key is reached through a guard, because `helm upgrade --reuse-values` hands an existing release
+none of the keys this release added (see scripts/check-new-values-keys.ts). Absent `browserMode`
+leaves the computer to its own default, which is headed on Linux, the same thing.
+*/}}
+{{- define "openbot.computerEnv" -}}
+{{- $env := list -}}
+{{- $computers := .Values.computers | default dict -}}
+{{- with $computers.browserMode -}}
+{{- $env = append $env (dict "name" "COMPUTER_BROWSER_MODE" "value" (toString .)) -}}
+{{- end -}}
+{{- $egressProxy := $computers.egressProxy | default dict -}}
+{{- if $egressProxy.enabled -}}
+{{- $env = append $env (dict "name" "EGRESS_PROXY_DEFAULT" "valueFrom" (dict "secretKeyRef" (dict
+  "name" (default (include "openbot.secretName" .) $egressProxy.existingSecret)
+  "key" (ternary (default "egress-proxy-url" $egressProxy.existingSecretKey) "egress-proxy-url" (not (empty $egressProxy.existingSecret)))))) -}}
+{{- end -}}
+{{- toJson $env -}}
+{{- end -}}
+
+{{/*
 The pod and volumes every Bot's computer is cut from, as JSON.
 
 One definition, used by the ConfigMap the server reads and by the SandboxTemplate a warm pool cuts
@@ -616,6 +720,7 @@ therefore set here instead. See `computers.podSecurityContext` in values.yaml fo
 1001 and what is deliberately NOT set alongside it.
 */}}
 {{- define "openbot.sandboxPodTemplate" -}}
+{{- $computerEnv := include "openbot.computerEnv" . | fromJsonArray -}}
 {{- $spec := dict
   "podTemplate" (dict
     "metadata" (dict "labels" (dict
@@ -641,6 +746,7 @@ therefore set here instead. See `computers.podSecurityContext` in values.yaml fo
             (dict "name" "COMPUTER_TOKEN" "valueFrom" (dict "secretKeyRef" (dict
               "name" (default (include "openbot.secretName" .) .Values.computers.existingTokenSecret)
               "key" "computer-token"))))
+          $computerEnv
           .Values.computers.extraEnv)
         "volumeMounts" (list
           (dict "name" "profiles" "mountPath" "/profiles")
@@ -693,5 +799,31 @@ than anything that names the cause.
 */}}
 {{- define "openbot.automountToken" -}}
 {{- or .Values.serviceAccount.automountServiceAccountToken (eq .Values.computers.mode "sandbox") -}}
+{{- end -}}
+
+{{- /*
+  The operator's credential for creating the openbot Learning container (values: config.learning.setup).
+
+  Read through `default dict` at every level, because `setup` is a key this chart did not have before
+  and `helm upgrade --reuse-values` hands back the previous release's values without it.
+*/}}
+{{- define "openbot.learningSetup" -}}
+{{- $learning := .Values.config.learning | default dict -}}
+{{- toYaml ($learning.setup | default dict) -}}
+{{- end -}}
+
+{{- /* INTELLIGENCE_SERVICE_TOKEN and INTELLIGENCE_PROJECT_ID, when the operator named a token Secret. */}}
+{{- define "openbot.learningServiceTokenEnv" -}}
+{{- $setup := include "openbot.learningSetup" . | fromYaml -}}
+{{- $token := $setup.serviceTokenSecret | default dict -}}
+{{- if $token.name }}
+- name: INTELLIGENCE_SERVICE_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: {{ $token.name | quote }}
+      key: {{ $token.key | default "token" | quote }}
+- name: INTELLIGENCE_PROJECT_ID
+  value: {{ $setup.projectId | toString | quote }}
+{{- end }}
 {{- end -}}
 

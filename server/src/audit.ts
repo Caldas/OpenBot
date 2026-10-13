@@ -268,6 +268,8 @@ export const auditEventTypes = [
   // A Bot asking its owner to sign it in to a website, and how that ended. Never the username, the
   // password or a code: the row says which site, which request and whether a saved login was used.
   "computer.sign_in_requested",
+  // The site accepted the password and asked for a verification code. Whether one was asked, never it.
+  "computer.sign_in_code_requested",
   "computer.sign_in_completed",
   "computer.sign_in_failed",
   "computer.sign_in_cancelled",
@@ -368,6 +370,11 @@ export const auditEventTypes = [
   "person.role_changed",
   "person.access_revoked",
   "person.access_restored",
+  /*
+   * An administrator took the trail out as a file. The trail is evidence, so who copied how much of
+   * it, under which filter, belongs on it too.
+   */
+  "audit.exported",
   /*
    * Getting in, and being turned away.
    *
@@ -520,6 +527,24 @@ export const auditEventTypes = [
   /* A Bot connected to, or disconnected from, a Slack, Teams or SMS conversation. */
   "delivery.linked",
   "delivery.unlinked",
+  /*
+   * A person linking an outside account to themselves (a Slack link code, a GitHub sign-in). Target
+   * the link id; payload `actor` and `provider` only, never the subject, realm or credential id.
+   */
+  "identity.linked",
+  /*
+   * A person removing their own link to an outside account (Slack, GitHub). The link and its stored
+   * token go here; nothing is changed at the provider.
+   */
+  "identity.unlinked",
+  /*
+   * A removed person's linked account retired by the removal: marked `needs_reconnect`, its stored
+   * token (if any) revoked here. Target the link id; payload `actor` (the remover, not always a user
+   * id, so never `actorUserId`), `owner` (the removed person), `provider`, `reason`
+   * ("person_removed") and `credentialRevoked` (whether this removal revoked a live token). Never the
+   * subject, realm or credential id.
+   */
+  "identity.link_retired",
   /* Routines, however they were made: by a person on the screen or by a Bot through its tools. */
   "routine.created",
   "routine.updated",
@@ -981,4 +1006,118 @@ export function auditQueryFromUrl(url: URL): AuditEventQuery {
     from,
     to,
   };
+}
+
+/**
+ * CSV export for the admin audit trail.
+ *
+ * The table at Admin > Audit is the only read surface, so a review that needs evidence —
+ * a compliance pull, an incident timeline, a count of what policy refused — has nowhere to
+ * take it. `GET /api/admin/audit-events?format=csv` answers the same filtered query as the
+ * JSON list and returns it as RFC 4180 CSV, capped so an unbounded trail cannot become an
+ * unbounded response. Payloads arrive here already redacted (see `redactAuditPayload`), and
+ * the export carries them as one JSON column rather than spreading unknown keys across
+ * columns a spreadsheet would then misread.
+ */
+export const AUDIT_EXPORT_MAX_ROWS = 5_000;
+export const AUDIT_EXPORT_PAGE_SIZE = 500;
+
+export const AUDIT_EXPORT_COLUMNS = [
+  "id",
+  "createdAt",
+  "eventType",
+  "actorUserId",
+  "initiatorKind",
+  "initiatorId",
+  "targetType",
+  "targetId",
+  "decisionAllowed",
+  "decisionRule",
+  "bot",
+  "payload",
+] as const;
+
+/**
+ * One CSV cell.
+ *
+ * A spreadsheet runs a cell that starts with `=`, `+`, `-` or `@` (or a tab or carriage return
+ * ahead of one) as a formula, and audit rows carry text people and Bots control: names, URLs,
+ * target IDs. Such a cell is prefixed with `'` so it opens as the text it is (OWASP's CSV injection
+ * guidance). JSON payloads start with `{` and timestamps and IDs with a digit or letter, so nothing
+ * the trail itself writes is changed.
+ */
+function toCsvCell(value: string): string {
+  const text = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+  if (
+    text.includes('"') ||
+    text.includes(",") ||
+    text.includes("\n") ||
+    text.includes("\r")
+  ) {
+    return `"${text.replaceAll('"', '""')}"`;
+  }
+  return text;
+}
+
+function auditEventToCsvRow(event: AuditEvent): string {
+  const payload = event.payload ?? {};
+  const decision = (payload.decision ?? {}) as {
+    allowed?: unknown;
+    rule?: unknown;
+  };
+  const cells = [
+    event.id,
+    event.createdAt,
+    event.eventType,
+    event.actorUserId ?? "",
+    event.initiatorKind ?? "",
+    event.initiatorId ?? "",
+    event.targetType ?? "",
+    event.targetId ?? "",
+    typeof decision.allowed === "boolean" ? String(decision.allowed) : "",
+    typeof decision.rule === "string" ? decision.rule : "",
+    typeof payload.bot === "string" ? payload.bot : "",
+    JSON.stringify(payload),
+  ];
+  return cells.map(toCsvCell).join(",");
+}
+
+export function auditEventsToCsv(events: AuditEvent[]): string {
+  const header = AUDIT_EXPORT_COLUMNS.join(",");
+  if (events.length === 0) return `${header}\n`;
+  return `${header}\n${events.map(auditEventToCsvRow).join("\n")}\n`;
+}
+
+/**
+ * The rows behind an export, walked page by page through the same reader the JSON list
+ * uses, so the CSV and the table never disagree about what a filter matches.
+ *
+ * `cursor` and `limit` are the JSON list's paging, not the export's, and are ignored here:
+ * the export takes everything the filters match up to `maxRows` and says whether it
+ * stopped early, so the caller can narrow the range instead of silently receiving a
+ * partial trail.
+ */
+export async function readAuditExportRows(
+  reader: AuditReader,
+  baseQuery: AuditEventQuery,
+  options?: { maxRows?: number; pageSize?: number },
+): Promise<{ events: AuditEvent[]; truncated: boolean }> {
+  const maxRows = options?.maxRows ?? AUDIT_EXPORT_MAX_ROWS;
+  const pageSize = options?.pageSize ?? AUDIT_EXPORT_PAGE_SIZE;
+  const { cursor: _paging, limit: _limit, ...filters } = baseQuery;
+  const events: AuditEvent[] = [];
+  let cursor: string | undefined;
+  let truncated = false;
+  for (;;) {
+    const page = await reader.list({ ...filters, limit: pageSize, cursor });
+    for (const event of page.events) {
+      if (events.length >= maxRows) {
+        truncated = true;
+        return { events, truncated };
+      }
+      events.push(event);
+    }
+    if (!page.nextCursor) return { events, truncated };
+    cursor = page.nextCursor;
+  }
 }

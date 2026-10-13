@@ -29,7 +29,10 @@ checked as a set, so a partial set is refused as a misconfiguration rather than 
 unconfigured.
 
 `COPILOTKIT_LICENSE_TOKEN` is optional: managed Intelligence issues no licence token, and a
-self-hosted Intelligence that has one sets this and has it forwarded to the runtime.
+self-hosted Intelligence that has one sets this and has it forwarded to the runtime. That
+Intelligence needs the same licence on its own deployment as well, or it refuses memory and the
+other licensed features while conversations carry on. OpenBot asks Intelligence once at boot and
+logs `intelligence-entitlement-not-ready`, naming the fix, when the answer is not ready.
 
 `MANAGED_AGENT_AG_UI_URL` names the Bot in the box: the default endpoint for coworkers created in
 the product. It needs `MANAGED_AGENT_TOKEN` beside it, or the server refuses to start. Unset, the
@@ -435,8 +438,9 @@ A person the directory creates gets the `user` role, or `admin` when their addre
 `INITIAL_ADMIN_EMAILS`, and still signs in through the company's identity provider: SCIM creates no
 password. Their directory groups become their OpenBot groups, which per-group capability switches
 and network policies read. Deactivating or deleting someone in the directory ends their sessions,
-deny-lists the address, retires the connector credentials they granted and stops their Bots'
-computers. Reactivating them lifts a deny-list entry SCIM wrote, never one an administrator wrote.
+deny-lists the address, retires the connector credentials they granted and their linked accounts
+(see Linked accounts), and stops their Bots' computers. Reactivating them lifts a deny-list entry
+SCIM wrote, never one an administrator wrote.
 
 ## One Bot handing work to another
 
@@ -485,6 +489,58 @@ SMS through Twilio honours Advanced Opt-Out: `STOP` (and Twilio's other opt-out 
 number opted out, later messages show `opted_out` in the delivery history instead of being sent, and
 `START` resumes. Twilio sends the confirmation reply itself, so OpenBot does not.
 
+## Linked accounts
+
+OpenBot keeps a record of a person's accounts at outside providers, such as their GitHub account
+or their Slack user. They appear under **Linked accounts** on `/settings/connected-accounts`, one
+card per account type: the person's link with a **Disconnect** button, or, where this deployment can
+link that type, a "Not linked" card with **Connect**. The section is hidden when nothing is linked,
+nothing can be linked and nothing failed to load. Disconnecting removes the link and revokes
+OpenBot's stored copy of any token kept with it, and is audited. For GitHub, the grant itself stays
+at GitHub until the person revokes it under GitHub, Settings, Applications.
+
+See "Linking Slack and GitHub accounts" below for setting up each provider. An integration proves an
+account in one of two ways: by the provider's own sign-in, or by a one-time code that OpenBot issues
+to the signed-in person and that they send from their chat account. Whoever sends the code gets that
+chat account linked to the person it was issued to, so treat it like a password and do not share it.
+It is valid for ten minutes and works once, and issuing a new code for the same provider invalidates
+the earlier one. An outside account links to one OpenBot user at most. Linking a new account at a
+provider and workspace replaces the person's earlier link there and revokes its token.
+
+Removing a person, whether an administrator does it or a SCIM deactivation does, retires their
+links. Their unused link codes are deleted, any token stored with a link is revoked, and each link is
+marked as needing reconnection. The links are kept, not deleted, so the outside account still
+resolves to the removed person and is refused rather than treated as an unlinked guest. Each retired
+link is recorded in the audit trail.
+
+### Linking Slack and GitHub accounts
+
+Slack is offered only where the OpenTag Slack webhook is set up (the pairing above, so
+`OPENTAG_SHARED_SECRET` must be set) and the server can redeem identity codes. The person clicks
+**Connect** on the Slack card, which shows a message of the form `link <code>`, and sends it to the
+OpenBot app in a direct message within ten minutes. A code sent in a channel is refused and stays
+valid until it expires. Teams cannot be linked this way.
+
+GitHub uses a GitHub App. Create one under GitHub Settings, Developer settings, GitHub Apps, and set:
+
+- The callback URL to `<public URL>/api/identity/github/callback`, where the public URL is
+  `OPENBOT_PUBLIC_URL` or, if that is unset, `BETTER_AUTH_URL`. With neither set, the server
+  refuses to start when `GITHUB_APP_CLIENT_ID` is present.
+- "Expire user authorization tokens" on. A webhook is not required for linking.
+- A client secret, generated on the App's page.
+
+Then set `GITHUB_APP_CLIENT_ID` and `GITHUB_APP_CLIENT_SECRET`; set both or neither. People
+then use **Connect** on the GitHub card while signed in to OpenBot in the same browser. The GitHub
+user token is stored encrypted with the link.
+
+After GitHub, the browser is sent back to `OPENBOT_APP_URL`, else the first `TRUSTED_ORIGINS` entry,
+else the public URL. Set `OPENBOT_APP_URL` when the app and the server are on different origins, as
+in local development (app on `3010`, server on `3001`); one origin needs nothing.
+
+Reachability codes and Linked accounts codes look alike, and Reachability's are checked first. A
+Reachability `link <code>` binds a conversation for delivery and is not recorded as a linked
+account; a `link <code>` from **Linked accounts** links the Slack user.
+
 ## Text messages and push notifications
 
 A provider is switched on by setting its variables and is off while none of them are set. Setting
@@ -531,14 +587,20 @@ address: its page and the Bot both say inbound email is not configured on this d
 ## Automatic Learning
 
 Learning is on by default; with no container assigned, nothing is collected or delivered and the
-deployment still starts and chats. Both variables are optional defaults that an administrator's saved
-settings under **Admin → Automatic Learning** override, including a saved off. See
-[automatic-learning.md](automatic-learning.md).
+deployment still starts and chats. Until something is saved, the server assigns its Intelligence
+project's `openbot` container as the default by itself once that container exists. The variables
+below are optional; an administrator's saved settings under **Admin → Automatic Learning** override
+them, including a saved off. See [automatic-learning.md](automatic-learning.md).
 
 | Variable                                 | Meaning                                                                                       |
 | ---------------------------------------- | --------------------------------------------------------------------------------------------- |
 | `CPK_INTELLIGENCE_LEARNING_CONTAINER_ID` | Default Learning container for this deployment's Bots. 1 to 64 lowercase letters, digits and single hyphens, or the server refuses to start. |
 | `CPK_INTELLIGENCE_SKILLS_REVISION`       | An exact published skills revision to pin. Read only beside a container id. Unset follows the latest. |
+| `OPENBOT_LEARNING_AUTO_ASSIGN`           | `false` or `0` stops the server assigning the project's `openbot` container automatically. On otherwise, and off whenever `CPK_INTELLIGENCE_LEARNING_CONTAINER_ID` is set. |
+| `INTELLIGENCE_SERVICE_TOKEN`             | An Intelligence service token that creates the `openbot` Learning container (local evaluation installs only; see [Creating the container](automatic-learning.md#creating-the-container)). Requires `INTELLIGENCE_PROJECT_ID`. |
+| `INTELLIGENCE_PROJECT_ID`                | The numeric ID of the runtime key's Intelligence project, where the service token creates the container. Set both or neither, or the server refuses to start. |
+| `OPENBOT_MEMORY_SOURCE_DEFAULTS`         | `false` or `0` stops OpenBot making each app a person connected into a memory source for the Bots they talk to. On otherwise. Existing sources are left as they are. |
+| `OPENBOT_PROACTIVE_DEFAULTS`             | `false` or `0` stops OpenBot switching on background research for the Bots a person talks to. On otherwise. Existing settings are left as they are. |
 
 ## OpenTelemetry export
 
@@ -566,7 +628,9 @@ is still the record.
 | `COMPUTER_MAX_BROWSERS`              | How many Bots may hold a running browser at once. `8` by default; the least recently used is closed past it. |
 | `COMPUTER_BROWSER_IDLE_MS`           | How long an untouched browser is kept. 30 minutes by default; `0` keeps them resident.    |
 | `COMPUTER_BROWSER_BACKEND`           | `managed` by default (full bundled Chromium); `local-chrome` opts into installed Chrome with dedicated profiles and a loopback API. |
-| `COMPUTER_BROWSER_MODE`              | Managed defaults to `headless` (full Chromium's new headless mode). `headed` uses Xvfb on Linux and a native window on macOS/Windows. Local Chrome requires `headed`. |
+| `COMPUTER_BROWSER_MODE`              | Managed defaults to `headed` on Linux, which is every hosted computer (a container, a pod, the desktop app's engine): full Chromium on the computer's own Xvfb display. A computer run directly on macOS or Windows defaults to `headless`, where headed would open windows on the desktop. `headless` is full Chromium's new headless mode. Local Chrome requires `headed`. See [Getting past bot checks](#getting-past-bot-checks). |
+| `WEB_BOT_AUTH`                       | `on` or `off`. Unset means off. `on` needs an https public URL. See [Web Bot Auth](#web-bot-auth). |
+| `WEB_BOT_AUTH_KEY`                   | The Web Bot Auth signing key, an Ed25519 private JWK. Unset derives one from `KEY_ENCRYPTION_KEY`. Never logged. |
 | `OPENBOT_LOCAL_COMPUTER_DIR`         | Local startup helper's absolute data root. Defaults to the platform's OpenBot user-data directory; contains `profiles/` and `workspace/`. |
 | `COMPUTER_SUPERVISOR_URL`            | Supervisor URL for per-Bot computers. If absent, Bots share `AGENT_COMPUTER_URL`.         |
 | `SUPERVISOR_TOKEN`                   | Bearer token required by the supervisor.                                                  |
@@ -593,29 +657,34 @@ docker ps -aq --filter "label=openbot.namespace=openbot" | xargs -r docker rm -f
 
 The supervisor recreates each computer with the same named volumes on its next request.
 
-### Headed managed Chromium in Docker or Helm
+### Headed or headless managed Chromium in Docker or Helm
 
 The managed backend uses Playwright's full `chromium` channel in either mode. The Docker image
-already installs that browser and Xvfb; it does not require Google Chrome. For Compose, set
-`COMPUTER_BROWSER_MODE=headed` in the deployment environment and recreate the shared computer or
-supervisor as applicable:
+already installs that browser and Xvfb; it does not require Google Chrome. Headed is the default in
+Compose (`agent-computer` and the computers the supervisor creates) and in the Helm chart
+(`computers.browserMode: headed`). The computer starts its own Xvfb, so nothing appears on any screen
+and the live screen, take control and hand back work exactly as before. Headed costs a little more
+memory and CPU than headless.
+
+To run headless instead, set `COMPUTER_BROWSER_MODE=headless` for Compose and recreate the shared
+computer or supervisor as applicable:
 
 ```sh
 docker compose up -d --force-recreate agent-computer supervisor
 ```
 
 Existing supervisor-created computers retain their mode until recreated as described above. The
-same per-Bot profile volumes and streamed viewer continue to work. For Helm, add to your values:
+same per-Bot profile volumes and streamed viewer continue to work. For Helm:
 
 ```yaml
 computers:
-  extraEnv:
-    - name: COMPUTER_BROWSER_MODE
-      value: headed
+  browserMode: headless
 ```
 
 Apply the Helm upgrade. A newly created computer uses the new setting; recreate existing supervised
-computers through your deployment's lifecycle controls while keeping their persistent volumes.
+computers through your deployment's lifecycle controls while keeping their persistent volumes. A
+headless computer no longer calls itself `HeadlessChrome`: its user agent and client hints report what
+the same browser reports headed.
 
 ### Installed Chrome for a local API deployment
 
@@ -756,6 +825,113 @@ docker volume ls -q --filter "label=openbot.namespace=openbot" | xargs -r docker
 ```
 
 Proxy credentials may appear in proxy URLs, but the computer strips them before reporting proxy status.
+
+### Getting past bot checks
+
+Sites behind Cloudflare and similar services (ChatGPT, Canva and many more) decide on every request
+whether it comes from a person, a known good bot, or something to challenge. A Bot's browser gives
+them three answers, in order of how much each one is in the operator's hands, and then a fallback
+for when none of them is enough.
+
+1. **A real browser.** Headed Chromium, the default for hosted computers (see above). Headless
+   Chromium is what bot checks are best at spotting, and is challenged even from a residential
+   address.
+2. **Web Bot Auth, off unless you switch it on.** The browser signs every request as coming from
+   this deployment, the way OpenAI's agent does. A site that allows signed agents lets it through.
+   See below.
+3. **Where the traffic leaves from.** A datacenter address is the other thing bot checks key on. A
+   residential or ISP proxy changes it. See [Residential or ISP proxy](#residential-or-isp-proxy).
+4. **The handoff, which is the designed fallback.** When a site still challenges (a "Verify you are
+   human" check, a CAPTCHA, a sign-in), the Bot asks for help, the person takes control in the live
+   screen, solves it, and hands back. OpenBot never solves a challenge on anyone's behalf. The page
+   survives a computer restart: the handoff reopens it rather than showing a blank browser.
+
+#### Web Bot Auth
+
+[Web Bot Auth](https://developers.cloudflare.com/bots/reference/bot-verification/web-bot-auth/) is
+Cloudflare's signed-agent scheme, built on HTTP Message Signatures (RFC 9421). With it on:
+
+- The server holds one Ed25519 key and publishes its public half, signed, at
+  `<public URL>/.well-known/http-message-signatures-directory` (content type
+  `application/http-message-signatures-directory+json`).
+- Every request a Bot's browser sends carries `Signature-Agent: "<public URL>"`, plus `Signature-Input`
+  and `Signature` over `@authority` and `signature-agent`, with `created`, a 60 second `expires`, a
+  nonce, `tag="web-bot-auth"` and the key's JWK thumbprint as `keyid`. The headers are added inside
+  the browser as each request leaves it, so the egress filter still judges every connection, TLS is
+  still Chromium's own, cookies are unchanged, and no CORS preflight is added.
+
+**When it is on.** Only when `WEB_BOT_AUTH=on` (on Helm, `config.webBotAuth: "on"`). Unset or `off`
+means off, whatever the address. An OpenBot deployment is private by design, and signing announces
+it: every site a Bot visits sees the deployment's URL, and Cloudflare will only register a key
+directory it can fetch from the internet. So it is a deliberate choice, made by an operator whose
+public URL is reachable and who wants sites to know their Bots. `on` needs `OPENBOT_PUBLIC_URL` (or
+`BETTER_AUTH_URL`) to be https and not this machine, and is refused at start-up otherwise. A private
+https address (`10.x`, `192.168.x`, `*.internal`, a single-label name) is accepted, because only the
+operator knows whether their verifier reaches it.
+
+**The key.** Derived from `KEY_ENCRYPTION_KEY` (one way, with HKDF), so every replica and restart
+signs with the same key and nothing new is needed to start. `WEB_BOT_AUTH_KEY` names one instead, an
+Ed25519 private JWK (on Helm, `secrets.webBotAuthKey`). The server hands it to each computer with
+the network policy it already pushes, because the browser is what signs: a Bot's computer can sign as
+this deployment, which is what it is for, and nothing else the deployment holds can be recovered from
+it. Rotate by setting a new `WEB_BOT_AUTH_KEY` and registering again.
+
+**Registering with Cloudflare (manual, once).** Signing earns nothing until Cloudflare knows the key:
+
+1. Check the directory answers from the internet:
+   `curl -i https://openbot.example.com/.well-known/http-message-signatures-directory` shows `200`,
+   the content type above, `Signature` and `Signature-Input` headers, and one key.
+2. In the [Cloudflare dashboard](https://dash.cloudflare.com/), choose your account, then
+   **Manage Account** > **Configurations** > **Bot Submission Form**.
+3. For **Verification Method**, choose **Request Signature**. For **Validation Instructions**, give
+   the key directory URL from step 1. Submit.
+4. Follow the request under **BotBase** > **Submission history**.
+
+Until it is approved, signed requests are treated like any others. Other services that verify Web
+Bot Auth read the same directory.
+
+**What it tells sites.** Every site a Bot visits, Cloudflare-fronted or not, sees this deployment's
+public URL in `Signature-Agent`. That is the point (an honest agent says who it is), and it is why
+it is off unless switched on.
+
+**What is signed.** Every request the browser sends, whatever sent it: pages, redirects,
+subresources, cross-site frames running in processes of their own, dedicated workers, and service
+workers, including their script fetches. The signing happens in one browser-level DevTools session,
+so no kind of target can be missed by not being attached. The identity is per deployment, not per
+Bot. The local Chrome backend never signs: it is the person's own browser.
+
+#### Residential or ISP proxy
+
+`EGRESS_PROXY_DEFAULT` (and `EGRESS_PROXY_<BOT_ID>`, see [Per-Bot egress](#per-bot-egress)) takes a
+residential or ISP proxy's gateway URL, credentials included:
+
+```sh
+# egress.env
+EGRESS_PROXY_DEFAULT=http://customer-user:password@gateway.residential.example:8000
+```
+
+On Helm, put the URL in a Secret and turn it on:
+
+```yaml
+computers:
+  egressProxy:
+    enabled: true
+    # existingSecret: my-proxy        # or let the chart hold it in secrets.egressProxyUrl
+    # existingSecretKey: egress-proxy-url
+networkPolicy:
+  computerExtraEgress:                # needed when networkPolicy.enabled
+    - to: [{ ipBlock: { cidr: 0.0.0.0/0 } }]
+      ports: [{ port: 8000, protocol: TCP }]
+```
+
+It reaches the shared computer and every per-Bot computer as `EGRESS_PROXY_DEFAULT`. The egress
+filter chains to it, so the network policy still decides what a Bot may reach, and the proxy's
+credentials are split out before Chromium or any status report sees them.
+
+**This is the operator's choice, and it is off by default.** Through a residential proxy, a Bot's
+traffic leaves from an address a consumer ISP owns, so a site sees what looks like a person at home
+rather than a datacenter. That is why it works, and it is a choice to make knowingly: it changes
+what the Bot appears to be, where Web Bot Auth says what it is. They can be used together.
 
 ## Attested identity
 
@@ -984,6 +1160,8 @@ model:
 ```
 
 `provider` must be `openai` or `anthropic`. `credential_secret_ref` is a reference to a stored credential, not a credential value. `default_model` is passed through as written, so an OpenAI-compatible endpoint reached through `OPENAI_BASE_URL` takes the name that endpoint publishes.
+
+At start-up the server asks OpenAI or Anthropic, once, whether the configured key can call `default_model`. A key that cannot (a project key whose model allowlist leaves it out, say) would otherwise fail at the first message; instead the log says `model-unavailable`, naming the model and the fix. A rejected key logs `model-credential-rejected`. Nothing is asked with no key configured yet, or of an endpoint set by `OPENAI_BASE_URL` or `ANTHROPIC_BASE_URL`, and start-up never waits for the answer.
 
 ### `knowledge.yaml`
 
