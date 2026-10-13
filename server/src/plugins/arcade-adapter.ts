@@ -61,21 +61,40 @@ const CATALOGUE_PAGE_SIZE = 100;
 const CATALOGUE_MAX_PAGES = 1000;
 
 /**
- * The `total_count` ARCADE ITSELF SENT, read off the RAW BODY and never off the SDK's page object.
+ * WHAT ARCADE ITSELF SENT: the parsed response body, and never the SDK's page object.
  *
- * `OffsetPage`'s constructor does `this.total_count = body.total_count || 0`, so a listing that
- * never sent the field presents a numeric `0` — and an ABSENT total becomes INDISTINGUISHABLE FROM
- * A REPORTED ZERO. Every `typeof reported === "number"` test then passes on a field the vendor
- * never sent, the cross-check becomes `seen < 0`, and a truncated listing commits as complete.
- * `AbstractPage` keeps the parsed body untouched beside it, so the honest value is read from there;
- * the page's own property is the fallback for an answer that has no `body` at all, which is what
- * `admin.authProviders.list` (a plain `APIPromise`, not a page) and every hand-built stub return.
+ * `OffsetPage`'s constructor MANUFACTURES DEFAULTS for the two fields every listing here reads —
+ * `this.items = body.items || []` and `this.total_count = body.total_count || 0` — so a field the
+ * vendor never sent presents on the page as a well-formed empty answer. Read off the page, "Arcade
+ * sent no items" is INDISTINGUISHABLE FROM "Arcade sent an empty list" and "Arcade sent no total"
+ * is INDISTINGUISHABLE FROM "Arcade said zero": the `Array.isArray` guards below can never fire,
+ * every `typeof reported === "number"` test passes on an absent field, and a malformed or truncated
+ * listing commits as a complete one.
+ *
+ * `AbstractPage` keeps the parsed body untouched beside it, so the honest values are read from
+ * there. The answer's own properties are the fallback for an answer that has NO `body` at all,
+ * which is what `admin.authProviders.list` (a plain `APIPromise`, not a page) and every hand-built
+ * stub return — those were never passed through a page constructor, so nothing was manufactured.
  */
-function reportedTotalOf(answer: unknown): number | undefined {
+function sentBody(answer: unknown): Record<string, unknown> | null {
   const page = record(answer);
-  if (!page) return undefined;
-  const raw = (record(page.body) ?? page).total_count;
+  if (!page) return null;
+  return record(page.body) ?? page;
+}
+
+/** The `total_count` Arcade itself sent, or nothing. Read through {@link sentBody}, for its reason. */
+function reportedTotalOf(answer: unknown): number | undefined {
+  const raw = sentBody(answer)?.total_count;
   return typeof raw === "number" ? raw : undefined;
+}
+
+/**
+ * The `items` Arcade itself sent, UNCHECKED — the caller's own guard is what decides whether this
+ * is a list. Read through {@link sentBody}, for its reason: off the page object, a listing that
+ * sent no `items` at all reads as an empty one and no guard anywhere can tell them apart.
+ */
+function sentItemsOf(answer: unknown): unknown {
+  return sentBody(answer)?.items;
 }
 
 /**
@@ -126,7 +145,7 @@ async function* pagedItems(listing: Listing): AsyncGenerator<unknown> {
   let ended = false;
   for (let index = 0; index < listing.maxPages; index += 1) {
     const answer = await listing.page(seen);
-    const items = record(answer)?.items;
+    const items = sentItemsOf(answer);
     if (!Array.isArray(items)) throw new Error(listing.malformed);
     yield* items;
     seen += items.length;
@@ -601,7 +620,7 @@ async function authProviderOf(
   toolkit: string,
 ): Promise<string | null> {
   const page = await client.tools.list({ toolkit });
-  const items = page?.items;
+  const items = sentItemsOf(page);
   if (!Array.isArray(items)) {
     throw new Error(
       `Arcade did not answer with an action list for ${toolkit}, so the auth provider its connections are held under could not be read.`,
@@ -645,8 +664,11 @@ export function createArcadeClient(apiKey: string): {
         offset: q.offset,
       });
       // Passed through unchecked: a malformed listing is the transport's sentence to write, and
-      // its own `Array.isArray` guard is what writes it.
-      const items = record(answer)?.items as unknown[];
+      // its own `Array.isArray` guard is what writes it. THE ITEMS ARE READ OFF THE RAW BODY for
+      // {@link sentItemsOf}'s reason — handing over the page's manufactured `[]` would leave that
+      // guard as dead as the totals the comment above describes, and a listing that answered no
+      // items at all would refresh an app's actions down to none.
+      const items = sentItemsOf(answer) as unknown[];
       const total = reportedTotalOf(answer);
       return total === undefined ? { items } : { items, total_count: total };
     },
