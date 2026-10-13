@@ -465,6 +465,58 @@ test("past the first ten unauthorized actions the rest wait behind the search", 
   ).toBeNull();
 });
 
+test("with mixed unauthorized states past ten, the ten drawn are in state order: every consentable action first", async () => {
+  // Names sort the OTHER way round to the state ranking (unknown < operator < consent by name), so
+  // any reordering of the single RANK table changes which ten are drawn.
+  const mixed: GrantState[] = [
+    ...Array.from(
+      { length: 4 },
+      (_, index): GrantState => ({
+        action: `Gmail.A${index}`,
+        state: "unknown",
+        reason: "Try again.",
+      }),
+    ),
+    ...Array.from(
+      { length: 3 },
+      (_, index): GrantState => ({
+        action: `Gmail.B${index}`,
+        state: "needs-operator",
+        missing: ["GOOGLE_CLIENT_SECRET"],
+      }),
+    ),
+    ...Array.from(
+      { length: 6 },
+      (_, index): GrantState => ({
+        action: `Gmail.C${index}`,
+        state: "needs-consent",
+        scopes: ["gmail.send"],
+      }),
+    ),
+  ];
+  install({ provider: "arcade", connected: true, grants: mixed });
+  const view = renderScreen();
+  await view.findByText(/more actions not yet authorized/);
+  const drawn = [...view.container.querySelectorAll("[data-action]")]
+    .map((element) => element.getAttribute("data-action"))
+    .sort();
+  expect(drawn).toEqual([
+    "Gmail.A0",
+    "Gmail.B0",
+    "Gmail.B1",
+    "Gmail.B2",
+    "Gmail.C0",
+    "Gmail.C1",
+    "Gmail.C2",
+    "Gmail.C3",
+    "Gmail.C4",
+    "Gmail.C5",
+  ]);
+  expect(view.container.textContent).toContain(
+    "3 more actions not yet authorized",
+  );
+});
+
 // ---- 4: Shared ----
 
 test("a Shared app shows state to a member but Authorize only to an administrator", async () => {

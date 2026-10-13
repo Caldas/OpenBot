@@ -19,6 +19,7 @@ import {
   type GrantState,
   grantsQueryOptions,
   groupGrants,
+  RANK,
 } from "@/lib/plugins/grants";
 
 /**
@@ -39,16 +40,6 @@ import {
 /** How many unauthorized actions are drawn before the rest are left to the search. */
 const UNAUTHORIZED_SHOWN = 10;
 
-/**
- * The order the unauthorized tail is picked in, matching `groupGrants`'s own ranking so what is
- * drawn with no search term is the front of the same list the groups are sorted by.
- */
-const ORDER: Record<GrantState["state"], number> = {
-  authorized: 0,
-  "needs-consent": 1,
-  "needs-operator": 2,
-  unknown: 3,
-};
 export function GrantList({
   serverId,
   appNames,
@@ -132,7 +123,7 @@ export function GrantList({
     .filter((grant) => grant.state !== "authorized")
     .sort(
       (left, right) =>
-        ORDER[left.state] - ORDER[right.state] ||
+        RANK[left.state] - RANK[right.state] ||
         left.action.localeCompare(right.action),
     );
   /* With no search term the first unauthorized actions are drawn as well: an Authorize that only

@@ -109,7 +109,8 @@ function scopesOf(grant: GrantState): string[] {
     : [];
 }
 
-const RANK: Record<GrantState["state"], number> = {
+/** The one state ordering: `groupGrants` sorts by it and `GrantList` picks its unauthorized tail by it. */
+export const RANK: Record<GrantState["state"], number> = {
   authorized: 0,
   "needs-consent": 1,
   "needs-operator": 2,
