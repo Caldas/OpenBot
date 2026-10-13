@@ -1,0 +1,251 @@
+import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  type AppliedMigration,
+  type FolderMigration,
+  migrationsOutOfReach,
+  outOfReachRefusal,
+  readMigrationFolder,
+} from "../src/db/migration-reach";
+
+/**
+ * The check that `migration-journal.test.ts` cannot make.
+ *
+ * That file reads one journal and asks whether it is internally consistent — stamps increasing, a
+ * file for every entry, a snapshot for every file. Every one of those passed over the defect this
+ * file exists for, because the defect is not inside the journal. It is between the journal in the
+ * repository and the stamps that a PREVIOUS journal already wrote into a running database: the
+ * merge that renumbered this branch's migrations gave main's `0053_identity_links` a `when` older
+ * than the stamp a pre-merge database had already recorded for the branch's own work, and the
+ * migrator skips what it finds below the newest stamp without a word. `migrate` printed
+ * `{"type":"migrations-applied","status":"ok"}` while `identity_links` and
+ * `identity_link_challenges` did not exist.
+ *
+ * No journal, read alone, can show that. So the check lives in the migrator's path instead, and
+ * this is its test.
+ */
+
+const migration = (
+  tag: string,
+  when: number,
+  hash: string,
+): FolderMigration => ({ tag, when, hash });
+
+const applied = (hash: string, createdAt: number): AppliedMigration => ({
+  hash,
+  createdAt,
+});
+
+describe("migrations out of reach", () => {
+  test("finds none on a database the migrator has never touched", () => {
+    const folder = [
+      migration("0000_first", 1000, "a"),
+      migration("0001_second", 2000, "b"),
+    ];
+
+    expect(migrationsOutOfReach(folder, [])).toEqual([]);
+  });
+
+  test("finds none when the database is simply behind the folder", () => {
+    const folder = [
+      migration("0000_first", 1000, "a"),
+      migration("0001_second", 2000, "b"),
+      migration("0002_third", 3000, "c"),
+    ];
+
+    // The normal case, and the one that must never be refused: two applied, one pending.
+    expect(
+      migrationsOutOfReach(folder, [applied("a", 1000), applied("b", 2000)]),
+    ).toEqual([]);
+  });
+
+  test("finds none when the database is exactly up to date", () => {
+    const folder = [
+      migration("0000_first", 1000, "a"),
+      migration("0001_second", 2000, "b"),
+    ];
+
+    expect(
+      migrationsOutOfReach(folder, [applied("a", 1000), applied("b", 2000)]),
+    ).toEqual([]);
+  });
+
+  test("names a migration stamped below the mark that has never been applied", () => {
+    /*
+     * The renumber, in miniature. The database ran a branch whose migration was stamped 3000; the
+     * merge then brought in a migration from main stamped 2000 and restamped the branch's work
+     * 4000. The migrator compares against 3000, so 2000 is walked past, 4000 runs, and the run is
+     * reported as a success that applied everything.
+     */
+    const folder = [
+      migration("0000_first", 1000, "a"),
+      migration("0001_from_main", 2000, "main"),
+      migration("0002_branch_renumbered", 4000, "renumbered"),
+    ];
+    const database = [applied("a", 1000), applied("branch-as-shipped", 3000)];
+
+    expect(migrationsOutOfReach(folder, database)).toEqual([
+      migration("0001_from_main", 2000, "main"),
+    ]);
+  });
+
+  test("names a migration stamped exactly on the mark", () => {
+    /*
+     * The comparison the migrator makes is `recorded < when`, so a migration stamped exactly at the
+     * mark is skipped as surely as one stamped below it. Off by one here would be a check that
+     * passes a database it cannot bring up to date.
+     */
+    const folder = [
+      migration("0000_first", 1000, "a"),
+      migration("0001_tied", 2000, "tied"),
+    ];
+
+    expect(migrationsOutOfReach(folder, [applied("a", 2000)])).toEqual([
+      migration("0001_tied", 2000, "tied"),
+    ]);
+  });
+
+  test("names every unreachable migration, not just the first", () => {
+    const folder = [
+      migration("0001_one", 1000, "one"),
+      migration("0002_two", 2000, "two"),
+      migration("0003_three", 5000, "three"),
+    ];
+
+    expect(
+      migrationsOutOfReach(folder, [applied("something-else", 3000)]),
+    ).toEqual([
+      migration("0001_one", 1000, "one"),
+      migration("0002_two", 2000, "two"),
+    ]);
+  });
+
+  test("is not fooled by a migration whose file has been rewritten", () => {
+    // Applied under one hash, present in the folder under another: the database ran different SQL
+    // from the file that now claims to be it, and the difference will never be applied.
+    const folder = [migration("0000_first", 1000, "rewritten")];
+
+    expect(migrationsOutOfReach(folder, [applied("original", 1000)])).toEqual([
+      migration("0000_first", 1000, "rewritten"),
+    ]);
+  });
+});
+
+describe("the refusal", () => {
+  const folder = [
+    migration("0000_first", 1000, "a"),
+    migration("0001_from_main", 2000, "main"),
+    migration("0002_branch_renumbered", 4000, "renumbered"),
+  ];
+  const database = [applied("a", 1000), applied("branch-as-shipped", 3000)];
+  const text = outOfReachRefusal(
+    migrationsOutOfReach(folder, database),
+    folder,
+    database,
+  );
+
+  test("names the migration that cannot be reached", () => {
+    expect(text).toContain("0001_from_main (stamped 2000)");
+  });
+
+  test("names the mark that puts it out of reach", () => {
+    expect(text).toContain("stamped 3000");
+  });
+
+  test("says that the database ran a journal this folder no longer has", () => {
+    expect(text).toContain("1 applied migration is not in this folder at all");
+  });
+
+  test("says that nothing was applied", () => {
+    expect(text).toContain("Nothing has been applied.");
+  });
+});
+
+describe("reading a migration folder", () => {
+  test("hashes the whole file the way the migrator does", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "migration-reach-"));
+    const sql = 'CREATE TABLE "one" ("id" text);\n';
+    await writeFile(join(directory, "0000_one.sql"), sql);
+    await Bun.write(
+      join(directory, "meta", "_journal.json"),
+      JSON.stringify({
+        version: "7",
+        dialect: "postgresql",
+        entries: [
+          {
+            idx: 0,
+            version: "7",
+            when: 1000,
+            tag: "0000_one",
+            breakpoints: true,
+          },
+        ],
+      }),
+    );
+
+    expect(await readMigrationFolder(directory)).toEqual([
+      {
+        tag: "0000_one",
+        when: 1000,
+        // Whole file, before any `--> statement-breakpoint` split, which is what
+        // `drizzle-orm/migrator` records and therefore what the database holds.
+        hash: createHash("sha256").update(sql).digest("hex"),
+      },
+    ]);
+  });
+});
+
+describe("the migrations this repository ships", () => {
+  test("reach a database that has never been migrated", async () => {
+    const folder = await readMigrationFolder(
+      new URL("../drizzle/", import.meta.url).pathname,
+    );
+
+    expect(migrationsOutOfReach(folder, [])).toEqual([]);
+  });
+
+  test("reach a database that is up to date with them", async () => {
+    const folder = await readMigrationFolder(
+      new URL("../drizzle/", import.meta.url).pathname,
+    );
+
+    expect(
+      migrationsOutOfReach(
+        folder,
+        folder.map((entry) => applied(entry.hash, entry.when)),
+      ),
+    ).toEqual([]);
+  });
+
+  test("do not reach a database that ran the arcade branch before it was merged", async () => {
+    /*
+     * The incident, pinned, because it is the only shape of this failure anybody has actually met.
+     *
+     * Before the merge, the arcade work shipped as `0053_adorable_frank_castle` (1791773482676) and
+     * `0054_spicy_wallflower` (1791774497487). The merge renumbered it to `0057_arcade_provider`
+     * (1791908858814) and put main's `0053_identity_links` (1791547580808) in its place — a stamp
+     * OLDER than what such a database had already recorded. Everything up to `0052` is byte for
+     * byte the same file on both sides of the merge, so those rows are built from this folder.
+     *
+     * The expected answer is one name, and it is the migration whose two tables were missing from
+     * the reproduction: `identity_links` and `identity_link_challenges`.
+     */
+    const folder = await readMigrationFolder(
+      new URL("../drizzle/", import.meta.url).pathname,
+    );
+    const asShipped = [
+      ...folder
+        .filter((entry) => entry.when <= 1791396757748)
+        .map((entry) => applied(entry.hash, entry.when)),
+      applied("0053_adorable_frank_castle", 1791773482676),
+      applied("0054_spicy_wallflower", 1791774497487),
+    ];
+
+    expect(
+      migrationsOutOfReach(folder, asShipped).map((entry) => entry.tag),
+    ).toEqual(["0053_identity_links"]);
+  });
+});

@@ -11,11 +11,15 @@
  * server imports it anyway. It needs a connection and the folder of SQL files, both of which are in
  * the image, and it keeps the same `drizzle.__drizzle_migrations` journal the CLI does, so the two
  * are interchangeable and a database migrated by either is migrated.
+ *
+ * It is now what every path runs — the image, the Helm Job, the compose stack, CI, and `db:migrate`
+ * — because the two stopped being interchangeable in the direction that matters: only this one
+ * refuses a database holding a stamp newer than a migration it is about to walk past. See
+ * `src/db/migration-reach`.
  */
 import { join } from "node:path";
-import { drizzle } from "drizzle-orm/postgres-js";
-import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
+import { applyMigrations } from "../src/db/apply-migrations";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
@@ -33,9 +37,16 @@ if (!databaseUrl) {
 const client = postgres(databaseUrl, { max: 1, onnotice: () => {} });
 
 try {
-  await migrate(drizzle(client), {
-    migrationsFolder: join(import.meta.dir, "..", "drizzle"),
-  });
+  /*
+   * Guarded, because the migrator's own idea of "applied" is one number.
+   *
+   * It runs a migration when the journal stamps it later than the newest stamp the database holds,
+   * and it has nothing to say about a migration stamped earlier that it has never run. See
+   * `src/db/migration-reach`: a database that ran a branch's migrations before that branch was
+   * merged and renumbered holds a stamp newer than the migrations the merge brought in, and the
+   * unguarded migrator walks past them and prints the line below anyway.
+   */
+  await applyMigrations(client, join(import.meta.dir, "..", "drizzle"));
   console.info(JSON.stringify({ type: "migrations-applied", status: "ok" }));
 } finally {
   // Released whatever happened, so a failure exits rather than hanging on an open socket.

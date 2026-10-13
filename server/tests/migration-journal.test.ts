@@ -16,6 +16,14 @@ import { readdir, readFile } from "node:fs/promises";
  * and the only symptom was an integration test failing with `relation "skill_tools" does not exist`.
  *
  * Nothing else in the build would have caught that, which is why this is a test rather than a note.
+ *
+ * WHAT THIS FILE CANNOT SEE, so that nobody reads it as covering more than it does: every check
+ * here reads ONE journal and asks whether it agrees with itself. The same swallowing happens
+ * between journals — a merge that renumbers a branch's migrations gives the migrations it merged in
+ * a `when` older than the stamp a pre-merge database has already recorded, and those are skipped on
+ * that database while this file, and a fresh database, and CI, all stay green. That half lives in
+ * `migration-reach.test.ts` and in the guard it tests, which runs against the database rather than
+ * against the folder, because it is the only place the evidence exists.
  */
 
 type Entry = { idx: number; tag: string; when: number };
