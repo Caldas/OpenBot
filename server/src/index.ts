@@ -787,7 +787,8 @@ const sandboxedStore = createSandboxedStore(database, bootAuditStore);
  * EXACTLY ONE PROVIDER, DECIDED ONCE. `selectProviderWiring` answers which transport client is
  * installed and which broker goes on to the store and the routes; the other client is installed as
  * an explicit `null`, so a deployment holding both keys (legal, and needed to end accounts at the
- * old vendor) never has two seams live. It refuses a named provider whose key is unset.
+ * old vendor) never has two seams live. It refuses, rather than wiring nothing, both configurations
+ * it cannot decide: a named provider whose key is unset, and both keys set with nothing named.
  */
 const providerWiring = selectProviderWiring(config, {
   composio: createComposioClient,
