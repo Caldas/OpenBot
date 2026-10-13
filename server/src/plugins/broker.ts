@@ -427,9 +427,17 @@ export type AuthorizationFlow = {
    * NARROWED TO THESE THREE FIELDS AND NOTHING ELSE. A provider's own status reply carries the live
    * access token it issued and the person's full profile beside it, and neither is something a seam
    * this deployment reads in routes and stores should be able to hand on by accident.
+   *
+   * `signal` IS OPTIONAL ON THE SEAM AND HONOURED BY THE ADAPTER. The caller polls this on a leg
+   * where a browser is held open, and a poll COUNT bounds nothing while each call is unbounded —
+   * so the caller gives up on its own schedule and says so here, and the adapter hands the signal
+   * to the SDK's request options rather than leaving a socket open against a vendor nobody is
+   * waiting on any more. A stub that ignores it is behaving correctly: an abandoned call is still
+   * abandoned, the signal only makes the abandonment reach the wire.
    */
   status(
     id: string,
+    options?: { signal?: AbortSignal },
   ): Promise<{ status: string; userId: string | null; scopes: string[] }>;
   /**
    * Match somebody coming back from the provider's screen to the authorization they left through.
@@ -443,10 +451,13 @@ export type AuthorizationFlow = {
    * ANSWER: it is exactly the case a return leg has to be able to refuse quietly, and a caller
    * cannot tell it from an outage if both arrive as exceptions.
    */
-  confirmReturn(q: {
-    handle: string;
-    vendorUserId: string;
-  }): Promise<{ authorizationId: string } | { mismatch: true }>;
+  confirmReturn(
+    q: {
+      handle: string;
+      vendorUserId: string;
+    },
+    options?: { signal?: AbortSignal },
+  ): Promise<{ authorizationId: string } | { mismatch: true }>;
 };
 
 /**

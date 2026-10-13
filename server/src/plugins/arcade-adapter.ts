@@ -1151,11 +1151,14 @@ export function createArcadeClient(apiKey: string): {
        * what is not returned cannot be logged, attached as a `cause`, or written into an audit
        * payload by code that never sees it. Do not widen this, and do not add `url`.
        */
-      status: async (id) => {
+      status: async (id, options) => {
         // THE REFUSAL IS MEDIATED TOO, for the same reason the RESPONSE is: a status this vendor
         // would not answer is answered ABOUT a flow whose body carries the token and the url.
+        //
+        // AND THE CALLER'S DEADLINE REACHES THE WIRE: an abandoned poll closes its socket rather
+        // than leaving this deployment holding one open against a vendor nobody is waiting on.
         const answer = await vendorCall("an authorization status read", () =>
-          client.auth.status({ id }),
+          client.auth.status({ id }, { signal: options?.signal }),
         );
         const scopes = answer.scopes;
         return {
@@ -1171,14 +1174,17 @@ export function createArcadeClient(apiKey: string): {
       // failure is an outage or a bug and is rethrown as the sentence {@link vendorCall} wrote for
       // it — `user_mismatch` is still read, because the body's `error.name` survives the mediation
       // and `normalizeArcadeError` answers off the carried failure.
-      confirmReturn: async ({ handle, vendorUserId }) => {
+      confirmReturn: async ({ handle, vendorUserId }, options) => {
         let answer: { auth_id?: unknown };
         try {
           answer = await vendorCall("the return-leg confirmation", () =>
-            client.auth.confirmUser({
-              flow_id: handle,
-              user_id: vendorUserId,
-            }),
+            client.auth.confirmUser(
+              {
+                flow_id: handle,
+                user_id: vendorUserId,
+              },
+              { signal: options?.signal },
+            ),
           );
         } catch (error) {
           if (normalizeArcadeError(error)?.name === "user_mismatch") {
