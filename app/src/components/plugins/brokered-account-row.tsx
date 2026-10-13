@@ -826,7 +826,7 @@ export function BrokeredAccountRow({
   disconnectedReassurance,
   heading,
   notice,
-  provider = "composio",
+  provider,
   title,
 }: {
   account: BrokeredAccount;
@@ -861,10 +861,10 @@ export function BrokeredAccountRow({
   /**
    * Which broker's name the sentences that name one use. A NAME, never a key or a capability.
    *
-   * Defaults to Composio so a screen that has not been taught about the second broker renders as it
-   * always did; a screen on an Arcade deployment passes its own.
+   * Required, never defaulted: a default would say one broker's name on a deployment running the
+   * other, so every screen passes the provider it was told.
    */
-  provider?: PluginsProvider;
+  provider: PluginsProvider;
   /**
    * The app's own name, for the sentences that name it.
    *

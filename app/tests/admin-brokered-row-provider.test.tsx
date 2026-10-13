@@ -23,7 +23,7 @@ import { Route as AdminPluginRoute } from "@/routes/_authed/admin/plugins/$key";
 /**
  * The admin app-detail page's brokered row, on each broker (spec D11).
  *
- * The row is drawn by `BrokeredAccountRow`, which defaults to Composio when not told the provider.
+ * The row is drawn by `BrokeredAccountRow`, which is told the provider by its caller.
  * The page already knows the provider, so it must tell the row — in both places it draws one (the
  * personal row and the Shared-mode team row). Arcade is scanned over text AND markup; Composio's
  * affected sentence is pinned as an exact string.

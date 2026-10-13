@@ -1215,6 +1215,7 @@ function renderRow(account: BrokeredAccount) {
       account={account}
       connectedDescription="A Bot granted its tools reads your Gmail as you."
       disconnectedDescription="No Bot can read this as you."
+      provider="composio"
       title="Gmail"
     />,
   );
