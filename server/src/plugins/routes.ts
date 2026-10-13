@@ -2668,9 +2668,24 @@ export function createPluginRoutes(
    * `actorId` IS THE SESSION SUBJECT (`users.id`), NEVER A CREDENTIAL ACTOR. BEHIND `requireUser`
    * AND NOT ADMIN-GATED AT THE ROUTE, as the disconnect route above: `brokeredAccountFor` is where
    * a Shared app is refused to anybody but an administrator.
+   *
+   * AND IT CANCELS THE ATTEMPT THE PATH NAMES, NEVER MERELY "WHATEVER THIS ACTOR IS HOLDING". The
+   * attempt key is the actor alone, so the lookup can only answer that one row — but the request
+   * names an app, and an attempt standing on a DIFFERENT app is not the thing being cancelled.
+   * Deleting it anyway killed an in-flight consent begun from another screen and answered
+   * `{ cancelled: true }` as though it had done what was asked, which is the same broken
+   * correlation the mint/claim/complete path exists to hold from the other end. A standing attempt
+   * on another app is therefore the `{ cancelled: false }` of "no attempt for THIS app", which is
+   * the same answer, and the same non-error, as there being no attempt at all.
+   *
+   * THE SERVER IS COMPARED AGAINST THE RAW PATH PARAMETER, which is exactly what
+   * `POST /servers/:id/authorize` writes into `server_id` when it claims the row. Comparing against
+   * anything derived — the toolkit, the resolved title — would be two spellings of one fact and a
+   * place for them to drift apart.
    */
   routes.delete("/servers/:id/authorize", requireUser, async (context) => {
-    const resolved = await brokeredAccountFor(context, context.req.param("id"));
+    const serverId = context.req.param("id");
+    const resolved = await brokeredAccountFor(context, serverId);
     if (resolved.refusal) {
       return context.json(
         { error: resolved.refusal.error },
@@ -2679,7 +2694,9 @@ export function createPluginRoutes(
     }
     const actorId = context.var.actor.id;
     const attempt = await store.authorizationAttemptFor(actorId);
-    if (!attempt) return context.json({ cancelled: false });
+    if (!attempt || attempt.serverId !== serverId) {
+      return context.json({ cancelled: false });
+    }
     const cancelled = await store.discardAuthorizationAttempt({
       actorId,
       createdAt: attempt.createdAt,
