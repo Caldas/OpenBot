@@ -461,22 +461,47 @@ export const brokeredConnections = pgTable(
  * setting it, and a second return finds it set. `auth_id` is what binds a callback to this attempt;
  * an attempt holding null can never complete.
  */
-export const pendingAuthorizations = pgTable("pending_authorizations", {
-  actorId: text("actor_id").primaryKey(),
-  serverId: text("server_id")
-    .notNull()
-    .references(() => mcpServers.id, { onDelete: "cascade" }),
-  action: text("action").notNull(),
-  holder: text("holder").$type<"person" | "deployment">().notNull(),
-  userId: text("user_id"),
-  vendorUserId: text("vendor_user_id").notNull(),
-  authId: text("auth_id"),
-  createdAt: createdAt(),
-  completedAt: timestamp("completed_at", { withTimezone: true }),
-  outcome: text("outcome").$type<
-    "completed" | "failed" | "unreconciled" | "withdrawn"
-  >(),
-});
+export const pendingAuthorizations = pgTable(
+  "pending_authorizations",
+  {
+    actorId: text("actor_id").primaryKey(),
+    serverId: text("server_id")
+      .notNull()
+      .references(() => mcpServers.id, { onDelete: "cascade" }),
+    action: text("action").notNull(),
+    /**
+     * Whose account this attempt is for, with the same meaning and the same two values as
+     * {@link brokeredConnections.holder} — and held by the same CHECK, because `$type<>` is erased
+     * at runtime and the row this attempt is reconciled into is held to that pair.
+     */
+    holder: text("holder").$type<"person" | "deployment">().notNull(),
+    userId: text("user_id"),
+    vendorUserId: text("vendor_user_id").notNull(),
+    authId: text("auth_id"),
+    createdAt: createdAt(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    /**
+     * How the attempt ended, `null` while it is still in flight.
+     *
+     * The four names are a ROSTER the database holds, not a comment: every reader switches on them,
+     * and a fifth value written by hand — or by a caller that cast past the declared union — would
+     * reach a `switch` the compiler has already been told is exhaustive.
+     */
+    outcome: text("outcome").$type<
+      "completed" | "failed" | "unreconciled" | "withdrawn"
+    >(),
+  },
+  (table) => [
+    check(
+      "pending_authorizations_holder_check",
+      sql`(${table.holder} = 'person' AND ${table.userId} IS NOT NULL) OR (${table.holder} = 'deployment' AND ${table.userId} IS NULL)`,
+    ),
+    check(
+      "pending_authorizations_outcome_check",
+      sql`${table.outcome} IS NULL OR ${table.outcome} IN ('completed', 'failed', 'unreconciled', 'withdrawn')`,
+    ),
+  ],
+);
 
 /**
  * One person's grant on one MCP server: the row that makes a Bot answer as the asker.
