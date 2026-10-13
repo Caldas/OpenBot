@@ -782,6 +782,56 @@ describe("what the authorization's own status decides", () => {
     expect(row?.outcome).toBeNull();
     await expectNothingWritten();
   });
+
+  /**
+   * D5: A VENDOR THAT ACCEPTS AND NEVER ANSWERS. The one above throws, which every bounded loop
+   * survives; this one does neither — it takes the call and goes quiet, which is what a hung socket
+   * actually looks like.
+   *
+   * A BOUND ON THE POLL COUNT IS NOT A BOUND. Five unbounded waits are unbounded, so the loop
+   * condition is never reached, the handler never returns, and the browser is held open for as long
+   * as the vendor cares to hold it — the exact case `settledStatus`'s own docblock claims to
+   * prevent. The assertion is therefore not about a status code: it is that the request COMPLETES.
+   *
+   * AND THE TEST CANNOT HANG THE SUITE EVEN WHEN THE FIX IS GONE. The request is raced against this
+   * case's own watchdog and the watchdog ANSWERS rather than throwing, so a regression fails here
+   * with "it never answered" instead of running the suite into its timeout with no diagnosis. The
+   * watchdog is longer than the route's worst case (five polls at two seconds with four one-second
+   * pauses) and shorter than this case's own timeout, which is the whole of what it has to be.
+   */
+  test("a vendor that ACCEPTS AND NEVER ANSWERS still completes, refusing", async () => {
+    await giveAttempt({ authId: MINTED, ageMinutes: 1 });
+    // Never settles and never rejects: the vendor is holding the connection open.
+    statusAnswer = () => new Promise<never>(() => {});
+
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    const hung = new Promise<"never answered">((resolve) => {
+      watchdog = setTimeout(() => resolve("never answered"), 20_000);
+    });
+    const answered = await Promise.race([
+      verify(ACTOR, "?flow_id=flow-abc"),
+      hung,
+    ]).finally(() => {
+      if (watchdog !== undefined) clearTimeout(watchdog);
+    });
+
+    expect(answered).not.toBe("never answered");
+    const response = answered as Response;
+    await expectRefusal(response, "vendor-unavailable");
+    // The suite-wide promise: nothing of the vendor's rides out on any header or in the body.
+    expect(mentionsOf(await asDelivered(response), TOKEN)).toEqual([]);
+
+    /*
+     * AND THE ROW IS LEFT STANDING, as it is for every other "we could not read the status" exit.
+     * A consent that may well have finished at the vendor must still be finishable by somebody who
+     * comes back to the link.
+     */
+    const row = await attemptRow();
+    expect(row?.completedAt).toBeNull();
+    expect(row?.outcome).toBeNull();
+    expect(row?.authId).toBe(MINTED);
+    await expectNothingWritten();
+  }, 30_000);
 });
 
 /**

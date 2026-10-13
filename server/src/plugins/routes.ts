@@ -221,17 +221,112 @@ function sameAccount(left: AccountRef, right: AccountRef): boolean {
   return right.holder === "deployment";
 }
 
-/** At most five polls over about five seconds. NEVER the SDK's unbounded `waitForCompletion`. */
+/**
+ * A BROKER CALL THAT DID NOT ANSWER INSIDE ITS BOUND, AND CARRYING NOTHING OF THE VENDOR'S (D31).
+ *
+ * The message names this deployment's own bound and the thrown object has no `cause`, deliberately:
+ * a call that times out on the return leg is a call whose answer would have carried a LIVE provider
+ * access token and a full profile, and the one thing certain about a half-read answer is that
+ * nobody has narrowed it yet. So there is nothing here to attach, log or quote — which is the same
+ * promise {@link brokerRefusal} makes about the vendor's own errors, kept by having no vendor
+ * material to begin with.
+ *
+ * It is an ordinary `Error` to every reader of it: `brokerSentence` does not author it and
+ * `vendorSentence` finds no nested body, so every call site below answers it with its OWN generic
+ * sentence and a 502 — "we asked and got nothing back", which is exactly what happened.
+ *
+ * NOT EXPORTED, because nothing outside this file should be branching on it: every exit it can
+ * reach is already one of this file's own refusals, and a caller matching on the class would be
+ * re-deciding what the catch blocks here have decided.
+ */
+class VendorTimeoutError extends Error {
+  constructor(afterMs: number) {
+    super(`The broker did not answer within ${afterMs}ms.`);
+    this.name = "VendorTimeoutError";
+  }
+}
+
+/**
+ * How long ONE outbound call to the broker may take before this deployment stops waiting on it.
+ *
+ * EVERY CALL OUT OF THIS FILE GOES THROUGH {@link withVendorDeadline}, and that is the invariant
+ * rather than the number. A bound on how MANY times something is attempted is not a bound at all
+ * while each attempt is unbounded: a vendor that accepts the connection and then never writes a
+ * byte holds the socket, the handler and the browser open for as long as it cares to, and no retry
+ * limit, poll count or loop condition is ever reached because the first wait never ends.
+ */
+const VENDOR_CALL_TIMEOUT_MS = 10_000;
+
+/**
+ * The same bound on ONE return-leg status poll, and tighter because a browser is held open on it.
+ *
+ * Five polls at two seconds with four one-second pauses is a worst case of FOURTEEN seconds for the
+ * whole wait, and that arithmetic is the point of stating both numbers here.
+ */
+const STATUS_CALL_TIMEOUT_MS = 2_000;
+
+/**
+ * At most five polls, pausing BETWEEN them — so four pauses, not five. NEVER the SDK's unbounded
+ * `waitForCompletion`.
+ */
 const STATUS_POLLS = 5;
 const STATUS_PAUSE_MS = 1000;
 
 /**
- * Where one authorization has got to, waited for with a BOUND.
+ * One outbound vendor call under a deadline, with an `AbortSignal` for the seams that take one.
  *
- * `pending` is the only state worth asking again about, and asking five times over five seconds is
- * the whole of the patience this has. A timeout is neither a success nor a failure, so what comes
- * back is the last answer read and the caller decides; nothing here writes, retries forever or
- * blocks a browser on a vendor that has stopped answering.
+ * THE SIGNAL IS THE HALF THAT MATTERS UPSTREAM AND THE RACE IS THE HALF THAT MATTERS HERE. The race
+ * is what lets the handler answer and the browser go; aborting is what stops this deployment from
+ * holding a socket open against a vendor it has already given up on, and the seams that can carry
+ * a signal take it (see {@link AuthorizationFlow}). A seam that cannot is still bounded by the
+ * race — a timeout is a timeout to the person waiting either way — and its call is simply
+ * abandoned rather than cancelled.
+ *
+ * THE TIMER IS CLEARED ON BOTH OUTCOMES. A pending timer on a call that answered in time would keep
+ * an event loop alive for the rest of the bound, which in a test run is a suite that will not exit
+ * and in a deployment is a handler that has returned still holding a reason not to.
+ *
+ * NOTHING IS RETRIED HERE. A deadline that retried would be the very shape this fix exists to
+ * remove, one layer up.
+ */
+function withVendorDeadline<T>(
+  call: (signal: AbortSignal) => Promise<T>,
+  afterMs: number = VENDOR_CALL_TIMEOUT_MS,
+): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new VendorTimeoutError(afterMs));
+    }, afterMs);
+  });
+  /*
+   * `Promise.race` subscribes to both, so a call that answers AFTER the deadline has its rejection
+   * observed here and never surfaces as an unhandled one. Its answer is dropped unread, which is
+   * also the D31-safe thing to do with it.
+   */
+  return Promise.race([call(controller.signal), deadline]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
+}
+
+/**
+ * Where one authorization has got to, waited for with a BOUND ON THE WHOLE WAIT AND ON EACH CALL.
+ *
+ * `pending` is the only state worth asking again about, and five polls at two seconds each with a
+ * one-second pause between them — at most fourteen seconds, and the pauses are BETWEEN the polls,
+ * so four of them and not five — is the whole of the patience this has. A timeout is neither a
+ * success nor a failure, so what comes back is the last answer read and the caller decides; nothing
+ * here writes, retries forever or blocks a browser on a vendor that has stopped answering.
+ *
+ * THE POLL COUNT ALONE NEVER BOUNDED ANYTHING. It bounded how many times `flow.status` was CALLED,
+ * while each call waited as long as the vendor liked — so a vendor that accepted the connection and
+ * never answered held this request open forever, which is the one case the paragraph above claims
+ * to prevent. {@link withVendorDeadline} is what makes the claim true, and a poll that spends its
+ * own bound THROWS rather than counting: a vendor that will not answer in two seconds is a vendor
+ * that is not answering, and the caller's `vendor-unavailable` refusal leaves the attempt row
+ * standing exactly as the exhausted-polls refusal does.
  *
  * WHAT COMES BACK IS THE SEAM'S THREE FIELDS AND NOTHING MORE (D31). The vendor's own status reply
  * carries a live provider access token and the person's full profile; the adapter drops them, and
@@ -241,14 +336,19 @@ async function settledStatus(
   flow: AuthorizationFlow,
   id: string,
 ): Promise<Awaited<ReturnType<AuthorizationFlow["status"]>>> {
-  let answer = await flow.status(id);
+  const poll = () =>
+    withVendorDeadline(
+      (signal) => flow.status(id, { signal }),
+      STATUS_CALL_TIMEOUT_MS,
+    );
+  let answer = await poll();
   for (
-    let poll = 1;
-    poll < STATUS_POLLS && answer.status === "pending";
-    poll += 1
+    let polls = 1;
+    polls < STATUS_POLLS && answer.status === "pending";
+    polls += 1
   ) {
     await new Promise((resolve) => setTimeout(resolve, STATUS_PAUSE_MS));
-    answer = await flow.status(id);
+    answer = await poll();
   }
   return answer;
 }
@@ -1037,7 +1137,7 @@ export function createPluginRoutes(
 
     let directory: BrokerApp[];
     try {
-      directory = await composio.broker.listApps();
+      directory = await withVendorDeadline(() => composio.broker.listApps());
     } catch (error) {
       // The vendor's own sentence where there is one, because "invalid api key" is the diagnosis
       // and a 500 is not. See {@link brokerRefusal} for what is kept out of the answer.
@@ -1146,7 +1246,7 @@ export function createPluginRoutes(
     let directory: BrokerApp[] = [];
     if (slug) {
       try {
-        directory = await composio.broker.listApps();
+        directory = await withVendorDeadline(() => composio.broker.listApps());
       } catch (error) {
         /*
          * The same failure the directory route answers, in the same words, because it is the same
@@ -1620,10 +1720,12 @@ export function createPluginRoutes(
          */
         let published: BrokerField[];
         try {
-          published = await composio.broker.connectionFields({
-            toolkit,
-            authScheme,
-          });
+          published = await withVendorDeadline(() =>
+            composio.broker.connectionFields({
+              toolkit,
+              authScheme,
+            }),
+          );
         } catch (error) {
           const refusal = brokerRefusal(
             error,
@@ -1995,28 +2097,30 @@ export function createPluginRoutes(
        */
       let redirectUrl: string;
       try {
-        ({ redirectUrl } = await composio.broker.authorize({
-          account,
-          toolkit,
-          /*
-           * THE REFUSAL ABOVE CHECKS THAT A SETTING IS SET; THIS CHECKS THAT IT IS AN ADDRESS.
-           * `appUrl` is an environment string — `OPENBOT_APP_URL`, or the first `TRUSTED_ORIGINS`
-           * entry — and nothing between there and Composio has ever looked at it, so
-           * `openbot.example.com` with the scheme left off builds a callback that is not a
-           * callback. That failure lands after somebody has consented, on the vendor's page, where
-           * this deployment cannot tell them anything; the guard moves it to before the link is
-           * minted, where nobody has spent a consent on it yet.
-           *
-           * WHO IS READING DECIDES WHAT IS SAID, AND HERE THAT IS A PERSON. This route is
-           * `requireUser`: whoever pressed Connect gets the refusal's own sentence, which names no
-           * vendor and no variable because they can act on neither. The operator's half of it is
-           * logged below instead, where an operator looks and a person does not.
-           */
-          returnUrl: brokerReturnUrl(
-            connectedAccountsUrlFor(connect.appUrl, { serverId }, returnTo),
-            activeProvider,
-          ),
-        }));
+        ({ redirectUrl } = await withVendorDeadline(() =>
+          composio.broker.authorize({
+            account,
+            toolkit,
+            /*
+             * THE REFUSAL ABOVE CHECKS THAT A SETTING IS SET; THIS CHECKS THAT IT IS AN ADDRESS.
+             * `appUrl` is an environment string — `OPENBOT_APP_URL`, or the first `TRUSTED_ORIGINS`
+             * entry — and nothing between there and Composio has ever looked at it, so
+             * `openbot.example.com` with the scheme left off builds a callback that is not a
+             * callback. That failure lands after somebody has consented, on the vendor's page, where
+             * this deployment cannot tell them anything; the guard moves it to before the link is
+             * minted, where nobody has spent a consent on it yet.
+             *
+             * WHO IS READING DECIDES WHAT IS SAID, AND HERE THAT IS A PERSON. This route is
+             * `requireUser`: whoever pressed Connect gets the refusal's own sentence, which names no
+             * vendor and no variable because they can act on neither. The operator's half of it is
+             * logged below instead, where an operator looks and a person does not.
+             */
+            returnUrl: brokerReturnUrl(
+              connectedAccountsUrlFor(connect.appUrl, { serverId }, returnTo),
+              activeProvider,
+            ),
+          }),
+        ));
       } catch (error) {
         logReturnUrlRefusal(error, serverId);
         const refusal = brokerRefusal(
@@ -2269,7 +2373,9 @@ export function createPluginRoutes(
     }
     let actions: GrantState[];
     try {
-      actions = await broker.grantsFor({ toolkit, account });
+      actions = await withVendorDeadline(() =>
+        broker.grantsFor({ toolkit, account }),
+      );
     } catch {
       actions = [
         {
@@ -2679,12 +2785,14 @@ export function createPluginRoutes(
 
     let minted: Awaited<ReturnType<typeof composio.broker.authorize>>;
     try {
-      minted = await composio.broker.authorize({
-        account,
-        toolkit,
-        action,
-        returnUrl,
-      });
+      minted = await withVendorDeadline(() =>
+        composio.broker.authorize({
+          account,
+          toolkit,
+          action,
+          returnUrl,
+        }),
+      );
     } catch (error) {
       /*
        * WHAT A FAILED MINT DOES TO ITS ATTEMPT. THREE OUTCOMES, KEYED ON WHAT WAS ANSWERED.
@@ -2707,6 +2815,11 @@ export function createPluginRoutes(
        * the adapter throws exactly such an `Error` ("Arcade answered an authorization with no id.")
        * for a mint that answered SUCCESSFULLY without an `ar_...`: Arcade very likely did create a
        * flow. Do not tidy this case into the definite branch.
+       *
+       * AND {@link VendorTimeoutError} LANDS IN THAT SAME UNCERTAIN BRANCH, which is why the mint's
+       * deadline is safe to add: it is neither authored nor an SDK error, so it is read as "we
+       * stopped waiting and do not know", the attempt is left standing, and a flow the vendor may
+       * have created behind the deadline is not orphaned beside a second one.
        *
        * NOTHING FROM THE VENDOR'S ANSWER IS LOGGED, AUDITED OR RETURNED: its body can carry the
        * authorization url, a bearer capability.
@@ -3016,10 +3129,17 @@ export function createPluginRoutes(
        */
       let confirmed: Awaited<ReturnType<typeof flow.confirmReturn>>;
       try {
-        confirmed = await flow.confirmReturn({
-          handle: flowId,
-          vendorUserId: attempt.vendorUserId,
-        });
+        confirmed = await withVendorDeadline(
+          (signal) =>
+            flow.confirmReturn(
+              {
+                handle: flowId,
+                vendorUserId: attempt.vendorUserId,
+              },
+              { signal },
+            ),
+          STATUS_CALL_TIMEOUT_MS,
+        );
       } catch {
         /*
          * NOTHING FROM THE VENDOR'S ANSWER TRAVELS WITH THIS — not its sentence, not its body, not
@@ -3124,10 +3244,12 @@ export function createPluginRoutes(
              * not work out what to withdraw". Over a possibly-live grant the safe reading of that
              * ambiguity is "we do not know": it takes the not-withdrawn branch, as a throw does.
              */
-            withdrawn = await composio.broker.revoke({
-              account: retired,
-              toolkit: retiredApp,
-            });
+            withdrawn = await withVendorDeadline(() =>
+              composio.broker.revoke({
+                account: retired,
+                toolkit: retiredApp,
+              }),
+            );
           } catch {
             // Nothing from the vendor's answer travels with this, here as everywhere on this leg.
             withdrawn = false;
@@ -3154,9 +3276,9 @@ export function createPluginRoutes(
        * live. It is never read back out of a status reply, which D31's narrowing makes
        * structurally impossible anyway.
        */
-      const authProvider = await composio.broker
-        .authProviderOf(fresh.toolkit)
-        .catch(() => null);
+      const authProvider = await withVendorDeadline(() =>
+        composio.broker.authProviderOf(fresh.toolkit),
+      ).catch(() => null);
       await store.completeAuthorizationAttempt({
         actorId,
         authId,

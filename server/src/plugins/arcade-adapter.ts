@@ -1,10 +1,10 @@
 import Arcade, { APIError } from "@arcadeai/arcadejs";
-import { classify, type ArcadeActions, type ArcadeFailure } from "./arcade";
+import { type ArcadeActions, type ArcadeFailure, classify } from "./arcade";
 import {
-  BrokerRefusalError,
-  flagOf,
   type BrokerApp,
+  BrokerRefusalError,
   type ConnectedAppBroker,
+  flagOf,
   type GrantState,
 } from "./broker";
 
@@ -888,8 +888,13 @@ export function createArcadeClient(apiKey: string): {
        * what is not returned cannot be logged, attached as a `cause`, or written into an audit
        * payload by code that never sees it. Do not widen this, and do not add `url`.
        */
-      status: async (id) => {
-        const answer = await client.auth.status({ id });
+      status: async (id, options) => {
+        // The caller's deadline reaches the wire: an abandoned poll closes its socket rather than
+        // leaving this deployment holding one open against a vendor nobody is waiting on.
+        const answer = await client.auth.status(
+          { id },
+          { signal: options?.signal },
+        );
         const scopes = answer.scopes;
         return {
           status: textOf(answer.status) ?? "unknown",
@@ -902,12 +907,15 @@ export function createArcadeClient(apiKey: string): {
       // `handle` is opaque to the seam; `flow_id` is Arcade's word for it and stops in this file.
       // A `user_mismatch` answer is an ANSWER, so it surfaces as `{ mismatch: true }`; any other
       // failure is an outage or a bug and is rethrown untouched.
-      confirmReturn: async ({ handle, vendorUserId }) => {
+      confirmReturn: async ({ handle, vendorUserId }, options) => {
         try {
-          const answer = await client.auth.confirmUser({
-            flow_id: handle,
-            user_id: vendorUserId,
-          });
+          const answer = await client.auth.confirmUser(
+            {
+              flow_id: handle,
+              user_id: vendorUserId,
+            },
+            { signal: options?.signal },
+          );
           return { authorizationId: answer.auth_id };
         } catch (error) {
           if (normalizeArcadeError(error)?.name === "user_mismatch") {
