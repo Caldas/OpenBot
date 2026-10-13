@@ -2716,15 +2716,58 @@ export function createPluginRoutes(
       const definite =
         authored || (failure !== null && failure.status !== undefined);
       if (definite) {
-        await store.discardAuthorizationAttempt({
-          actorId: context.var.actor.id,
-          createdAt: claim.attempt.createdAt,
-        });
+        /*
+         * THE CLEAN-UP IS GUARDED, FOR THE SAME REASON THE RECORD-FAILURE CLEAN-UP BELOW IS.
+         *
+         * This discard is a tidy-up for a refusal the handler has ALREADY WORKED OUT — which vendor
+         * sentence to pass on, and whether it is a 502 or an authored 503. Unguarded, a fault on the
+         * delete threw past the handler and the person got a BODYLESS 500 instead: the least
+         * informative answer possible, in exactly the case where this route had something specific
+         * and true to tell them, and the failure of a clean-up destroyed the error it was cleaning
+         * up after. The refusal is the answer; whether the row went with it is not the person's
+         * problem to be given a blank page over.
+         *
+         * WHAT A FAILED DISCARD COSTS THEM IS SAID RATHER THAN GUESSED AT. The attempt stands with a
+         * null `auth_id`, so it can never complete and `claimAuthorizationAttempt` refuses a second
+         * start until it is fifteen minutes old — which makes the generic sentence's "try again in a
+         * moment" false. The extra clause is the same one the record-failure branch answers with for
+         * the same condition, and it is added rather than substituted: the vendor's own sentence is
+         * the half that says WHY, and it is not thrown away to make room for ours.
+         *
+         * The error is read through {@link reasonWithoutStatement}, as every database failure logged
+         * on this route is: a `DrizzleQueryError`'s own message is the statement and every value
+         * bound to it.
+         */
+        let freed = false;
+        try {
+          freed = await store.discardAuthorizationAttempt({
+            actorId: context.var.actor.id,
+            createdAt: claim.attempt.createdAt,
+          });
+        } catch (cleanup) {
+          console.error(
+            JSON.stringify({
+              type: "arcade-refused-attempt-not-cleared",
+              server: serverId,
+              action,
+              note: "A mint was refused and its attempt could not be deleted. The person was told why the vendor refused, and the row holds them until it expires.",
+              error: reasonWithoutStatement(cleanup),
+            }),
+          );
+          freed = false;
+        }
         const refusal = brokerRefusal(
           error,
           "The app's vendor refused to start that authorization, so nothing was started. Try again in a moment.",
         );
-        return context.json({ error: refusal.error }, refusal.status);
+        return context.json(
+          {
+            error: freed
+              ? refusal.error
+              : `${refusal.error} The attempt could not be cleared either; it expires within fifteen minutes, and starting over works after that.`,
+          },
+          refusal.status,
+        );
       }
       return context.json(
         {
