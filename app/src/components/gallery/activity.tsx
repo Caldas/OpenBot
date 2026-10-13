@@ -33,11 +33,18 @@ export const ActivityReportProps = z.object({
 
 type ActivityArgs = z.infer<typeof ActivityReportProps>;
 
-/** Which server-side function each report reads. Not the model's choice. */
-const FUNCTION_FOR: Record<string, string> = {
-  activity: "botActivity",
-  refusals: "recentRefusals",
-};
+/**
+ * Which server-side function each report reads. Not the model's choice.
+ *
+ * A Map because the key is a string somebody else chose: an object lookup answers `toString` or
+ * `constructor` with a member inherited from `Object.prototype`, which is truthy and so walks
+ * straight past the `functionName ?` guards below — handing a function to the grant check as the
+ * data function this component reads, and to `callComponentFunction` as a function name.
+ */
+const FUNCTION_FOR: ReadonlyMap<string, string> = new Map([
+  ["activity", "botActivity"],
+  ["refusals", "recentRefusals"],
+]);
 
 type ActivityRow = { bot: string; actions: number };
 type RefusalRow = {
@@ -61,7 +68,7 @@ export function ActivityReportCard({
   const conversation = useConversation();
   const [state, setState] = useState<State>({ status: "reading" });
 
-  const functionName = report ? FUNCTION_FOR[report] : undefined;
+  const functionName = report ? FUNCTION_FOR.get(report) : undefined;
 
   useEffect(() => {
     // Nothing to read until the arguments have finished streaming in.
@@ -284,7 +291,7 @@ export const GALLERY: GalleryComponent[] = [
       "The report is on screen for the person, filled with figures read from this deployment. You were not given the figures.",
     reads: (args) => {
       const report = typeof args.report === "string" ? args.report : undefined;
-      const functionName = report ? FUNCTION_FOR[report] : undefined;
+      const functionName = report ? FUNCTION_FOR.get(report) : undefined;
       return functionName ? [functionName] : [];
     },
   },

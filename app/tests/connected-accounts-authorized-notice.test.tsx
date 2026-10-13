@@ -25,7 +25,7 @@ import {
  * turns one of the two red: a new code with no sentence would otherwise draw nothing at all.
  */
 test("every reason the verifier can send has a sentence here, and no others", () => {
-  expect(Object.keys(AUTHORIZATION_NOTICES)).toEqual([
+  expect([...AUTHORIZATION_NOTICES.keys()]).toEqual([
     "no-broker",
     "not-supported",
     "missing-handle",
@@ -40,7 +40,7 @@ test("every reason the verifier can send has a sentence here, and no others", ()
 });
 
 test("each code reads as its own sentence, not as one generic apology", () => {
-  const sentences = Object.values(AUTHORIZATION_NOTICES);
+  const sentences = [...AUTHORIZATION_NOTICES.values()];
   expect(new Set(sentences).size).toBe(sentences.length);
   for (const sentence of sentences) {
     // Long enough to say what happened and what to do about it, rather than an apology.
@@ -50,7 +50,7 @@ test("each code reads as its own sentence, not as one generic apology", () => {
 
 test("a code is turned into the words for it", () => {
   expect(authorizationNoticeFor("no-attempt")).toBe(
-    AUTHORIZATION_NOTICES["no-attempt"],
+    AUTHORIZATION_NOTICES.get("no-attempt") as string,
   );
 });
 
@@ -71,3 +71,42 @@ test("the notices are not reachable from the search parameter's own value", () =
     authorizationNoticeFor("That account could not be connected."),
   ).toBeNull();
 });
+
+/**
+ * AND A CODE BORROWED FROM `Object.prototype` DRAWS NOTHING EITHER, which is a different claim
+ * from the one above and was once false.
+ *
+ * `?authorized=toString` is not a code the verifier can send, but it is a member every plain
+ * object inherits. A lookup that walks the prototype chain answers it with a function — not
+ * nullish, so no `?? null` catches it — and the page then hands a function, or for `__proto__` an
+ * object, to React as the notice to draw: an empty red alert for `constructor`, and for `__proto__`
+ * "Objects are not valid as a React child", which takes the whole screen down. A crafted link on
+ * this deployment's own origin broke Connected accounts for whoever opened it.
+ */
+test.each([
+  ["toString", "a function React draws as nothing it can read"],
+  ["constructor", "a function, drawn as an empty red alert"],
+  ["__proto__", "an object, which crashes the screen React draws it on"],
+  ["valueOf", "a function"],
+  ["hasOwnProperty", "a function"],
+])(
+  "%s is a borrowed member, not a code, and draws nothing (%s)",
+  (borrowed) => {
+    expect(authorizationNoticeFor(borrowed)).toBeNull();
+  },
+);
+
+/** The declared `string | null` holds for every value a URL can carry, not only the known codes. */
+test.each([
+  "no-attempt",
+  "toString",
+  "constructor",
+  "__proto__",
+  "something-somebody-made-up",
+])(
+  "what ?authorized=%s answers is a sentence or nothing, never a function or an object",
+  (value) => {
+    const notice = authorizationNoticeFor(value);
+    if (notice !== null) expect(typeof notice).toBe("string");
+  },
+);
