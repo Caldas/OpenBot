@@ -25,6 +25,52 @@ export function asAccountMode(value: unknown): AccountMode | null {
   return value === "personal" || value === "shared" ? value : null;
 }
 
+/**
+ * A STORED `(holder, user_id)` PAIR READ BACK AS THE ACCOUNT IT NAMES, or `null` when it names no
+ * account this deployment may act in.
+ *
+ * THE POINT IS THE `null`, AND IT EXISTS BECAUSE THE OTHER READING IS SILENT. A row that says
+ * `person` and carries no user id was for years rebuilt as `{ holder: "deployment" }` by a ternary
+ * whose else-branch quietly absorbed it — and a reference is not a label: it is what a revoke, a
+ * grant read and a call are aimed at. Aimed one holder out, a disconnect somebody asked for ends
+ * the DEPLOYMENT's connection and leaves theirs live, or ends the deployment's on one person's
+ * behalf. Both failures look exactly like success from the browser that asked.
+ *
+ * THE TWO REFUSALS ARE THE DATABASE'S OWN CHECK, RESTATED WHERE TYPESCRIPT CAN SEE IT.
+ * `brokered_connections_holder_check` and `pending_authorizations_holder_check` both hold
+ * `(person AND user_id IS NOT NULL) OR (deployment AND user_id IS NULL)`, so for a row that came
+ * out of either table every refusal here is already impossible — which is the whole reason to
+ * refuse rather than to coerce. An impossible state answered with a plain `null` is a caller's
+ * refusal; the same state absorbed into the other holder is a wrong act with no trace. The empty
+ * string is refused with the null, because a CHECK for `IS NOT NULL` does not stop `''` and `''` is
+ * nobody's user id.
+ *
+ * `holder` IS TAKEN AS `string` ON PURPOSE. drizzle's `$type<>` is erased at runtime, so a column
+ * declared as the pair can still deliver a third word; a parameter typed as the union would let the
+ * compiler promise what only the CHECK enforces.
+ */
+export function asAccountRef(stored: {
+  holder: string;
+  userId: string | null;
+  vendorUserId: string;
+}): AccountRef | null {
+  if (stored.holder === "person") {
+    return stored.userId
+      ? {
+          holder: "person",
+          userId: stored.userId,
+          vendorUserId: stored.vendorUserId,
+        }
+      : null;
+  }
+  if (stored.holder === "deployment") {
+    return stored.userId
+      ? null
+      : { holder: "deployment", vendorUserId: stored.vendorUserId };
+  }
+  return null;
+}
+
 export type AccountAnswer =
   | { kind: "none" }
   | { kind: "person"; userId: string }

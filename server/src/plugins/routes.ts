@@ -36,7 +36,11 @@ import {
   redirectUriFor,
   sealConnectState,
 } from "./oauth";
-import { type AccountRef, asAccountMode } from "./shared-accounts";
+import {
+  type AccountRef,
+  asAccountMode,
+  asAccountRef,
+} from "./shared-accounts";
 import {
   asSharedUseApproval,
   exposureOf,
@@ -194,7 +198,8 @@ export const AUTHORIZATION_REFUSALS = [
   "not-supported",
   // The link arrived without the part that says which authorization it finishes.
   "missing-handle",
-  // Nothing of this person's is waiting: never started, expired, or another session's.
+  // Nothing USABLE of this person's is waiting: never started, expired, another session's, a mint
+  // that never answered with an id, or a row that cannot say whose account it is for.
   "no-attempt",
   // The vendor was asked and did not answer.
   "vendor-unavailable",
@@ -2994,10 +2999,22 @@ export function createPluginRoutes(
        * the fifteen-minute TTL, so all three absences arrive here as `null` and are refused in one
        * sentence. A NULL `auth_id` is the fourth: its mint never completed, so there is nothing for
        * the binding below to be checked against and the attempt can only ever expire.
+       *
+       * A ROW THAT CANNOT SAY WHOSE ACCOUNT IT IS FOR IS THE FIFTH, AND IT IS REFUSED HERE RATHER
+       * THAN READ AS THE DEPLOYMENT'S. `(holder, user_id)` is held by
+       * `pending_authorizations_holder_check`, so a `person` row with no user id cannot be written
+       * and this branch is unreachable through the table — which is exactly why it must be a
+       * refusal: the reading it replaces rebuilt that row as `{ holder: "deployment" }` and then
+       * aimed the withdrawal below at the DEPLOYMENT's account, ending a connection nobody asked
+       * about while the person's stayed live. Refused BEFORE the vendor is asked anything, like the
+       * null `auth_id` above and for the same reason: the attempt can never complete, so no call is
+       * worth spending on it, and nothing is written — the row stands until its TTL.
        */
       const actorId = context.var.actor.id;
       const attempt = await store.authorizationAttemptFor(actorId);
       if (!attempt || attempt.authId === null) return refusedWith("no-attempt");
+      const attemptAccount = asAccountRef(attempt);
+      if (!attemptAccount) return refusedWith("no-attempt");
       const authId = attempt.authId;
 
       /*
@@ -3103,14 +3120,12 @@ export function createPluginRoutes(
        * answers `false` it is kept as `unreconciled` rather than closed, because a grant
        * we know about and could not end is worth a row somebody can act on.
        */
-      const retired: AccountRef =
-        attempt.holder === "person" && attempt.userId
-          ? {
-              holder: "person",
-              userId: attempt.userId,
-              vendorUserId: attempt.vendorUserId,
-            }
-          : { holder: "deployment", vendorUserId: attempt.vendorUserId };
+      /*
+       * THE RETIRED IDENTITY IS THE ATTEMPT'S OWN, READ ONCE AT THE TOP AND NOT REBUILT HERE. A
+       * reference built a second time from the row's columns is a second chance to build it wrong,
+       * and the one this replaced defaulted a pair it did not recognise to the deployment's.
+       */
+      const retired: AccountRef = attemptAccount;
       const fresh = await brokeredAccountFor(context, attempt.serverId);
       if (fresh.refusal || !sameAccount(fresh.account, retired)) {
         const row = await store.serverAddress(attempt.serverId);

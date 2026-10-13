@@ -158,6 +158,16 @@ function build(
     attemptReadThrows?: boolean;
     /** Makes the guard's ROLE read throw, which is a store read outside the handler's own code. */
     roleReadThrows?: boolean;
+    /**
+     * Hands the route an attempt row whose `(holder, user_id)` pair the TABLE would refuse.
+     *
+     * Injected at the store rather than inserted, because `pending_authorizations_holder_check`
+     * holds that pair in the database and these combinations cannot be written at all — which is
+     * the point. The route reads the pair out of a row and aims a REVOCATION with it, so what it
+     * does with a pair it should never see is a fact about the route and not about the table, and
+     * the only way to ask is to put the row in its hand.
+     */
+    attemptAs?: { holder?: string; userId?: string | null };
   } = {},
 ) {
   const handle = options.database ?? database;
@@ -199,7 +209,17 @@ function build(
           throw new Error("injected attempt read failure");
         },
       }
-    : pluginStore;
+    : options.attemptAs
+      ? {
+          ...pluginStore,
+          authorizationAttemptFor: async (actorId: string) => {
+            const row = await pluginStore.authorizationAttemptFor(actorId);
+            return row === null
+              ? null
+              : ({ ...row, ...options.attemptAs } as typeof row);
+          },
+        }
+      : pluginStore;
   args[29] =
     "brokerBag" in options ? options.brokerBag : { broker, provider: "arcade" };
   return createApp(...args);
@@ -883,6 +903,81 @@ describe("a consent whose account context has moved on", () => {
     expect(row?.authId).toBe(MINTED);
     await expectNothingWritten();
   });
+});
+
+/**
+ * D4: AN ATTEMPT THAT CANNOT SAY WHOSE ACCOUNT IT IS FOR IS REFUSED, NEVER READ AS THE
+ * DEPLOYMENT'S.
+ *
+ * The holder distinction IS the authorization model: a `person` attempt belongs to one signed-in
+ * human and a `deployment` attempt to the installation. The route used to rebuild the attempt's
+ * account with a ternary whose else-branch swallowed every pair it did not recognise — so a
+ * `person` row carrying no user id came out as `{ holder: "deployment" }` and the D28 withdrawal
+ * was then AIMED AT THE DEPLOYMENT'S ACCOUNT. A revoke pointed one holder out is a disconnect
+ * somebody asked for that ends the installation's connection, or the installation's connection
+ * ended on one person's behalf; from the browser both look exactly like success.
+ *
+ * EVERY PAIR HERE IS ONE THE DATABASE ALREADY REFUSES — `pending_authorizations_holder_check` is
+ * asserted directly in `arcade-attempt-constraints.test.ts` — so these rows reach the route only
+ * because the store is replaced. That is deliberate and it is the whole argument: the state is
+ * unreachable through the table, and an unreachable state must therefore be a REFUSAL in the code
+ * rather than a silent re-reading, because a re-reading is what a corrupt or hand-edited row, a
+ * future second writer, or a store that is not this one would turn into a wrong act with no trace.
+ *
+ * The app is switched to Shared in each case so the run would reach the withdrawal: these tests
+ * assert the vendor was never asked at all, which is strictly stronger than asserting it was asked
+ * correctly.
+ */
+describe("an attempt whose holder and user id do not agree", () => {
+  async function switchToShared() {
+    await database
+      .update(mcpServers)
+      .set({ accountMode: "shared", sharedVendorUserId: SHARED_IDENTITY })
+      .where(eq(mcpServers.id, APP));
+  }
+
+  /** The pairs `(holder = 'person' AND user_id IS NOT NULL) OR (deployment AND user_id IS NULL)` excludes. */
+  const illegal: [string, { holder?: string; userId?: string | null }][] = [
+    ["a person attempt with no user id", { holder: "person", userId: null }],
+    [
+      "a person attempt whose user id is the empty string",
+      { holder: "person", userId: "" },
+    ],
+    [
+      "a deployment attempt carrying a user id",
+      { holder: "deployment", userId: ACTOR },
+    ],
+    ["an attempt whose holder is not one of the two", { holder: "llama" }],
+  ];
+
+  for (const [name, attemptAs] of illegal) {
+    test(`${name} is refused, and nothing is revoked`, async () => {
+      await giveAttempt({ authId: MINTED, ageMinutes: 1 });
+      await switchToShared();
+
+      const response = await verify(ACTOR, "?flow_id=flow-abc", { attemptAs });
+
+      /*
+       * THE WHOLE FINDING, AND IT IS ASSERTED FIRST ON PURPOSE. The refusal code below is the
+       * symptom; what the defect DID was aim a revocation, so a failure here has to name the
+       * account that was reached rather than a redirect that was wrong. No account was rebuilt, so
+       * no revocation was aimed anywhere — least of all at the deployment's.
+       */
+      expect(revokeCalls).toEqual([]);
+      // Nor was a single vendor call spent on a row that can never complete.
+      expect(confirmCalls).toEqual([]);
+      expect(statusCalls).toEqual([]);
+
+      await expectRefusal(response, "no-attempt");
+
+      // AND NOTHING WAS WRITTEN OR CLOSED: the row stands until its TTL, as it does for the other
+      // attempt that can never complete (a null `auth_id`).
+      const row = await attemptRow();
+      expect(row?.outcome).toBeNull();
+      expect(row?.completedAt).toBeNull();
+      await expectNothingWritten();
+    });
+  }
 });
 
 describe("a return leg that completes", () => {
