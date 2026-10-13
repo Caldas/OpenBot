@@ -358,20 +358,33 @@ export function createPluginRoutes(
    * would be the comparison `store.ts` argues against, made against a capability that two providers
    * are free to share.
    *
-   * THE `??` IS NOT A SECOND FALLBACK: IT IS THE PAGE PAYLOAD'S, MOVED UP ONE LINE SO THERE IS ONE.
-   * The payload below already answered `composio` for a deployment with no broker, and the four
-   * brokered reads below have always parsed with Composio's own parser whether or not a key was
-   * set. Spelling it in both places is how two readings of "which provider" come apart; spelled
-   * here, the name the page shows and the parser the routes use cannot disagree.
+   * TAKEN FROM THE STORE, BECAUSE THE STORE'S ROWS ARE WHAT IS BEING NAMED. It used to be read off
+   * the broker bag with `?? "composio"` behind it, and that `??` was a second answer to a question
+   * `server/src/index.ts` had already answered. The two came apart exactly where it hurt: a
+   * deployment with both API keys set and `OPENBOT_BROKER_PROVIDER` unset — legal, and what a
+   * migration sits in — is wired with NO broker, so the bag is absent, so every `arcade://` row of
+   * that deployment was parsed with Composio's parser. The account-mode switch refused those rows
+   * as "not reached through a broker", the directory called enabled apps not enabled, connect fell
+   * past its brokered branch in silence, and the operator was told to set COMPOSIO_API_KEY. The
+   * store was built with the one name the deployment decided; reading it here means the parser
+   * these routes use, the filter the store queries with and the name the page shows are one value.
    *
-   * AND NO BROKER IS NOT THE CASE THIS DECIDES. A deployment with no key reaches no broker, so no
-   * row of its own can be brokered — but rows outlive a key being unset, and the Personal ⇄ Shared
-   * switch is wired from the shared bag rather than from the broker, so it answers for such a row
-   * today. Reading `null` for it instead would turn that 200 into a 400 in the name of a provider
-   * question nobody asked. The deployment boundary is where "which provider" genuinely has no
-   * answer, and `server/src/index.ts` is where the system says so.
+   * NO BROKER IS STILL NOT THE CASE THIS DECIDES. Rows outlive a key being unset, and the
+   * Personal ⇄ Shared switch is wired from the shared bag rather than from the broker, so it
+   * answers for such a row today — now with that row's own parser rather than Composio's.
    */
-  const activeProvider: BrokerProvider = composio?.provider ?? "composio";
+  const activeProvider: BrokerProvider = store.brokerProvider;
+  /*
+   * Said at construction, not at the first request. A store without this field is a stand-in rather
+   * than a store, and one that got this far would have every brokered read dispatch on `undefined`
+   * — four routes answering wrongly, none of them raising. Typed as present, so this catches only a
+   * cast; it refuses rather than filling in a vendor, which is the whole of this file's bug.
+   */
+  if (!activeProvider) {
+    throw new Error(
+      "createPluginRoutes was given a plugin store with no brokerProvider. The store names the provider its rows belong to; the routes never guess one.",
+    );
+  }
 
   /**
    * The ACTIVE broker's name, as the sentences on this layer spell it.

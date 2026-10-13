@@ -7,6 +7,7 @@ import type { PluginStore } from "../src/plugins/store";
 
 function appWith(calls: { addServer: unknown[]; addCustomServer: unknown[] }) {
   const store = {
+    brokerProvider: "composio" as const,
     addServer: async (input: unknown) => {
       // Mirror the real store: it dereferences `input.credentialId?.trim()`, so a
       // non-string credential id throws a TypeError that used to escape as a 500.
@@ -153,6 +154,7 @@ describe("POST /api/plugins/servers/custom", () => {
 describe("POST /api/plugins/servers/:id/oauth-client", () => {
   function oauthApp(registered: unknown[]) {
     const store = {
+      brokerProvider: "composio" as const,
       registerOAuthClient: async (input: unknown) => {
         registered.push(input);
       },

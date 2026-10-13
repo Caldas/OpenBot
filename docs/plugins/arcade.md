@@ -40,11 +40,21 @@ set. Setting both is legal and expected, because ending an account at the old ve
 vendor's key. With both set, the variable has to say which one is live: both set and the variable
 unset stops the server at startup rather than coming up with no broker at all.
 
+**Connections already made are still read as their own provider's while nothing is active.** A
+deployment whose broker key has been withdrawn afterwards names the slice it reads from the
+`brokered_connections` rows it actually holds, so an Arcade deployment does not have its Arcade
+connections read as Composio ones, shown as absent, and left unrevokable. No broker is live in that
+state, so nothing can be connected or revoked until a provider is named. Holding rows at BOTH
+vendors with nothing active is refused rather than guessed at, which is the activation refusal from
+the other side. (Both keys set with the variable unset does not reach this: that state is refused at
+startup, above.)
+
 Three refusals protect this, and all three are deliberate:
 
 - **A named provider whose key is not set stops the server at startup.** An operator sees: _OPENBOT_BROKER_PROVIDER=arcade names a provider whose ARCADE_API_KEY is not set to a key. Set ARCADE_API_KEY to this deployment's key, or change or unset OPENBOT_BROKER_PROVIDER._ It does not fall back to a deployment with no broker, because that would send somebody looking for a broken vendor instead of at their own environment. A key that is empty or all whitespace — `ARCADE_API_KEY=` with nothing after it — is no key: that provider counts as unconfigured, and no client is ever built on an empty credential.
 - **Both keys set with the variable unset stops the server at startup.** An operator sees: _COMPOSIO_API_KEY and ARCADE_API_KEY are both set and OPENBOT_BROKER_PROVIDER is unset, so no provider is active and nothing brokered would work. Set OPENBOT_BROKER_PROVIDER to composio or arcade to say which vendor is live, or unset the key of the vendor this deployment is not using._ Nobody wants that state on purpose — the deployment would hold two vendor keys and broker nothing — and wiring no broker silently would surface much later and far away, as brokered features that simply do not work. "Both set" counts only keys that hold something: two blank keys are no keys, and are reported as such rather than as two configured vendors.
 - **Activating a provider is refused while the other one still holds connections.** It is keyed on connection rows, not on keys. The message names the provider being activated, how many connections still belong to the other, and tells the operator to keep both keys set and end those connections through the other provider's sunset flow first. Switching by editing the environment would leave accounts nobody can revoke.
+- **Holding connections at BOTH providers while nothing is active stops the server at startup.** It is the refusal above seen from the other side: with no provider named there is nothing to read one vendor's rows as, and reading them as the other's is the failure this whole section exists to prevent. The message names both vendors and asks the operator to set `OPENBOT_BROKER_PROVIDER` and to end the other provider's connections through its own sunset flow.
 
 ## Setting up the Arcade project
 

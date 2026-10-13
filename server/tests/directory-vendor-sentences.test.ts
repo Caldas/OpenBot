@@ -42,7 +42,10 @@ function deployment(provider: BrokerProvider, listApps: () => Promise<never>) {
   const app = new Hono().route(
     "/api/plugins",
     createPluginRoutes(
-      { serverUrls: async () => [] } as unknown as PluginStore,
+      {
+        brokerProvider: provider,
+        serverUrls: async () => [],
+      } as unknown as PluginStore,
       signedIn,
       async () => true,
       {

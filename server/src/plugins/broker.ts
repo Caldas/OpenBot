@@ -1026,48 +1026,93 @@ export function brokerSentence(error: unknown): string | null {
   return error instanceof BrokerRefusalError ? error.message : null;
 }
 
+/** What configuration says about which broker is active, INCLUDING why it says nothing. */
+export type ProviderDecision =
+  | { kind: "active"; provider: BrokerProvider }
+  /** No key is set: this deployment has no broker and never had one through configuration. */
+  | { kind: "unconfigured" }
+  /**
+   * Both keys are set and `OPENBOT_BROKER_PROVIDER` names neither, so configuration proposes two
+   * providers and chooses between them nowhere. A legal state — `docs/plugins/arcade.md` says so,
+   * and a migrating deployment passes through it — and the one an answer must never be invented
+   * for.
+   */
+  | { kind: "ambiguous"; configured: BrokerProvider[] }
+  /** `OPENBOT_BROKER_PROVIDER` names a provider whose key is unset: an operator's typo. */
+  | { kind: "misnamed"; named: BrokerProvider };
+
+/**
 /**
  * A KEY OF NOTHING IS NO KEY.
  *
  * `ARCADE_API_KEY=` with nothing after it, or a value that is all whitespace, is an operator typo
- * and not a configured credential. Exported because {@link activeProvider} and
- * `./provider-wiring`'s ambiguity refusal must agree on it exactly: wiring decides that both keys
- * are set and the deployment cannot say which vendor is live, and if it counted a blank key as set
- * while this function did not, it would tell an operator holding two EMPTY keys that both are
- * configured. One definition, so the two cannot drift apart.
+ * and not a configured credential. Exported because {@link providerDecision}, {@link activeProvider}
+ * and `./provider-wiring`'s ambiguity refusal must agree on it exactly: wiring decides that both
+ * keys are set and the deployment cannot say which vendor is live, and if it counted a blank key as
+ * set while these did not, it would tell an operator holding two EMPTY keys that both are
+ * configured. One definition, so they cannot drift apart.
+ *
+ * `./config` trims every optional environment value and so happens to turn those into `undefined`
+ * today, but that is one incidental guard in a distant module standing between a typo and a client
+ * built on "", and these functions take config-shaped VALUES rather than an environment, so every
+ * other caller (a test, an embedder, a future loader) reaches them untrimmed. What "configured"
+ * means for a credential is answered here.
  */
 export const credential = (key: string | undefined): boolean =>
   key !== undefined && key.trim() !== "";
 
 /**
- * Which broker this deployment runs, from configuration alone (no database access).
+ * Which broker this deployment runs, from configuration alone (no database access), AND WHY WHEN
+ * NOTHING DOES.
  *
- * One key set selects that provider. Both set is legal and expected, since ending an account at
- * the old vendor needs its key, so `brokerProvider` decides and unset means `null`. A
- * `brokerProvider` naming a provider whose key is unset is refused (`null`), never selected.
+ * THE THREE CAUSES ARE NOT ONE CAUSE, which is why this answers a decision rather than
+ * `BrokerProvider | null`. "No key set" is a deployment with no broker and no brokered row of its
+ * own; "both keys, nothing named" is a migration in progress, with live rows at one vendor or the
+ * other and nothing in configuration saying which; "named but unkeyed" is a typo that must stop the
+ * server. A single `null` made all three the same value, and every caller that then wrote
+ * `?? "composio"` turned the second one — the only one that can hold Arcade rows — into "Composio
+ * is active", which filtered those rows out of existence and left the accounts behind them
+ * unrevokable.
  *
- * A KEY OF NOTHING IS NO KEY, AND THIS DECIDES THAT ITSELF. `ARCADE_API_KEY=` with nothing after
- * it, or a value that is all whitespace, is an operator typo and not a configured provider: a
- * `!== undefined` test calls it configured, and `./provider-wiring` goes on to build a vendor
- * client on an empty credential, which fails later and somewhere else — at the vendor, on
- * somebody's first connect — rather than here, where the setting is. `./config` trims every
- * optional environment value and so happens to turn those into `undefined` today, but that is one
- * incidental guard in a distant module standing between a typo and a client built on "", and this
- * function takes config-shaped VALUES rather than an environment, so every other caller (a test,
- * an embedder, a future loader) reaches it untrimmed. What "configured" means for a credential is
- * this function's own question, so it is answered here.
+ * One key set selects that provider. Both set is legal and expected, since ending an account at the
+ * old vendor needs its key, so `brokerProvider` decides between them.
+ */
+export function providerDecision(c: {
+  composioApiKey?: string;
+  arcadeApiKey?: string;
+  brokerProvider?: BrokerProvider;
+}): ProviderDecision {
+  const configured: BrokerProvider[] = [];
+  if (credential(c.composioApiKey)) configured.push("composio");
+  if (credential(c.arcadeApiKey)) configured.push("arcade");
+  const named = c.brokerProvider;
+  if (named !== undefined) {
+    return configured.includes(named)
+      ? { kind: "active", provider: named }
+      : { kind: "misnamed", named };
+  }
+  if (configured.length === 1)
+    return { kind: "active", provider: configured[0] as BrokerProvider };
+  return configured.length === 0
+    ? { kind: "unconfigured" }
+    : { kind: "ambiguous", configured };
+}
+
+/**
+ * The active provider, or `null` for every deployment where configuration names none.
+ *
+ * KEPT FOR THE CALLERS THAT GENUINELY ASK A YES/NO QUESTION — "is there a broker to wire" — and
+ * nothing more. A caller that has to NAME a provider when this answers null is asking the question
+ * {@link providerDecision} answers, and must take the three causes apart instead of defaulting one
+ * of them to a vendor.
  */
 export function activeProvider(c: {
   composioApiKey?: string;
   arcadeApiKey?: string;
   brokerProvider?: BrokerProvider;
 }): BrokerProvider | null {
-  const configured: BrokerProvider[] = [];
-  if (credential(c.composioApiKey)) configured.push("composio");
-  if (credential(c.arcadeApiKey)) configured.push("arcade");
-  const named = c.brokerProvider;
-  if (named !== undefined) return configured.includes(named) ? named : null;
-  return configured.length === 1 ? configured[0] : null;
+  const decision = providerDecision(c);
+  return decision.kind === "active" ? decision.provider : null;
 }
 
 /**

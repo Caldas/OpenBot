@@ -27,6 +27,7 @@ const canUseBot: BotAccessCheck = async () => true;
 describe("POST /api/plugins/call args", () => {
   function appWith(calls: unknown[]) {
     const store = {
+      brokerProvider: "composio" as const,
       callTool: async (input: unknown) => {
         calls.push(input);
         return { ok: true };

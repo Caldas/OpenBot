@@ -21,6 +21,7 @@ function appWith(
   bots: string[] = ["bot-1"],
 ) {
   const store = {
+    brokerProvider: "composio" as const,
     serverExists: async (serverId: string) => {
       calls.serverLookups?.push(serverId);
       return servers.includes(serverId);
@@ -358,6 +359,7 @@ describe("POST /api/plugins/call", () => {
 describe("POST /api/plugins/skills", () => {
   function skillsApp(calls: { installs: unknown[] }) {
     const store = {
+      brokerProvider: "composio" as const,
       grant: async () => ({ ok: true }),
       callTool: async () => ({ ok: true }),
       skillOwner: async () => null,

@@ -48,7 +48,9 @@ const PERSON_UNCONFIGURED =
  * the silence: see {@link UP_TO_PLUGIN_STORE}.
  */
 function pluginStore(reads: Partial<PluginStore>): PluginStore {
-  return reads as PluginStore;
+  // Every real store is built with the provider its rows belong to; the routes read it and never
+  // guess one, so a stand-in says which deployment it is standing in for.
+  return { brokerProvider: "composio", ...reads } as PluginStore;
 }
 
 /**

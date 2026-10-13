@@ -93,6 +93,9 @@ function deployment(provider: BrokerProvider, wiring: Wiring = {}) {
   };
 
   const store = {
+    // The routes take the provider from the store rather than deciding a second
+    // time, so a stand-in store has to name it like the real one does.
+    brokerProvider: provider,
     serverAddress: async (serverId: string) =>
       serverId === SERVER_ID
         ? {

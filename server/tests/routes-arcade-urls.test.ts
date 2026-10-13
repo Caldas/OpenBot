@@ -67,6 +67,7 @@ function deployment(provider: BrokerProvider) {
   const switched: Array<{ serverId: string; mode: string }> = [];
 
   const store = {
+    brokerProvider: provider,
     serverAddress: async (serverId: string) =>
       serverId === SERVER_ID
         ? {
