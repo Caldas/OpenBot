@@ -216,6 +216,55 @@ describe("removing an app", () => {
     });
   });
 
+  /*
+   * THE BOUND, AND THE ONLY WAY IT IS VISIBLE. `authProviderOf` is a live `tools.list` per call on
+   * Arcade and free on Composio (`async (toolkit) => toolkit`), so no behavioural assertion on
+   * either provider can show the removal asking for it once per PERSON. Counting the calls on a
+   * stub can: four people holding the same three apps is sixteen resolutions unmemoized, and the
+   * memo threaded through this one removal brings it to one per DISTINCT TOOLKIT.
+   */
+  test("resolves each toolkit's auth provider once for the whole removal, not once per person", async () => {
+    const t = run();
+    const people = [1, 2, 3, 4].map((i) => `${t.person}-${i}`);
+    await server(t.gmail, "personal");
+    for (const person of people) {
+      await hold(t.gmail, person);
+      await hold(t.calendar, person);
+      await hold(t.slack, person);
+    }
+    const asked: string[] = [];
+    const counting: ConnectedAppBroker = {
+      ...broker,
+      authProviderOf: async (toolkit) => {
+        asked.push(toolkit);
+        return providerOf(toolkit);
+      },
+    };
+    const countingStore = createPluginStore({
+      brokerProvider: "arcade",
+      database,
+      auditStore: createAuditStore(database),
+      credentials: {} as never,
+      encryptionKey: "x".repeat(44),
+      policy: () => ({ mode: "enforce" as const, deny: [], allow: ["true"] }),
+      broker: counting,
+      deploymentId: "acme",
+      sharedUse: async () => ({ allowed: true }),
+    });
+
+    await countingStore.removeServer(t.gmail, "admin");
+
+    // One ask per distinct toolkit across the rows walked — three — however many people hold them.
+    expect([...new Set(asked)].sort()).toEqual(
+      [t.calendar, t.gmail, t.slack].sort(),
+    );
+    expect(asked.length).toBe(3);
+    // And the removal itself is unchanged: every person's Gmail and Calendar gone, Slack standing.
+    expect(await rowsFor([t.gmail, t.calendar, t.slack])).toEqual(
+      people.map(() => t.slack),
+    );
+  });
+
   test("a revoke that answers false does not delete or audit a sibling as ended", async () => {
     const t = run();
     await server(t.gmail, "personal");

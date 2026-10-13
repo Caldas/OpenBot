@@ -2947,12 +2947,43 @@ export function createPluginStore(options: PluginStoreOptions) {
    * candidate. If the asking app itself is unanswered, nothing is resolvable and every other app on
    * the identity is unanswered with it.
    */
-  async function resolveSiblings(input: {
-    toolkit: string;
-    account: AccountRef;
-  }): Promise<{ siblings: string[]; unanswered: number }> {
+  async function resolveSiblings(
+    input: {
+      toolkit: string;
+      account: AccountRef;
+    },
+    /**
+     * ONE CALL'S MEMO OF `authProviderOf`, PASSED IN BY A CALLER THAT RESOLVES OVER MANY ACCOUNTS.
+     *
+     * Resolving an auth provider is a live vendor call with no cache of its own on Arcade
+     * (`arcade-adapter`'s `authProviderOf` lists the toolkit's tools every time); on Composio it is
+     * the toolkit name and costs nothing. A caller that walks every PERSON who connected an app —
+     * {@link removeServer} — would otherwise ask the vendor for the same handful of toolkits once
+     * per person and again once per app that person holds, which is unbounded in the number of
+     * people and times out partway through a removal that has already revoked at the vendor.
+     *
+     * A toolkit's auth provider cannot change inside one removal, so answering the second ask from
+     * the first is semantically identical — the same argument the identity pre-filter above makes
+     * for its `where`. The memo holds the PROMISE, so two resolutions of one toolkit share one
+     * in-flight call rather than racing into two.
+     *
+     * ITS LIFETIME IS ONE CALL AND IT IS THEN DISCARDED. Omitted, every resolution is asked for
+     * fresh, which is what a single-account caller wants; nothing here is a process-lifetime cache,
+     * which would be a different design with an invalidation question this one does not have.
+     */
+    memo?: Map<string, Promise<string | null>>,
+  ): Promise<{ siblings: string[]; unanswered: number }> {
     if (!broker) return { siblings: [], unanswered: 0 };
-    const authProvider = await broker.authProviderOf(input.toolkit);
+    const vendor = broker;
+    const authProviderOf = (toolkit: string): Promise<string | null> => {
+      if (!memo) return vendor.authProviderOf(toolkit);
+      const asked = memo.get(toolkit);
+      if (asked) return asked;
+      const asking = vendor.authProviderOf(toolkit);
+      memo.set(toolkit, asking);
+      return asking;
+    };
+    const authProvider = await authProviderOf(input.toolkit);
     const held = await database
       .select({
         app: brokeredConnections.app,
@@ -2974,7 +3005,7 @@ export function createPluginStore(options: PluginStoreOptions) {
     const footprints: ConnectionFootprint[] = [];
     const unanswered = new Set<string>();
     for (const row of held) {
-      const rowProvider = await broker.authProviderOf(row.app);
+      const rowProvider = await authProviderOf(row.app);
       if (rowProvider) footprints.push({ ...row, authProvider: rowProvider });
       else if (row.app !== input.toolkit) unanswered.add(row.app);
     }
@@ -4018,9 +4049,27 @@ export function createPluginStore(options: PluginStoreOptions) {
          * set is empty by construction and nothing below differs from what this method always did.
          */
         const endedBesides: { siblings: string[]; unanswered: number }[] = [];
+        /*
+         * ONE AUTH-PROVIDER RESOLUTION PER TOOLKIT FOR THE WHOLE REMOVAL, not one per person.
+         *
+         * `connected` holds a row per PERSON who connected this app, and each `resolveSiblings`
+         * above resolves the asked toolkit plus every app that person holds. Unmemoized that is a
+         * live vendor call per (person × app) on Arcade — a removal on a deployment with two
+         * hundred people holding five apps each is over a thousand serial calls inside one admin
+         * request, which times out partway and leaves accounts revoked at the vendor with every
+         * local row still standing. Memoized, the bound is the number of DISTINCT TOOLKITS across
+         * those rows, whatever the number of people.
+         *
+         * The memo lives exactly as long as this removal and is dropped with it; see
+         * {@link resolveSiblings} for why one call's worth is semantically free.
+         */
+        const authProviders = new Map<string, Promise<string | null>>();
         for (const connection of connected) {
           endedBesides.push(
-            await resolveSiblings({ toolkit, account: accountOf(connection) }),
+            await resolveSiblings(
+              { toolkit, account: accountOf(connection) },
+              authProviders,
+            ),
           );
           vendorRevocationRequested.push(
             broker
