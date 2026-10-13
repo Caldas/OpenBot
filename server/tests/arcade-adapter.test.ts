@@ -214,6 +214,52 @@ describe("createArcadeClient", () => {
     rows.length = 0;
     rows.push({ provider_id: "cpk-poc", provider_user_info: {} });
     expect(await ask()).toBeNull();
+
+    // AN EMPTY NAME MUST NOT SHADOW A GOOD LOGIN. `??` falls through on null and undefined only,
+    // so a `textOf` that answered `""` as text ended the chain on the empty field and drew a blank
+    // where the account's identity goes — on a connection that is genuinely connected.
+    rows.length = 0;
+    rows.push({
+      provider_id: "cpk-poc",
+      provider_user_info: { name: "", login: "maxim" },
+    });
+    expect(await ask()).toBe("maxim");
+
+    // Whitespace-only is the same blank to whoever reads the screen.
+    rows.length = 0;
+    rows.push({
+      provider_id: "cpk-poc",
+      provider_user_info: { name: "   ", login: "maxim" },
+    });
+    expect(await ask()).toBe("maxim");
+
+    // And a row carrying nothing but empty text is no name at all, never an empty one.
+    rows.length = 0;
+    rows.push({
+      provider_id: "cpk-poc",
+      provider_user_info: { name: "", login: "" },
+    });
+    expect(await ask()).toBeNull();
+  });
+
+  test("a toolkit named with empty text raises no blank app", async () => {
+    stub(toolsProto(), "list", (...args: unknown[]) => {
+      const q = args[0] as { offset: number };
+      return Promise.resolve({
+        items:
+          q.offset === 0
+            ? [
+                toolOf("Github", 0),
+                { qualified_name: "X.A0", toolkit: { name: "" } },
+                { qualified_name: "Y.A0", toolkit: { name: "   " } },
+              ]
+            : [],
+        offset: q.offset,
+      });
+    });
+    const apps = await createArcadeClient("never-dialled").broker.listApps();
+    // The slug is what a URL and a picker row are built from; an empty one is unconnectable.
+    expect(apps.map((a) => a.slug)).toEqual(["Github"]);
   });
 
   test("no app resolves to a fields connection", async () => {
