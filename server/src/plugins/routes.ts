@@ -12,6 +12,7 @@ import {
   type AuthorizationFlow,
   type BrokerApp,
   type BrokerField,
+  BrokerReturnUrlError,
   BrokerUnconfiguredError,
   brokerReturnUrl,
   brokerSentence,
@@ -108,6 +109,33 @@ function brokerRefusal(
   const authored = brokerSentence(error);
   if (authored) return { error: authored, status: 503 };
   return { error: vendorSentence(error) ?? generic, status: 502 };
+}
+
+/**
+ * A return address this deployment could not use, said once where an operator will read it.
+ *
+ * THE REMEDY AND THE READER HAD COME APART, WHICH IS WHAT THIS CLOSES. Both routes that check a
+ * return address are `requireUser`, so the sentence they answer with reaches somebody who pressed
+ * Connect — and `OPENBOT_APP_URL` is a variable they cannot set, named beside a vendor they may not
+ * even be on. {@link BrokerReturnUrlError} answers them with neither now, which would leave the
+ * operator's half nowhere at all if it were not written here: a misconfigured address would be
+ * invisible to the one person who can correct it.
+ *
+ * A LOG AND NOT A RESPONSE, because that is the difference between the two readers. The log is the
+ * operator's screen, and the sentence it carries is the error's own — written in `./broker`, naming
+ * the ACTIVE provider, and quoting no address, which is the promise that makes it safe to write
+ * down at all. Anything else thrown past this is somebody else's to explain, so it is ignored here
+ * rather than logged generically.
+ */
+function logReturnUrlRefusal(error: unknown, serverId: string): void {
+  if (!(error instanceof BrokerReturnUrlError)) return;
+  console.error(
+    JSON.stringify({
+      type: "broker-return-url-unusable",
+      serverId,
+      note: error.operatorMessage,
+    }),
+  );
 }
 
 /**
@@ -1923,13 +1951,20 @@ export function createPluginRoutes(
            * `openbot.example.com` with the scheme left off builds a callback that is not a
            * callback. That failure lands after somebody has consented, on the vendor's page, where
            * this deployment cannot tell them anything; the guard moves it to before the link is
-           * minted, where the sentence reaches an operator who can set the variable.
+           * minted, where nobody has spent a consent on it yet.
+           *
+           * WHO IS READING DECIDES WHAT IS SAID, AND HERE THAT IS A PERSON. This route is
+           * `requireUser`: whoever pressed Connect gets the refusal's own sentence, which names no
+           * vendor and no variable because they can act on neither. The operator's half of it is
+           * logged below instead, where an operator looks and a person does not.
            */
           returnUrl: brokerReturnUrl(
             connectedAccountsUrlFor(connect.appUrl, { serverId }, returnTo),
+            activeProvider,
           ),
         }));
       } catch (error) {
+        logReturnUrlRefusal(error, serverId);
         const refusal = brokerRefusal(
           error,
           `Composio would not begin a connection to ${row.title}, and said nothing about why. Try again, and ask an administrator to check this deployment's Composio key if it persists.`,
@@ -2560,8 +2595,10 @@ export function createPluginRoutes(
     try {
       returnUrl = brokerReturnUrl(
         connectedAccountsUrlFor(connect.appUrl, { serverId }, returnTo),
+        activeProvider,
       );
     } catch (error) {
+      logReturnUrlRefusal(error, serverId);
       const refusal = brokerRefusal(
         error,
         "This deployment could not build the address to send you back to, so nothing was started.",

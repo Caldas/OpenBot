@@ -17,10 +17,11 @@
  */
 // This import closes a runtime cycle: `./access` imports `schemeKind` from this file. It is safe
 // for two reasons, and the reasons are the rule. `access.ts` reads `schemeKind` only inside a
-// function body, and this file reads `BROKERED_PROFILE` only inside the `BrokerUnconfiguredError`
-// constructor, so whichever module evaluates first, the other's half-initialised bindings are never
-// touched while either is still evaluating. Nothing may call across this cycle at module scope.
-// Hoisting the `BROKERED_PROFILE[provider]` destructure out of that constructor, or deriving a
+// function body, and this file reads `BROKERED_PROFILE` only inside a refusal constructor — the
+// `BrokerUnconfiguredError` one and the `BrokerReturnUrlError` one — so whichever module evaluates
+// first, the other's half-initialised bindings are never touched while either is still evaluating.
+// Nothing may call across this cycle at module scope.
+// Hoisting a `BROKERED_PROFILE[provider]` destructure out of either constructor, or deriving a
 // top-level constant in `access.ts` from `schemeKind`, would read a lexical binding the other module
 // has not yet initialised: it throws under one evaluation order and not the other, so it can pass
 // every test and still fail at boot. The cycle is deliberate: passing `vendor` and `envVar` in
@@ -886,20 +887,50 @@ export class BrokerUnconfiguredError extends BrokerRefusalError {
 /**
  * A return address that could not bring anybody back, refused before a consent is spent on it.
  *
- * ITS OWN CLASS BECAUSE ITS REMEDY IS ITS OWN. Every other refusal in this file is about Composio —
- * a key that is not set, a config this deployment never made, a consent the vendor answered with no
- * page. This one is about this deployment's own address for itself, and the person who can act on it
- * is an operator with `OPENBOT_APP_URL` in front of them. A caller that could not tell the two apart
- * would send somebody to check a Composio key that is perfectly fine.
+ * ITS OWN CLASS BECAUSE ITS REMEDY IS ITS OWN. Every other refusal in this file is about the broker
+ * — a key that is not set, a config this deployment never made, a consent the vendor answered with
+ * no page. This one is about this deployment's own address for itself, and the reader who can act
+ * on it is an operator with `OPENBOT_APP_URL` in front of them. A caller that could not tell the
+ * two apart would send somebody to check a vendor key that is perfectly fine.
  *
  * A {@link BrokerRefusalError} because it keeps that class's promise about the message: the sentence
  * is written here, names the step that fixes it, and carries no url. Which matters more than usual
  * for this one — the value it is refusing is the thing a bad message would be tempted to quote, and
  * an address is the half of a connect link that says which deployment and which person it is for.
+ *
+ * TWO SENTENCES, BECAUSE THE READER WHO MEETS THIS IS NOT THE READER WHO CAN FIX IT, and that is
+ * the whole of what this class now settles. Both call sites are `requireUser` routes: whoever reads
+ * `message` is somebody who pressed Connect, and `OPENBOT_APP_URL` is an environment variable they
+ * cannot set and a vendor name is vocabulary spec D11 keeps off their screen — the same division
+ * {@link BrokerUnconfiguredError} draws between its `person` and its `operator`. So `message` says
+ * what happened and who to ask, and {@link operatorMessage} — which the route logs rather than
+ * answers — names the ACTIVE provider and the variable. A single sentence had to fail one of them,
+ * and the one it failed was the person: it spelled `Composio` as a literal on a function that took
+ * no provider, so the Arcade deployments that are the only ones able to reach the authorize route's
+ * refusal were told their failure involved a vendor they do not use.
+ *
+ * THE OPERATOR'S HALF IS HELD AND NOT RAISED, so {@link brokerSentence} keeps answering with the
+ * safe sentence and a route that passes a refusal through cannot pass this one through by accident.
+ * Neither half quotes the address, for the reason given on {@link brokerReturnUrl}: a log line is
+ * one of the places that message was always promised not to reach.
  */
 export class BrokerReturnUrlError extends BrokerRefusalError {
-  constructor(message: string) {
-    super(message);
+  /**
+   * The same refusal written for whoever can act on it, for a log and never for a response body.
+   */
+  readonly operatorMessage: string;
+
+  constructor(provider: BrokerProvider, address: "unbuilt" | "not-a-web-page") {
+    const { vendor } = BROKERED_PROFILE[provider];
+    super(
+      address === "unbuilt"
+        ? "This deployment built no address to send you back to, so connecting was not begun rather than begun with nowhere to land. Nothing was asked of your account; an administrator can set this deployment's address up."
+        : "The address this deployment would send you back to is not a web address, so a consent granted now would end on a page with no way back here. Nothing was asked of your account; an administrator can correct this deployment's address.",
+    );
+    this.operatorMessage =
+      address === "unbuilt"
+        ? `This deployment built no address for ${vendor} to send a person back to, so the connection was not begun rather than begun with nowhere to land. Set OPENBOT_APP_URL to the address this deployment's pages are served from, and connecting an app will have a return leg.`
+        : `The address ${vendor} would send a person back to is not a web address, so a consent granted there would end on ${vendor}'s own page with no way back here. Set OPENBOT_APP_URL to this deployment's own origin including the scheme — https://openbot.example.com rather than openbot.example.com.`;
     this.name = "BrokerReturnUrlError";
   }
 }
@@ -916,21 +947,24 @@ export class BrokerReturnUrlError extends BrokerRefusalError {
  * TWO REFUSALS, BECAUSE THEY ARE TWO DIFFERENT MISTAKES. An empty address is a caller that built
  * none — the guard in front of this one did not run, or ran against the wrong value. An address that
  * is not a web page is a configured one that cannot work: `OPENBOT_APP_URL` set to
- * `openbot.example.com`, which no browser can resolve from Composio's origin, or to `localhost:3001`,
+ * `openbot.example.com`, which no browser can resolve from the vendor's origin, or to `localhost:3001`,
  * where `localhost:` is read as the scheme. Both are reachable from the settings this deployment
  * actually ships — the variable is an environment string and nothing between it and the vendor looks
  * at it — and both end with the same person on the same hosted page with nowhere to go.
  *
  * IT NAMES THE SETTING AND NOT THE VALUE. The setting is the remedy, and it is the same one whether
  * the address arrived empty or malformed; the value is a page address for one person's connection
- * and belongs in no message, no log and no audit row, for the reason the connect url does not.
+ * and belongs in no message, no log and no audit row, for the reason the connect url does not. And
+ * it names it to the OPERATOR ALONE: the provider passed in picks that reader's vendor, while the
+ * sentence the person reads names neither it nor the variable, which {@link BrokerReturnUrlError}
+ * argues at length.
  *
  * WHAT COMES BACK IS THE ADDRESS THAT WAS CHECKED, WHICH IS NOT ALWAYS THE STRING THAT WENT IN. The
  * check reads a parsed address: the emptiness test trims, and parsing drops the spaces and control
  * characters a URL cannot contain — so ` https://openbot.test/…`, an address ending in a newline and
  * one with a tab inside its host all satisfy this guard while denoting something else entirely. A
  * version that approved the parsed address and returned the raw one approved nothing: the padding
- * travelled on to Composio as part of the callback, which is the person stranded on a vendor page
+ * travelled on to the vendor as part of the callback, which is the person stranded on a vendor page
  * that this function exists to prevent. Returning what was read is what makes the reading binding.
  *
  * THAT IS A READING OF THE ADDRESS AND NOT A CHOICE ABOUT IT. Where somebody lands holding a
@@ -940,17 +974,16 @@ export class BrokerReturnUrlError extends BrokerRefusalError {
  * at an address that means nothing, which is why the branch above refuses rather than repairs: a
  * missing scheme is a setting to fix and not whitespace to drop.
  */
-export function brokerReturnUrl(returnUrl: string): string {
+export function brokerReturnUrl(
+  returnUrl: string,
+  provider: BrokerProvider,
+): string {
   if (returnUrl.trim() === "") {
-    throw new BrokerReturnUrlError(
-      "This deployment built no address for Composio to send you back to, so the connection was not begun rather than begun with nowhere to land. Set OPENBOT_APP_URL to the address this deployment's pages are served from, and connecting an app will have a return leg.",
-    );
+    throw new BrokerReturnUrlError(provider, "unbuilt");
   }
   const address = webAddress(returnUrl);
   if (address === null) {
-    throw new BrokerReturnUrlError(
-      "The address Composio would send you back to is not a web address, so a consent granted there would end on Composio's own page with no way back here. Set OPENBOT_APP_URL to this deployment's own origin including the scheme — https://openbot.example.com rather than openbot.example.com.",
-    );
+    throw new BrokerReturnUrlError(provider, "not-a-web-page");
   }
   return address.href;
 }

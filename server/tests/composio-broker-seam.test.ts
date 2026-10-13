@@ -45,16 +45,21 @@ describe("brokerSentence", () => {
  * unvalidated environment string, so `string` really is the strongest promise it can make and the
  * check belongs here rather than in the type.
  *
- * Each refusal is asserted by the half of its sentence that only it says. Both name
- * `OPENBOT_APP_URL`, because both are fixed there, so a test that asked only for the setting would
- * pass just as well if the two branches collapsed into one — and they are two different mistakes:
- * an address nobody built, and a configured one that cannot work.
+ * Each refusal is asserted by the half of its sentence that only it says, because they are two
+ * different mistakes — an address nobody built, and a configured one that cannot work — and a test
+ * that asked only for what both say would pass just as well if the branches collapsed into one.
+ *
+ * WHICH SENTENCE EACH READER GETS IS PINNED IN `broker-return-url-voice.test.ts` AND NOT HERE. This
+ * file is about which addresses are refused; that one is about whose vocabulary the refusal is
+ * written in — a person's, naming no vendor and no variable, and an operator's, naming both.
  */
 describe("brokerReturnUrl", () => {
   test("refuses an address that was never built", () => {
-    expect(() => brokerReturnUrl("")).toThrow(/built no address/);
-    expect(() => brokerReturnUrl("   ")).toThrow(/built no address/);
-    expect(() => brokerReturnUrl("")).toThrow(BrokerReturnUrlError);
+    expect(() => brokerReturnUrl("", "composio")).toThrow(/built no address/);
+    expect(() => brokerReturnUrl("   ", "composio")).toThrow(
+      /built no address/,
+    );
+    expect(() => brokerReturnUrl("", "composio")).toThrow(BrokerReturnUrlError);
   });
 
   test("refuses an address no browser could come back through", () => {
@@ -64,7 +69,9 @@ describe("brokerReturnUrl", () => {
       "/settings/connected-accounts/x",
       "javascript:alert(1)",
     ]) {
-      expect(() => brokerReturnUrl(unusable)).toThrow(/not a web address/);
+      expect(() => brokerReturnUrl(unusable, "composio")).toThrow(
+        /not a web address/,
+      );
     }
   });
 
@@ -85,20 +92,24 @@ describe("brokerReturnUrl", () => {
    * that the message is safe to show them — so the address must be absent from it as a whole and
    * in its parts, and the value asked about has to be one no sentence here mentions for its own
    * reasons.
+   *
+   * THE SETTING IS NO LONGER ASKED OF THIS SENTENCE, because this is the one the ROUTE ANSWERS and
+   * the route is `requireUser`: `OPENBOT_APP_URL` is an operator's remedy, and the assertion that
+   * an operator is still given it lives on `operatorMessage` in the voice test.
    */
-  test("says which setting fixes it, and never quotes the address", () => {
+  test("never quotes the address it refused", () => {
     const address =
       "openbot-tenant-42.internal.corp/settings/connected-accounts/9f3c";
 
     let thrown: unknown;
     try {
-      brokerReturnUrl(address);
+      brokerReturnUrl(address, "composio");
     } catch (error) {
       thrown = error;
     }
 
     const sentence = brokerSentence(thrown);
-    expect(sentence).toContain("OPENBOT_APP_URL");
+    expect(sentence).not.toBeNull();
     expect(sentence).not.toContain(address);
     expect(sentence).not.toContain("openbot-tenant-42.internal.corp");
     expect(sentence).not.toContain("/settings/connected-accounts/9f3c");
@@ -106,11 +117,14 @@ describe("brokerReturnUrl", () => {
 
   test("hands back the address a configured deployment built", () => {
     expect(
-      brokerReturnUrl("https://openbot.test/settings/connected-accounts/x"),
+      brokerReturnUrl(
+        "https://openbot.test/settings/connected-accounts/x",
+        "composio",
+      ),
     ).toBe("https://openbot.test/settings/connected-accounts/x");
-    expect(brokerReturnUrl("http://localhost:3001/admin/plugins/x")).toBe(
-      "http://localhost:3001/admin/plugins/x",
-    );
+    expect(
+      brokerReturnUrl("http://localhost:3001/admin/plugins/x", "composio"),
+    ).toBe("http://localhost:3001/admin/plugins/x");
   });
 
   /**
@@ -140,7 +154,7 @@ describe("brokerReturnUrl", () => {
       "https://openbot.test/settings/\tconnected-accounts/x",
       "https://openbot.test/settings\r/connected-accounts/x",
     ]) {
-      expect(brokerReturnUrl(disguised)).toBe(intended);
+      expect(brokerReturnUrl(disguised, "composio")).toBe(intended);
     }
   });
 });
