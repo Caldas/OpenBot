@@ -128,12 +128,25 @@ function configs(items: unknown[] = CONFIGS) {
   return asked;
 }
 
+/**
+ * A PAGE, NOT A BARE GENERATOR. `connectionsFor` pages the connection listing itself rather than
+ * leaning on the SDK's auto-pagination, because `OffsetPage` stops after page one whenever the
+ * engine omits `total_count` — see `arcade-pagination-engine.test.ts`, which proves that against a
+ * real HTTP engine. So the stub answers what the real `list` resolves to: an object with `items`,
+ * honouring the `limit`/`offset` the adapter sends.
+ */
 function listing(rows: unknown[]) {
-  stub("list", () =>
-    (async function* () {
-      for (const r of rows) yield r;
-    })(),
-  );
+  stub("list", (query) => {
+    const asked = query as { limit?: number; offset?: number } | undefined;
+    const offset = asked?.offset ?? 0;
+    const limit = asked?.limit ?? rows.length;
+    return Promise.resolve({
+      items: rows.slice(offset, offset + limit),
+      offset,
+      limit,
+      total_count: rows.length,
+    });
+  });
 }
 
 /** The TYPE each toolkit's listing names. Nothing here is an instance id. */

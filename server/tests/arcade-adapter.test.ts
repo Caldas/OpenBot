@@ -173,10 +173,11 @@ describe("createArcadeClient", () => {
 
   test("accountName reads provider_user_info.name, then .login, else null", async () => {
     const rows: unknown[] = [];
+    // A PAGE, as the real `list` resolves to: `connectionsFor` pages the listing itself rather
+    // than through the SDK, whose auto-pagination stops after page one when the engine omits
+    // `total_count`. See `arcade-pagination-engine.test.ts`.
     stub(connectionsProto(), "list", () =>
-      (async function* () {
-        for (const r of rows) yield r;
-      })(),
+      Promise.resolve({ items: rows, offset: 0, total_count: rows.length }),
     );
     // The toolkit's own listing names the provider TYPE its connections are held under.
     stub(toolsProto(), "list", () =>
