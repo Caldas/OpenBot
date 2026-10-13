@@ -6,6 +6,7 @@ import {
   useArcadeClient,
   type ArcadeFailure,
 } from "../src/plugins/arcade";
+import { MAX_RESULT_CHARS } from "../src/plugins/mcp";
 
 afterEach(() => useArcadeClient(null));
 
@@ -178,5 +179,40 @@ describe("callTool successes", () => {
     expect(result.text).not.toContain("execution_id");
     expect(result.text).not.toContain("exec-LEAKME");
     expect(result.text).not.toContain("duration");
+  });
+});
+
+/**
+ * A tool result is read by a model and copied into the audit row, so an unbounded one is the vendor
+ * — or whoever wrote the mailbox it read — deciding how much of our context window to spend and how
+ * large a durable record grows. `composio.ts`'s `cap()` is the convention this follows: BOTH answers
+ * go through it, the result and the refusal, and `truncated` is the field that says it happened.
+ */
+describe("callTool caps what a model is shown", () => {
+  test("an enormous result is cut and says it was cut", async () => {
+    const enormous = "x".repeat(MAX_RESULT_CHARS + 5_000);
+    answering({ success: true, output: { value: enormous } });
+    const result = await callTool(connection, "Gmail.ReadEmail", {});
+    expect(result.isError).toBe(false);
+    expect(result.truncated).toBe(true);
+    expect(result.text.length).toBeLessThan(enormous.length);
+    expect(result.text.endsWith("[truncated]")).toBe(true);
+  });
+
+  test("a result that fits is untouched and reports no truncation", async () => {
+    answering({ success: true, output: { value: { rows: [1, 2] } } });
+    const result = await callTool(connection, "Gmail.ReadEmail", {});
+    expect(result.truncated).toBe(false);
+    expect(result.text).toBe(JSON.stringify({ rows: [1, 2] }, null, 2));
+  });
+
+  test("a refusal is capped too: it carries a vendor-listed action name", async () => {
+    const enormousName = "Gmail.".padEnd(MAX_RESULT_CHARS + 2_000, "N");
+    answering({ success: false, output: { error: { message: "m" } } });
+    const result = await callTool(connection, enormousName, {});
+    expect(result.isError).toBe(true);
+    expect(result.truncated).toBe(true);
+    expect(result.text.length).toBeLessThan(enormousName.length);
+    expect(result.text.endsWith("[truncated]")).toBe(true);
   });
 });
