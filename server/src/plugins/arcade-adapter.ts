@@ -1,10 +1,15 @@
 import Arcade, { APIError } from "@arcadeai/arcadejs";
-import { classify, type ArcadeActions, type ArcadeFailure } from "./arcade";
 import {
-  BrokerRefusalError,
-  flagOf,
+  type ArcadeActions,
+  type ArcadeFailure,
+  ArcadeFailureError,
+  classify,
+} from "./arcade";
+import {
   type BrokerApp,
+  BrokerRefusalError,
   type ConnectedAppBroker,
+  flagOf,
   type GrantState,
 } from "./broker";
 
@@ -54,6 +59,19 @@ export function normalizeArcadeError(error: unknown): ArcadeFailure | null {
     if (current === null || typeof current !== "object" || seen.has(current))
       return null;
     seen.add(current);
+    /*
+     * A REFUSAL THIS FILE ALREADY NORMALIZED ANSWERS ITSELF, and it is read on the same chain walk
+     * rather than only at the top, because {@link vendorCall}'s answer is carried as a `cause` by
+     * the one place that wraps it again (`revoke`, which fails over several connections at once).
+     *
+     * THIS IS WHAT KEEPS THE MEDIATION FROM COSTING ANYTHING. Every reader of a failure out of this
+     * adapter — the authorize route's definite-or-uncertain decision, keyed on `status`; `callTool`'s
+     * authorize prompt and `confirmReturn`'s `user_mismatch`, both keyed on the body's `error.name`
+     * — asks through this function, so stopping the vendor's own `APIError` at the adapter boundary
+     * takes nothing away from any of them. The vendor's PROSE is the only thing that does not come
+     * back out; see {@link ArcadeFailureError}, which drops it.
+     */
+    if (current instanceof ArcadeFailureError) return current.failure;
     if (current instanceof APIError) {
       const body = current.error;
       const record =
@@ -69,6 +87,46 @@ export function normalizeArcadeError(error: unknown): ArcadeFailure | null {
     current = (current as { cause?: unknown }).cause;
   }
   return null;
+}
+
+/**
+ * ONE CALL TO THE VENDOR, WITH ITS REFUSAL TURNED INTO THIS DEPLOYMENT'S OWN SENTENCE.
+ *
+ * EVERY `client.*` CALL IN THIS FILE GOES THROUGH HERE, and that uniformity is the point rather
+ * than a tidiness: the thing being confined is the SDK's `APIError`, whose `message` is
+ * `${status} ${the response body}` (`core/error.js: makeMessage`), and one unwrapped call is one
+ * path on which a vendor body reaches a log line, the Plugins page's `lastError`, a model's context
+ * or an audit row. On this vendor a body is not inert — the auth paths answer with a bearer `url`
+ * and a live `context.token` — and the claim this adapter is held to is that neither ever reaches
+ * any of those. `step` is written HERE, at the call site, for the reason `callTool`'s refusal names
+ * the action from the call site: nothing in an `APIError` says what was being asked.
+ *
+ * WHAT IS NOT AN SDK ERROR IS RETHROWN UNTOUCHED, which is deliberate and is load-bearing twice
+ * over. It leaves this file's own refusals — the malformed-listing sentences, the mint with no url
+ * — exactly as they were; and it leaves the vendor's `TypeError` out of the SDK's `OffsetPage`
+ * constructor, which a JSON body of literal `null` raises, escaping as itself. Catching THAT by
+ * shape rather than by `normalizeArcadeError` answering is what would swallow genuine `APIError`s.
+ *
+ * A REFUSAL THAT IS ALREADY MEDIATED PASSES STRAIGHT THROUGH, so a nested call cannot dress one
+ * sentence up in another.
+ */
+async function vendorCall<T>(step: string, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (error instanceof ArcadeFailureError) throw error;
+    const failure = normalizeArcadeError(error);
+    if (!failure) throw error;
+    throw new ArcadeFailureError(
+      failure.status === undefined
+        ? // `status` is undefined for `APIConnectionError` and `APIUserAbortError`: no response was
+          // ever read, so the outcome is uncertain rather than refused, and the sentence says so —
+          // the authorize route keys exactly that distinction off `status`.
+          `Arcade did not answer ${step}, so whether it ran is not known here.`
+        : `Arcade refused ${step} with HTTP ${failure.status}.`,
+      failure,
+    );
+  }
 }
 
 /** Page size for the catalogue listing. A short page ends it, never `total_count`. */
@@ -259,7 +317,10 @@ async function listApps(client: Arcade): Promise<BrokerApp[]> {
   for await (const item of pagedItems({
     pageSize: CATALOGUE_PAGE_SIZE,
     maxPages: CATALOGUE_MAX_PAGES,
-    page: (offset) => client.tools.list({ limit: CATALOGUE_PAGE_SIZE, offset }),
+    page: (offset) =>
+      vendorCall("the app catalogue listing", () =>
+        client.tools.list({ limit: CATALOGUE_PAGE_SIZE, offset }),
+      ),
     malformed:
       "Arcade did not answer with a tool list, so its app catalogue could not be read.",
     unending: `Arcade's catalogue never ended after ${CATALOGUE_MAX_PAGES} pages, so it is not trusted.`,
@@ -357,9 +418,13 @@ async function authProviderInstances(
     pageSize: AUTH_PROVIDER_PAGE_SIZE,
     maxPages: AUTH_PROVIDER_MAX_PAGES,
     page: (offset) =>
-      client.admin.authProviders.list({
-        query: { limit: AUTH_PROVIDER_PAGE_SIZE, offset },
-      }),
+      vendorCall(
+        `the auth-provider configuration listing for ${authProvider}`,
+        () =>
+          client.admin.authProviders.list({
+            query: { limit: AUTH_PROVIDER_PAGE_SIZE, offset },
+          }),
+      ),
     malformed: `Arcade did not answer with an auth-provider list, so the configurations of ${authProvider} its connections are held under could not be read.`,
     unending: `Arcade's auth-provider list never ended after ${AUTH_PROVIDER_MAX_PAGES} pages, so it is not trusted.`,
     incomplete: (seen, total) =>
@@ -450,11 +515,13 @@ async function connectionsFor(
     pageSize: CONNECTION_PAGE_SIZE,
     maxPages: CONNECTION_MAX_PAGES,
     page: (offset) =>
-      client.admin.userConnections.list({
-        user_id: vendorUserId,
-        limit: CONNECTION_PAGE_SIZE,
-        offset,
-      }),
+      vendorCall(`the connection listing for ${toolkit}`, () =>
+        client.admin.userConnections.list({
+          user_id: vendorUserId,
+          limit: CONNECTION_PAGE_SIZE,
+          offset,
+        }),
+      ),
     malformed: `Arcade did not answer with a connection list, so what this account holds at ${toolkit} could not be read.`,
     unending: `Arcade's connection list never ended after ${CONNECTION_MAX_PAGES} pages, so it is not trusted.`,
     incomplete: (seen, total) =>
@@ -522,7 +589,9 @@ async function deleteConnection(
   if (!connectionId) {
     throw new Error("Arcade connection has no connection_id to delete.");
   }
-  await client.admin.userConnections.delete(connectionId);
+  await vendorCall("a connection delete", () =>
+    client.admin.userConnections.delete(connectionId),
+  );
 }
 
 const record = (value: unknown): Record<string, unknown> | null =>
@@ -636,12 +705,14 @@ async function grantsFor(
     pageSize: CATALOGUE_PAGE_SIZE,
     maxPages: CATALOGUE_MAX_PAGES,
     page: (offset) =>
-      client.tools.list({
-        toolkit,
-        user_id: vendorUserId,
-        limit: CATALOGUE_PAGE_SIZE,
-        offset,
-      }),
+      vendorCall(`the action listing for ${toolkit}`, () =>
+        client.tools.list({
+          toolkit,
+          user_id: vendorUserId,
+          limit: CATALOGUE_PAGE_SIZE,
+          offset,
+        }),
+      ),
     malformed: `Arcade did not answer with an action list for ${toolkit}, so what this account holds there could not be read.`,
     unending: `Arcade's action list for ${toolkit} never ended after ${CATALOGUE_MAX_PAGES} pages, so it is not trusted.`,
     incomplete: (seen, total) =>
@@ -689,7 +760,9 @@ async function authProviderOf(
   client: Arcade,
   toolkit: string,
 ): Promise<string | null> {
-  const page = await client.tools.list({ toolkit });
+  const page = await vendorCall(`the action listing for ${toolkit}`, () =>
+    client.tools.list({ toolkit }),
+  );
   const items = sentItemsOf(page);
   if (!Array.isArray(items)) {
     throw new Error(
@@ -709,10 +782,11 @@ async function authProviderOf(
  * The Arcade client, in the shape `createComposioClient` returns. `new Arcade({ apiKey })` opens no
  * socket and sends no request, so tests replace the SDK's PROTOTYPE methods before calling this.
  *
- * `execute` REJECTS WITH THE NORMALIZED FAILURE WHEN THERE IS ONE. `callTool` expects an
- * already-normalized, cause-unwrapped `ArcadeFailure`; a raw `APIError`'s `name` is the CLASS name
- * through the prototype chain, never the body's `error.name`, so without this the authorize prompt
- * is unreachable. `null` means "not an SDK error" and the original is rethrown.
+ * EVERY CALL TO THE VENDOR GOES THROUGH {@link vendorCall}, which is where a refusal becomes this
+ * deployment's own sentence and the vendor's body stops. `callTool` still reaches the body's
+ * `error.name` — a raw `APIError`'s `name` is the CLASS name through the prototype chain, never the
+ * body's, so without the normalization the authorize prompt would be unreachable — but it reaches
+ * it through {@link ArcadeFailureError}, not through a bare object thrown as if it were an error.
  */
 export function createArcadeClient(apiKey: string): {
   actions: ArcadeActions;
@@ -728,11 +802,15 @@ export function createArcadeClient(apiKey: string): {
     // carried no total and its `raw.length < total` cross-check could never fire. The FIELD IS
     // OMITTED when the vendor omitted it, which is what the declared `total_count?: number` means.
     listTools: async (q) => {
-      const answer = await client.tools.list({
-        toolkit: q.toolkit,
-        limit: q.limit,
-        offset: q.offset,
-      });
+      const answer = await vendorCall(
+        `the action listing for ${q.toolkit}`,
+        () =>
+          client.tools.list({
+            toolkit: q.toolkit,
+            limit: q.limit,
+            offset: q.offset,
+          }),
+      );
       // Passed through unchecked: a malformed listing is the transport's sentence to write, and
       // its own `Array.isArray` guard is what writes it. THE ITEMS ARE READ OFF THE RAW BODY for
       // {@link sentItemsOf}'s reason — handing over the page's manufactured `[]` would leave that
@@ -742,19 +820,14 @@ export function createArcadeClient(apiKey: string): {
       const total = reportedTotalOf(answer);
       return total === undefined ? { items } : { items, total_count: total };
     },
-    execute: async (r) => {
-      try {
-        return await client.tools.execute({
+    execute: async (r) =>
+      vendorCall(`running ${r.tool_name}`, () =>
+        client.tools.execute({
           tool_name: r.tool_name,
           input: r.input,
           user_id: r.user_id,
-        });
-      } catch (error) {
-        const failure = normalizeArcadeError(error);
-        if (failure) throw failure;
-        throw error;
-      }
-    },
+        }),
+      ),
   };
   const broker: ConnectedAppBroker = {
     grantIsLocal: false,
@@ -807,10 +880,18 @@ export function createArcadeClient(apiKey: string): {
       //
       // `returnUrl` IS ACCEPTED AND IGNORED, for the same reason: the landing page comes from the
       // attempt row (spec D18), not from a parameter this vendor will take.
-      const answer = await client.tools.authorize({
-        tool_name: action,
-        user_id: account.vendorUserId,
-      });
+      //
+      // THE REFUSAL IS MEDIATED, AND ON THIS CALL THAT IS NOT A STYLE POINT: the body an
+      // authorization answers with is the one that carries a bearer `url`, and the SDK's `APIError`
+      // puts the body it could not read a `message` off into its own `message`. See
+      // {@link vendorCall}; the route's definite-or-uncertain decision reads `status` through
+      // `normalizeArcadeError` and is unaffected.
+      const answer = await vendorCall(`the authorization for ${action}`, () =>
+        client.tools.authorize({
+          tool_name: action,
+          user_id: account.vendorUserId,
+        }),
+      );
       // The url is a bearer capability: it goes back to the caller and nowhere else.
       const url = answer.url;
       if (typeof url !== "string" || url === "") {
@@ -889,7 +970,11 @@ export function createArcadeClient(apiKey: string): {
        * payload by code that never sees it. Do not widen this, and do not add `url`.
        */
       status: async (id) => {
-        const answer = await client.auth.status({ id });
+        // THE REFUSAL IS MEDIATED TOO, for the same reason the RESPONSE is: a status this vendor
+        // would not answer is answered ABOUT a flow whose body carries the token and the url.
+        const answer = await vendorCall("an authorization status read", () =>
+          client.auth.status({ id }),
+        );
         const scopes = answer.scopes;
         return {
           status: textOf(answer.status) ?? "unknown",
@@ -901,13 +986,17 @@ export function createArcadeClient(apiKey: string): {
       },
       // `handle` is opaque to the seam; `flow_id` is Arcade's word for it and stops in this file.
       // A `user_mismatch` answer is an ANSWER, so it surfaces as `{ mismatch: true }`; any other
-      // failure is an outage or a bug and is rethrown untouched.
+      // failure is an outage or a bug and is rethrown as the sentence {@link vendorCall} wrote for
+      // it — `user_mismatch` is still read, because the body's `error.name` survives the mediation
+      // and `normalizeArcadeError` answers off the carried failure.
       confirmReturn: async ({ handle, vendorUserId }) => {
         try {
-          const answer = await client.auth.confirmUser({
-            flow_id: handle,
-            user_id: vendorUserId,
-          });
+          const answer = await vendorCall("the return-leg confirmation", () =>
+            client.auth.confirmUser({
+              flow_id: handle,
+              user_id: vendorUserId,
+            }),
+          );
           return { authorizationId: answer.auth_id };
         } catch (error) {
           if (normalizeArcadeError(error)?.name === "user_mismatch") {
