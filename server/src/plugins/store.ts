@@ -50,6 +50,7 @@ import {
   accessFor,
   BROKERED_PROFILE,
   type BrokerProvider,
+  brokeredProvenance,
   type ServerAccess,
   ServerUnresolvableError,
   toolkitOfFor,
@@ -1930,8 +1931,24 @@ export function createPluginStore(options: PluginStoreOptions) {
        * derived by {@link accountRefFor} from the session's actor and the app's own mode, Personal
        * or Shared, exactly as before. The model cannot name an identity, nothing about whose
        * account a call runs in changes here, and the Shared case still goes out as the deployment.
+       *
+       * AND THE PROPERTY IS ONLY EVER READ ABOUT THAT BROKER'S OWN ROWS, which is not a vendor-name
+       * comparison sneaking back in — it is the question of WHOSE declaration this is.
+       *
+       * CRITERION. A brokered row is governed by the broker it was minted at. Where that is not the
+       * configured one, no declaration of the configured broker's applies to it, and the local gate
+       * stands — which refuses, because a row of the other broker's can have no connection row here.
+       *
+       * REASON. `access.transport` is the row's provenance (see `accessFor`) and `broker` is whatever
+       * this deployment is configured with, and the two are not always the same vendor: a deployment
+       * that has switched broker still holds the other's rows. Read off the active broker alone, the
+       * waiver crossed over to them — on an Arcade deployment, a left-over Composio app was called
+       * with no connection row of any kind, exempted by a per-action check at a vendor that has never
+       * heard of it, on a deployment that cannot connect, check or disconnect it at all. The
+       * `grantIsLocal` argument is about where THIS broker's grants live; it says nothing about
+       * somebody else's.
        */
-      if (broker && !broker.grantIsLocal)
+      if (broker && !broker.grantIsLocal && access.transport === brokerProvider)
         return { vendorUserId: resolved.ref.vendorUserId };
       const [connected] = await database
         .select({ vendorUserId: brokeredConnections.vendorUserId })
@@ -4007,7 +4024,9 @@ export function createPluginStore(options: PluginStoreOptions) {
        * KEYED ON THE APP THE URL NAMES, exactly as `connectionTokenFor` keys the gate. `row.id` is a
        * display key and nothing holds it equal to the slug in the url, so a delete by id would clear
        * some other app's connections, or none, for the very row shape that gate already refuses to
-       * trust. `accessFor` is asked rather than the url parsed here, so this cannot drift from it.
+       * trust. The slug is read with {@link toolkitOfFor} — the one per-provider parser `accessFor`
+       * itself reads it with — so this cannot drift from what the gate resolves; see the comment on
+       * `rowProvider` below for why the PROVIDER is read beside it rather than the slug alone.
        *
        * ASKED WITH NO ENTRY, deliberately, and that is not the entry-wins order being dodged. An
        * entry can only ever SUPPRESS this answer — `accessFor` returns a null toolkit for every row
@@ -4045,9 +4064,52 @@ export function createPluginStore(options: PluginStoreOptions) {
        * deployment holds at Composio, not an account — while a live account whose config has
        * already been deleted is access that nothing left here can end.
        */
-      const toolkit = existing ? accessFor(existing, null).toolkit : null;
+      /*
+       * AND ALL OF IT IS ABOUT THE BROKER THE ROW WAS MINTED AT, which is not always the one this
+       * deployment is configured with.
+       *
+       * CRITERION. One removal names ONE vendor. The app slug, the connection rows it clears and
+       * the account it ends are all that row's own broker's, and a vendor is asked only where it is
+       * the one this deployment can reach.
+       *
+       * REASON. These three were read three different ways in one operation: the slug off the ROW's
+       * provenance (through `accessFor`, which parses the url with the parser belonging to whatever
+       * that column says), the connection rows off the CONFIGURED `brokerProvider`, and the
+       * revocation off the ACTIVE broker. A deployment that has switched broker — or a restore, or a
+       * hand edit — holds rows whose provenance is the other vendor, and for one of those the three
+       * disagreed: a non-null FOREIGN slug went to `revoke` and `deleteAuthConfig` at the wrong
+       * vendor, naming one of its apps by a name that means something else there, while the deletes
+       * beneath matched no row at all. The removal then reported the connector gone, with every
+       * local consent row still standing and the right vendor never asked.
+       *
+       * SO THE ROW'S PROVENANCE DECIDES WHAT IS CLEARED, AND THE CONFIGURED PROVIDER DECIDES ONLY
+       * WHETHER A VENDOR IS ASKED. The local half always runs: the criterion two comments up —
+       * removing an app leaves nobody holding brokered access to it — is about this deployment's own
+       * gate, and it holds whichever broker minted the row. The vendor half is skipped where the
+       * row's broker is not the configured one, because there is no client for it here and no
+       * credential to reach it with; `vendorRevocationRequested` then says `false` on every trail
+       * row, which is exactly what that field is for and the same answer a deployment with no broker
+       * at all gets. An account left standing at a vendor this deployment can no longer reach is not
+       * a thing a removal can end, and saying so is better than asking the wrong vendor to.
+       *
+       * The parse is {@link toolkitOfFor} with the ROW's provider rather than `accessFor`, because
+       * what this needs is the pair — which broker, and which app at it — and `accessFor` answers
+       * only the second. It is the same answer for the same rows: `accessFor` reads the slug with
+       * the very same per-provider parser, under the same brokered-provenance test, and is asked
+       * with no entry here for the reason the comment above gives.
+       */
+      const rowProvider =
+        existing && brokeredProvenance(existing.provenance)
+          ? existing.provenance
+          : null;
+      const toolkit =
+        existing && rowProvider
+          ? toolkitOfFor(rowProvider, existing.url)
+          : null;
+      /** The broker to ask, which is none at all where the row is the other vendor's. */
+      const rowBroker = rowProvider === brokerProvider ? broker : null;
 
-      if (toolkit) {
+      if (rowProvider && toolkit) {
         /*
          * Read before anything is deleted, because the revokes below need the people and the rows
          * are where the people are. Sorted, so two removals of the same app revoke in the same
@@ -4062,7 +4124,8 @@ export function createPluginStore(options: PluginStoreOptions) {
           .from(brokeredConnections)
           .where(
             and(
-              eq(brokeredConnections.provider, brokerProvider),
+              // The row's own broker, not the configured one: see the comment above `rowProvider`.
+              eq(brokeredConnections.provider, rowProvider),
               eq(brokeredConnections.app, toolkit),
             ),
           )
@@ -4123,27 +4186,38 @@ export function createPluginStore(options: PluginStoreOptions) {
          */
         const authProviders = new Map<string, Promise<string | null>>();
         for (const connection of connected) {
+          /*
+           * ASKED OF `rowBroker` AND NOT OF `broker`, both here and at the revoke below.
+           * {@link resolveSiblings} resolves against the CONFIGURED provider's rows and the active
+           * broker's `authProviderOf`, so asking it about a foreign row's app would be the same
+           * wrong-vendor question the revoke was asking. No broker for this row means nothing was
+           * asked, which is the answer the empty set and the `false` beside it already carry.
+           */
           endedBesides.push(
-            await resolveSiblings(
-              { toolkit, account: accountOf(connection) },
-              authProviders,
-            ),
+            rowBroker
+              ? await resolveSiblings(
+                  { toolkit, account: accountOf(connection) },
+                  authProviders,
+                )
+              : { siblings: [], unanswered: 0 },
           );
           vendorRevocationRequested.push(
-            broker
-              ? await broker.revoke({ account: accountOf(connection), toolkit })
+            rowBroker
+              ? await rowBroker.revoke({
+                  account: accountOf(connection),
+                  toolkit,
+                })
               : false,
           );
         }
 
-        await database
-          .delete(brokeredConnections)
-          .where(
-            and(
-              eq(brokeredConnections.provider, brokerProvider),
-              eq(brokeredConnections.app, toolkit),
-            ),
-          );
+        await database.delete(brokeredConnections).where(
+          and(
+            // The row's own broker, as the read above.
+            eq(brokeredConnections.provider, rowProvider),
+            eq(brokeredConnections.app, toolkit),
+          ),
+        );
 
         for (const [index, connection] of connected.entries()) {
           await recordAuditEvent(auditStore, {
@@ -4206,6 +4280,11 @@ export function createPluginStore(options: PluginStoreOptions) {
          * shown to have ended anything, so a sibling's row is left standing rather than claimed
          * gone. It sits after the revokes above for the same reason the asked app's rows do: an
          * exception from any of them left every row standing.
+         *
+         * AND IT IS REACHED ONLY FOR THE CONFIGURED PROVIDER'S OWN ROWS, which is what keeps the
+         * `accountRow` delete below — keyed on `brokerProvider` — about the same broker as the
+         * siblings it deletes: `true` here requires `rowBroker`, and there is no `rowBroker` for a
+         * row the other broker minted.
          */
         for (const [index, connection] of connected.entries()) {
           const { siblings, unanswered } = endedBesides[index] ?? {
@@ -4239,8 +4318,10 @@ export function createPluginStore(options: PluginStoreOptions) {
         }
 
         // Last of all, for the reason above, and skipped entirely on a deployment with no
-        // broker to have made one.
-        if (broker) await broker.deleteAuthConfig(toolkit);
+        // broker to have made one — or, for a row of the other broker's, no broker of ITS that
+        // this deployment can reach. Nothing here holds an auth config at a vendor it is not
+        // configured for, and this slug is not a name that vendor's apps go by.
+        if (rowBroker) await rowBroker.deleteAuthConfig(toolkit);
       }
 
       const released = await database.transaction(async (transaction) => {
