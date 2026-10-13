@@ -2555,11 +2555,7 @@ export function createPluginRoutes(
       );
     }
     const returnTo: ConnectOrigin =
-      account.holder === "deployment"
-        ? "admin"
-        : context.req.query("returnTo") === "admin"
-          ? "admin"
-          : "settings";
+      context.req.query("returnTo") === "admin" ? "admin" : "settings";
     let returnUrl: string;
     try {
       returnUrl = brokerReturnUrl(
@@ -2993,10 +2989,9 @@ export function createPluginRoutes(
        * fallback to specify.
        *
        * AND BOTH HOLDERS LAND ON THE SAME SCREEN, which is the only one that reads `?action=`. An
-       * account the deployment holds used to be sent to `/admin/plugins/:key`, because that is
-       * where its Authorize button lives — but that route has no `validateSearch` for `action`, no
-       * landing notice and no grant list, so the whole Shared-app flow completed a consent at the
-       * vendor and landed somewhere that said nothing about it. The settings page draws the Shared
+       * account the deployment holds used to be sent to `/admin/plugins/:key`, but that route has no
+       * `validateSearch` for `action`, no landing notice and no grant list, so the whole Shared-app
+       * flow completed a consent at the vendor and landed somewhere that said nothing about it. The settings page draws the Shared
        * app's grant list and the landing notice for either holder, so this is where the action
        * somebody just authorized is actually named and marked.
        *
