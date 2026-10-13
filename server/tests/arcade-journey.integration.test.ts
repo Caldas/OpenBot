@@ -525,13 +525,30 @@ async function connectionsOf(app: string) {
     .where(eq(brokeredConnections.app, app));
 }
 
+/**
+ * The trail for one app and one event type, OLDEST FIRST — and the order is asked for rather than
+ * inherited.
+ *
+ * `.at(-1)` below means "the disconnect this test just caused", which a `SELECT` with no `ORDER BY`
+ * does not answer: PostgreSQL may return the rows of an unordered read in any order it likes, and
+ * what it actually returns is roughly heap order. Insertion order and time order agree on a table
+ * only ever appended to by one test, which is why this read passed locally and failed on CI — there
+ * the last row back was the PERSONAL disconnect from the describe above, so a Shared app's audit
+ * entry was read as a person ending their own account, and the assertion reported a defect in the
+ * product that the product had not committed.
+ *
+ * `createdAt` is the only key that can carry this: `id` is a random UUID, so it sorts arbitrarily.
+ * The disconnects it separates arrive on their own requests and so in their own transactions, which
+ * is what makes their `now()` values distinct.
+ */
 async function eventsOn(app: string, eventType: string) {
   return await database
     .select()
     .from(auditEvents)
     .where(
       and(eq(auditEvents.targetId, app), eq(auditEvents.eventType, eventType)),
-    );
+    )
+    .orderBy(auditEvents.createdAt);
 }
 
 async function attemptRow() {
