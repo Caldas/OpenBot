@@ -777,8 +777,32 @@ export function createPluginRoutes(
       );
       return context.json({ error: refusal.error }, refusal.status);
     }
-    if (wasShared)
-      await shared?.modes.forgetRule(serverId, context.var.actor.id);
+    /*
+     * THE SAME SHAPE AS THE MINT'S RECORD-AFTER-THE-FACT BELOW, AND GUARDED FOR THE SAME REASON.
+     * `removeServer` has already returned, which means every account was withdrawn AT THE VENDOR
+     * and every row here is gone — none of it undoable, and none of it repeatable either: a second
+     * Remove finds no app. Unhandled, a fault tidying up the one leftover ask-before-write rule
+     * answered that completed removal with a bodyless 500, so the administrator was told the
+     * removal failed and had no press left to make.
+     *
+     * SO THE ANSWER STAYS `ok`, BECAUSE THE REMOVAL REALLY DID HAPPEN, and the leftover is named on
+     * the console instead: a revoked-rule row that outlives the app it guarded, which an
+     * administrator can retire from the rules screen and which grants nobody anything meanwhile.
+     */
+    if (wasShared) {
+      try {
+        await shared?.modes.forgetRule(serverId, context.var.actor.id);
+      } catch (error) {
+        console.error(
+          JSON.stringify({
+            type: "shared-rule-not-forgotten",
+            server: serverId,
+            note: "An app was removed, at the vendor and here, and its ask-before-write rule could not be retired afterwards. The administrator was answered ok, because the removal is done and cannot be repeated; the rule is still standing.",
+            error: reasonWithoutStatement(error),
+          }),
+        );
+      }
+    }
     return context.json({ ok: true });
   });
 
@@ -2644,11 +2668,74 @@ export function createPluginRoutes(
       );
     }
     // A null id is recorded as NULL: an attempt holding none can never complete and simply expires.
-    await store.recordAuthorizationMint({
-      actorId: context.var.actor.id,
-      createdAt: claim.attempt.createdAt,
-      authId: minted.authorizationId,
-    });
+    try {
+      await store.recordAuthorizationMint({
+        actorId: context.var.actor.id,
+        createdAt: claim.attempt.createdAt,
+        authId: minted.authorizationId,
+      });
+    } catch (error) {
+      /*
+       * THE ONE WRITE ON THIS ROUTE THAT RUNS AFTER SOMETHING IRREVERSIBLE, AND IT USED TO BE THE
+       * ONLY CALL HERE WITH NO GUARD AT ALL.
+       *
+       * The mint SUCCEEDED: a flow is live at the vendor. Unhandled, a transient fault on this one
+       * local UPDATE — a statement timeout, a pool exhausted, a failover — threw past the handler
+       * into a BODYLESS 500, and left the claim standing with a NULL `auth_id`. That row is the
+       * worst of both halves. It can never complete, because the return leg matches the attempt on
+       * `auth_id` and a null matches no `flow_id` the browser can bring back; and it still HOLDS
+       * THE ACTOR, because `claimAuthorizationAttempt` refuses a second start until the row is
+       * fifteen minutes old. So one local hiccup turned a successful authorization into a person
+       * locked out of retrying, told nothing, with a live flow at Arcade that this deployment has
+       * no record of.
+       *
+       * THE ATTEMPT IS DISCARDED RATHER THAN LEFT TO EXPIRE, and this is NOT the uncertain-mint
+       * branch above turned around. There, the row is left standing because it may yet be the
+       * record of a live flow and deleting it would free the actor to run a second flow beside one
+       * that could still complete. Here the row provably records NOTHING: the id that would let it
+       * complete is exactly the value that failed to be written. Keeping it buys no safety and
+       * costs the person a quarter of an hour of refusals. Matched on `(actor_id, created_at)`, so
+       * a slow arrival here can never delete a newer attempt, and wrapped in its own `try` because
+       * the fault that broke the write above is likely to break this one too — a failed cleanup
+       * must not replace this refusal with the bodyless 500 it exists to prevent.
+       *
+       * AND THE MINT IS NOT LOST. The console line is what is left to carry it once the database
+       * has refused the row, and it holds the `ar_...` the vendor answered — the plain-text value
+       * this route was about to store — so an operator can find that flow at the vendor and end it.
+       * THE REDIRECT URL IS NOT LOGGED AND NEVER WILL BE: that is the bearer capability, and
+       * whoever opens it attaches the account. The error goes through
+       * {@link reasonWithoutStatement} for the reason `oauth-connection-not-recorded` gives: a
+       * `DrizzleQueryError`'s own message is the statement and every value bound to it.
+       */
+      let freed = false;
+      try {
+        freed = await store.discardAuthorizationAttempt({
+          actorId: context.var.actor.id,
+          createdAt: claim.attempt.createdAt,
+        });
+      } catch {
+        freed = false;
+      }
+      console.error(
+        JSON.stringify({
+          type: "arcade-mint-not-recorded",
+          server: serverId,
+          action,
+          authorizationId: minted.authorizationId,
+          attemptCleared: freed,
+          note: "An authorization was minted at the vendor and could not be written to its attempt. The person was told, was not sent to the consent screen, and the flow named here is live at the vendor with nothing here recording it.",
+          error: reasonWithoutStatement(error),
+        }),
+      );
+      return context.json(
+        {
+          error: freed
+            ? "The app's vendor started that authorization, and this deployment could not record it — so it cannot be finished here and nothing was connected. Press Authorize again: the attempt was cleared, so starting over is safe."
+            : "The app's vendor started that authorization, and this deployment could not record it — so it cannot be finished here and nothing was connected. The attempt could not be cleared either; it expires within fifteen minutes, and starting over works after that.",
+        },
+        500,
+      );
+    }
     return context.json({ authorizationUrl: minted.redirectUrl });
   });
 

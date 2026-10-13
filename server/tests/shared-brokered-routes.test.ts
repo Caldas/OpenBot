@@ -28,6 +28,9 @@ const authorizedFor: string[] = [];
 const returnUrlsSeen: string[] = [];
 let connectWithFieldsCalls = 0;
 const revokedFor: string[] = [];
+// Whether retiring the ask-before-write rule fails. One test makes it, to reach the removal
+// route's clean-up branch — the removal itself has already happened at the vendor by then.
+let revokeRuleThrows = false;
 const rules: {
   id: string;
   botId: string;
@@ -97,6 +100,8 @@ function appAs(role: "admin" | "user", id = `${role}-${suite}`) {
       },
       teamRules: async () => rules as never,
       revokeTeamRule: async (_by, ruleId) => {
+        if (revokeRuleThrows)
+          throw new Error("Failed query: update team_rules");
         const rule = rules.find((row) => row.id === ruleId);
         if (rule) rule.revokedAt = new Date();
       },
@@ -133,6 +138,7 @@ beforeEach(async () => {
   connectWithFieldsCalls = 0;
   revokedFor.length = 0;
   rules.length = 0;
+  revokeRuleThrows = false;
   await database.insert(mcpServers).values({
     id: app,
     title: "Team GitHub",
@@ -519,5 +525,50 @@ describe("removing a Shared app", () => {
     );
     expect(response.status).toBe(200);
     expect(rules.filter((rule) => rule.revokedAt === null)).toEqual([]);
+  });
+
+  /*
+   * THE CLEAN-UP RUNS AFTER SOMETHING IRREVERSIBLE. `removeServer` has already revoked every
+   * account AT THE VENDOR and deleted the rows, and a second Remove finds no app — so a fault
+   * retiring the leftover rule must not come back as the framework's bodyless 500 telling an
+   * administrator the removal failed.
+   */
+  test("a rule that cannot be retired does not turn a completed removal into a bodyless 500", async () => {
+    await database
+      .update(mcpServers)
+      .set({ accountMode: "personal", sharedVendorUserId: null })
+      .where(eq(mcpServers.id, app));
+    await appAs("admin").request(`/api/plugins/servers/${app}/account-mode`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mode: "shared", confirm: true }),
+    });
+    expect(rules.filter((rule) => rule.revokedAt === null)).toHaveLength(1);
+
+    revokeRuleThrows = true;
+    const said: string[] = [];
+    const realError = console.error;
+    console.error = (...args: unknown[]) => {
+      said.push(args.map(String).join(" "));
+    };
+    let response: Response;
+    try {
+      response = await appAs("admin").request(`/api/plugins/servers/${app}`, {
+        method: "DELETE",
+      });
+    } finally {
+      console.error = realError;
+    }
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true });
+    // The removal really did happen, which is why it is answered as one.
+    expect(
+      await database.select().from(mcpServers).where(eq(mcpServers.id, app)),
+    ).toEqual([]);
+    const line = said.find((line) =>
+      line.includes("shared-rule-not-forgotten"),
+    );
+    expect(line).toBeDefined();
+    expect(line).toContain(app);
   });
 });
