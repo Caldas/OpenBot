@@ -349,9 +349,12 @@ jobs:
       # pinned by the desktop lockfile rather than the root one.
       - run: bun install --frozen-lockfile
         working-directory: desktop
-      # Not the db:migrate script: that one loads ../.env, which does not exist in CI. DATABASE_URL
-      # comes from the job env instead, which drizzle.config.ts already reads.
-      - run: bunx drizzle-kit migrate --config=drizzle.config.ts
+      # The same migrator a deployment runs, rather than `drizzle-kit migrate`: it is the one that
+      # refuses a database holding a stamp newer than the migrations it is about to walk past
+      # (server/src/db/migration-reach.ts), and a CI database that is ever reused rather than
+      # recreated is one of the places that can happen. Not the db:migrate script, which loads
+      # ../.env; that file does not exist in CI, and DATABASE_URL comes from the job env instead.
+      - run: bun scripts/migrate.ts
         working-directory: server
       # A passing job must include the expected test floor. Import-time failures can otherwise skip
       # files before their tests are registered.
