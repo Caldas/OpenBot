@@ -1814,7 +1814,7 @@ export function createPluginStore(options: PluginStoreOptions) {
        */
       if (!access.toolkit) {
         throw new PluginInvariantError(
-          `${row.id} resolves to a brokered credential with no Composio app in its url.`,
+          `${row.id} resolves to a brokered credential with no ${BROKERED_PROFILE[brokerProvider].vendor} app in its url.`,
         );
       }
 
@@ -2832,7 +2832,7 @@ export function createPluginStore(options: PluginStoreOptions) {
     if (!existing) return;
     if (accessFor(existing, null).credential !== "brokered") return;
     throw new CustomServerRefusedError(
-      `${serverId} is a Composio app this deployment has enabled, and people may have connected their accounts to it. Remove the app first — which ends those accounts at Composio — and the name is then free.`,
+      `${serverId} is ${brokerProvider === "arcade" ? "an" : "a"} ${BROKERED_PROFILE[brokerProvider].vendor} app this deployment has enabled, and people may have connected their accounts to it. Remove the app first — which ends those accounts at ${BROKERED_PROFILE[brokerProvider].vendor} — and the name is then free.`,
     );
   }
 
@@ -7819,7 +7819,7 @@ export function createPluginStore(options: PluginStoreOptions) {
        */
       if (probed.outcome === "unreachable") {
         throw new PluginRefusedError(
-          `${input.toolkit} could not be checked just now: ${probed.sentence} Nothing here changed — your connection is still recorded exactly as the last check left it — so pressing Re-check again when Composio is answering is the whole of the retry.`,
+          `${input.toolkit} could not be checked just now: ${probed.sentence} Nothing here changed — your connection is still recorded exactly as the last check left it — so pressing Re-check again when ${BROKERED_PROFILE[brokerProvider].vendor} is answering is the whole of the retry.`,
           null,
         );
       }
