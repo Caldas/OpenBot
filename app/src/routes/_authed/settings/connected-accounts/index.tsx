@@ -16,12 +16,12 @@ import {
 } from "@/components/layout/page-shell";
 import { RowMark } from "@/components/layout/row-mark";
 import { PluginLogo } from "@/components/plugins/plugin-logo";
+import { GithubSources } from "@/components/settings/github-sources";
 import { LinkedAccountsSection } from "@/components/settings/linked-accounts";
 import {
   linkedNotice,
   visibleLinkedNotice,
 } from "@/components/settings/linked-notice";
-import { GithubSources } from "@/components/settings/github-sources";
 import { Button } from "@/components/ui/button";
 import {
   InputGroup,
@@ -96,44 +96,80 @@ export const Route = createFileRoute("/_authed/settings/connected-accounts/")({
  * AN UNRECOGNISED CODE DRAWS NOTHING, deliberately. A code this build does not know is either
  * somebody probing the parameter or a deployment mid-upgrade, and a generic "something went wrong"
  * for both would be a sentence that tells a person nothing and an invitation to keep trying.
+ *
+ * A MAP, NOT AN OBJECT, BECAUSE THE KEY COMES OUT OF A URL. An object literal inherits from
+ * `Object.prototype`, so an object lookup answers `toString`, `constructor` and `__proto__` with
+ * members nobody put here — none of them nullish, so no `?? null` turns them back into "draws
+ * nothing", and `Record<string, string>` says they cannot happen so the compiler never asks. What
+ * reached the page was a function (an alert with nothing in it) or, for `__proto__`, an object,
+ * which React refuses to draw: "Objects are not valid as a React child" took the whole Connected
+ * accounts screen down for whoever opened the link. A `Map` holds only what was put in it, so the
+ * unrecognised code and the borrowed member are once again the same case, by construction rather
+ * than by a list of names to keep out.
  */
-export const AUTHORIZATION_NOTICES: Record<string, string> = {
-  "no-broker":
+export const AUTHORIZATION_NOTICES: ReadonlyMap<string, string> = new Map([
+  [
+    "no-broker",
     "This deployment is not set up to connect apps, so nothing was recorded. Ask an administrator to set it up.",
-  "not-supported":
+  ],
+  [
+    "not-supported",
     "This deployment's apps are connected once for the whole app, with the Connect button on the app's page; they are not authorized one action at a time.",
-  "missing-handle":
+  ],
+  [
+    "missing-handle",
     "That link is missing the part that says which authorization it finishes, so nothing was done. Start the authorization again from the app's page.",
-  "no-attempt":
+  ],
+  [
+    "no-attempt",
     "There is no authorization in progress for you to finish — it may have expired, or it may have been started by somebody else or in another session. Start it again from the app's page.",
-  "vendor-unavailable":
+  ],
+  [
+    "vendor-unavailable",
     "The app's vendor did not answer when this deployment tried to finish that authorization, so nothing was recorded. Try the link again in a moment.",
-  "not-your-authorization":
+  ],
+  [
+    "not-your-authorization",
     "That link does not finish the authorization you have in progress, so nothing was recorded and it is still waiting. Finish it from the tab it was started in, or start it again from the app's page.",
-  "not-finished":
+  ],
+  [
+    "not-finished",
     "That authorization has not finished yet, so nothing was recorded. Finish it at the app's vendor, then open the link again — it is still waiting.",
-  "authorization-failed":
+  ],
+  [
+    "authorization-failed",
     "The app's vendor did not complete that authorization, so nothing was recorded. Start it again from the app's page.",
-  "context-changed":
+  ],
+  [
+    "context-changed",
     "That app's account changed while the authorization was open, so nothing was recorded and anything granted for the old account was withdrawn. Start it again from the app's page.",
-  "not-recorded":
+  ],
+  [
+    "not-recorded",
     "This deployment could not record that authorization, so none of it was saved. Start it again from the app's page, and tell an administrator if it persists.",
-};
+  ],
+]);
 
 /** The sentence for a code the verifier sent back, or null for one this build does not know. */
 export function authorizationNoticeFor(
   authorized: string | undefined,
 ): string | null {
-  return authorized ? (AUTHORIZATION_NOTICES[authorized] ?? null) : null;
+  return authorized ? (AUTHORIZATION_NOTICES.get(authorized) ?? null) : null;
 }
 
 /** The same marks the admin connector list uses: these are the same vendors seen from your side. */
-const MARKS: Record<string, React.ComponentType<{ className?: string }>> = {
-  "google-drive": IconBrandGoogleDrive,
-  notion: IconBrandNotion,
-};
+const MARKS: ReadonlyMap<
+  string,
+  React.ComponentType<{ className?: string }>
+> = new Map([
+  ["google-drive", IconBrandGoogleDrive],
+  ["notion", IconBrandNotion],
+]);
 
-const markFor = (key: string) => MARKS[key] ?? IconPlug;
+/* A Map for the same reason the notices above are one: a lookup answers with what was put in it and
+ * nothing a plain object would have inherited, so a catalogue key called `toString` draws the
+ * fallback mark rather than handing React `Object.prototype.toString` to render as a component. */
+const markFor = (key: string) => MARKS.get(key) ?? IconPlug;
 
 /**
  * Whether a row came through a broker. A deployment only ever holds rows from one provider, so the
