@@ -4,8 +4,9 @@
  * records that the other direction is a cycle).
  */
 
+import { cutAtCodeUnits } from "../channels/text";
 import { flagOf } from "./broker";
-import type { ListedTool, McpCallResult } from "./mcp";
+import { type ListedTool, MAX_RESULT_CHARS, type McpCallResult } from "./mcp";
 
 /**
  * Whether listing tools needs somebody's credential. It does not: the listing uses the deployment's
@@ -280,10 +281,31 @@ function arcadeFailure(thrown: unknown): ArcadeFailure | null {
   };
 }
 
+/**
+ * The cap every string this module puts in front of a model goes through, as `composio.ts`'s
+ * `cap()` does, with the same limit and the same marker.
+ *
+ * A tool result is read by a model AND copied into the audit row, so an unbounded one is somebody
+ * else's server deciding how much of our context window to spend and how large a durable record
+ * grows — and the text is attacker-influenceable, since it is whatever the mailbox, issue or
+ * document the action read happens to contain. Truncated visibly, never silently: `truncated` is
+ * the field that says it happened, and reporting `false` unconditionally made it a field that
+ * structurally could not.
+ *
+ * BOTH ANSWERS GO THROUGH IT. A refusal lands in a model's context exactly as a result does, and
+ * this file's refusals quote `toolName`, which is a `qualified_name` the vendor's listing supplied.
+ */
+function cap(text: string): { text: string; truncated: boolean } {
+  if (text.length <= MAX_RESULT_CHARS) return { text, truncated: false };
+  return {
+    text: `${cutAtCodeUnits(text, MAX_RESULT_CHARS)}\n\n[truncated]`,
+    truncated: true,
+  };
+}
+
 const failureResult = (text: string): McpCallResult => ({
-  text,
+  ...cap(text),
   isError: true,
-  truncated: false,
 });
 
 /**
@@ -338,11 +360,20 @@ export async function callTool(
     if (answer.success === false || answer.output?.error) {
       return failureResult(`Arcade could not run ${toolName}.`);
     }
-    return {
-      text: JSON.stringify(answer.output?.value ?? null, null, 2),
-      isError: false,
-      truncated: false,
-    };
+    const value = JSON.stringify(answer.output?.value ?? null, null, 2);
+    /*
+     * `JSON.stringify` ANSWERS `undefined` RATHER THAN THROWING for a value with no JSON form — a
+     * function, a symbol — and `output.value` is the vendor's field while the `unknown` saying
+     * anything may be there is ours. `??` does not catch it: a function is not nullish. Named here
+     * so the refusal is this deployment's sentence rather than a `text.length` TypeError raised
+     * inside {@link cap} and caught below as if Arcade had failed.
+     */
+    if (value === undefined) {
+      return failureResult(
+        `${toolName} ran, but its answer has no JSON form, so there is nothing to show.`,
+      );
+    }
+    return { ...cap(value), isError: false };
   } catch (thrown) {
     const failure = arcadeFailure(thrown);
     if (failure && isAuthorizationRequired(failure)) {
