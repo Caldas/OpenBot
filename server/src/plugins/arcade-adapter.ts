@@ -216,35 +216,139 @@ const FIELDS_REFUSAL =
 
 type ConnectionRow = Arcade.Admin.UserConnectionResponse;
 
+/** Page size for the auth-provider configuration listing. A short page ends it, as `listApps`. */
+const AUTH_PROVIDER_PAGE_SIZE = 100;
+/** A runaway guard, not a bound. */
+const AUTH_PROVIDER_MAX_PAGES = 100;
+
+/**
+ * The INSTANCE ids of every auth provider this project has configured of one TYPE.
+ *
+ * THERE ARE THREE THINGS AND THEY NEED THREE WORDS. `provider` in this codebase is the BROKER
+ * (`arcade`); `authProvider` is the vendor's OAuth provider TYPE (`google`); and this is the third,
+ * the provider INSTANCE — an operator's configuration OF a type, which Arcade keys by its own id
+ * (`google-openbot`, `arcade-google`, `cpk-poc`). On an auth-provider config `id` is the INSTANCE
+ * and `provider_id` is the TYPE. Verbatim from the live project:
+ *
+ * ```
+ * {"id":"cpk-poc",        "provider_id":"github", "type":"oauth2", "status":"active"}
+ * {"id":"google-openbot", "provider_id":"google", "type":"oauth2", "status":"active"}
+ * {"id":"arcade-google",  "provider_id":"google", "type":"oauth2", "status":"active"}
+ * ```
+ *
+ * A SET AND NEVER ONE ID: `arcade-google` and `google-openbot` are both of type `google`, and a
+ * person may hold a connection under either. Reducing to one would drop real connections.
+ *
+ * PAGED, AND A MALFORMED LISTING THROWS, on `listApps`' argument and with its guards: a truncated
+ * config list would silently answer "not connected" for whoever is held under an instance that fell
+ * off the end. Folded to lower case on the way in, so the comparison is Amendment 16's.
+ */
+async function authProviderInstances(
+  client: Arcade,
+  authProvider: string,
+): Promise<Set<string>> {
+  const wanted = authProvider.toLowerCase();
+  const instances = new Set<string>();
+  let seen = 0;
+  let total: number | undefined;
+  let ended = false;
+  for (let page = 0; page < AUTH_PROVIDER_MAX_PAGES; page += 1) {
+    const answer = await client.admin.authProviders.list({
+      query: { limit: AUTH_PROVIDER_PAGE_SIZE, offset: seen },
+    });
+    const items = (answer as { items?: unknown } | null)?.items;
+    if (!Array.isArray(items)) {
+      throw new Error(
+        `Arcade did not answer with an auth-provider list, so the configurations of ${authProvider} its connections are held under could not be read.`,
+      );
+    }
+    for (const item of items) {
+      const config = record(item);
+      const instance = textOf(config?.id);
+      if (instance && textOf(config?.provider_id)?.toLowerCase() === wanted) {
+        instances.add(instance.toLowerCase());
+      }
+    }
+    seen += items.length;
+    const reported = (answer as { total_count?: unknown }).total_count;
+    if (typeof reported === "number") total = reported;
+    if (items.length < AUTH_PROVIDER_PAGE_SIZE) {
+      ended = true;
+      break;
+    }
+  }
+  if (!ended) {
+    throw new Error(
+      `Arcade's auth-provider list never ended after ${AUTH_PROVIDER_MAX_PAGES} pages, so it is not trusted.`,
+    );
+  }
+  if (total !== undefined && seen < total) {
+    throw new Error(
+      `Arcade listed ${seen} of ${total} auth providers, so its configuration list is incomplete.`,
+    );
+  }
+  return instances;
+}
+
 /**
  * The connections an account holds under a toolkit's AUTH PROVIDER.
  *
- * FILTERED ON THE PROVIDER, NOT THE TOOLKIT NAME. A row's `provider_id` is the auth-provider id,
- * which equals the toolkit only when an operator happened to name it so (`Github`, `Asana`,
- * `Attio`); one Google connection serves `Gmail` and `GoogleCalendar` both. So the toolkit is
- * resolved through `authProviderOf`, which is where that mapping lives, and the rows are compared
- * to THAT, case-insensitively (Amendment 16's client-side fold stands). The provider is resolved
- * ONCE per call, never per row.
+ * FILTERED ON THE PROVIDER, NOT THE TOOLKIT NAME — AND NOT ON THE PROVIDER TYPE EITHER. Both halves
+ * of that are measured, and the second is why this reads a third listing rather than comparing two
+ * strings.
+ *
+ * THE TOOLKIT NAME IS THE WRONG SPELLING because a provider equals the toolkit only when an
+ * operator happened to name it so (`Github`, `Asana`, `Attio`); one Google connection serves
+ * `Gmail` and `GoogleCalendar` both. So the toolkit is resolved through `authProviderOf`, which is
+ * where that mapping lives.
+ *
+ * AND `authProviderOf`'S ANSWER IS ALSO THE WRONG SPELLING FOR A CONNECTION ROW, because
+ * `provider_id` MEANS TWO DIFFERENT THINGS ON THE TWO OBJECTS. Measured against the live API:
+ *
+ * - on a tool listing, `requirements.authorization.provider_id` — what `authProviderOf` reads — is
+ *   the provider TYPE: `"google"`;
+ * - on a user-connection row, `provider_id` is the provider INSTANCE id, the operator's
+ *   configuration: `"google-openbot"`, `"arcade-google"`, `"cpk-poc"`.
+ *
+ * A connection row's full key set, verbatim, carries NO vendor-type field at all: `id`,
+ * `provider_type`, `connection_id`, `connection_status`, `scopes`, `user_id`, `provider_id`,
+ * `provider_description`, `provider_user_info` — and `provider_type` is `"oauth2"`, the auth SCHEME
+ * rather than the vendor. The instance id is the ONLY link to the vendor. So `"google"` never
+ * equals `"google-openbot"`, a direct comparison matches nothing on any real deployment — with
+ * Arcade's own default providers too, which are `arcade-google` and `arcade-github` and never the
+ * bare type — and `isConnected` reads false, `accountName` null, and `revoke` false WITHOUT
+ * SPENDING A DELETE, so nothing is ever revoked at the vendor. Do not "simplify" this back: every
+ * fixture that spells the two sides alike hides it.
+ *
+ * The bridge is {@link authProviderInstances}: the type `authProviderOf` answered is expanded, once
+ * per call, into the SET of configured instance ids of that type, and a row matches when its
+ * `provider_id` is in that set (case-insensitively — Amendment 16's client-side fold stands). Both
+ * the provider and the configuration list are read ONCE per call, never per row.
+ *
+ * A ROW UNDER AN INSTANCE THE CONFIG LIST DOES NOT NAME DOES NOT MATCH — a provider configuration
+ * deleted while a connection outlives it. That is fail-closed: the row is left alone rather than
+ * deleted on a guess about which vendor it belongs to.
  *
  * AN UNRESOLVED TOOLKIT (`null`) ANSWERS AS NO ROWS and does NOT fall back to the toolkit name: a
  * fallback would silently restore the defect under a different spelling, invisibly against every
  * fixture in the tree. Callers then answer `isConnected` false, `revoke` false (no delete spent),
- * `accountName` null. A malformed listing is different: `authProviderOf` THROWS, and that
- * propagates, onto the Disconnect path included.
+ * `accountName` null. A malformed listing is different: `authProviderOf` and
+ * {@link authProviderInstances} both THROW, and that propagates, onto the Disconnect path included.
  */
 async function connectionsFor(
   client: Arcade,
   vendorUserId: string,
   toolkit: string,
 ): Promise<ConnectionRow[]> {
-  const provider = await authProviderOf(client, toolkit);
-  if (provider === null) return [];
-  const wanted = provider.toLowerCase();
+  const authProvider = await authProviderOf(client, toolkit);
+  if (authProvider === null) return [];
+  const instances = await authProviderInstances(client, authProvider);
   const rows: ConnectionRow[] = [];
   for await (const row of client.admin.userConnections.list({
     user_id: vendorUserId,
   })) {
-    if (textOf(row.provider_id)?.toLowerCase() === wanted) rows.push(row);
+    const instance = textOf(row.provider_id)?.toLowerCase();
+    if (instance !== undefined && instances.has(instance)) rows.push(row);
   }
   return rows;
 }

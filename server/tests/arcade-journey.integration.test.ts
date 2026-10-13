@@ -105,6 +105,17 @@ const DELETE_EVENT = `${DIARY}.DeleteEvent`;
  */
 const AUTH_PROVIDER = "google";
 
+/**
+ * AND THE CONFIGURATION OF IT THE CONNECTIONS ARE ACTUALLY HELD UNDER, which is a THIRD name.
+ *
+ * A tool listing's `provider_id` is the provider TYPE (`google`); a user-connection row's
+ * `provider_id` is the provider INSTANCE — an operator's configuration of that type, which is what
+ * the live project answers (`google-openbot`, `arcade-google`, `cpk-poc`). Spelled differently
+ * here on purpose: a journey whose vendor used one spelling on both sides would be green against
+ * an adapter that compares the two raw strings and finds nothing on every real deployment.
+ */
+const AUTH_PROVIDER_INSTANCE = `${AUTH_PROVIDER}-openbot`;
+
 const ADMIN = `arcade-journey-${suite}`;
 const BOT = `bot-${suite}`;
 const APP_URL = "https://app.example";
@@ -258,7 +269,7 @@ function holdConnection(userId: string) {
   vendorConnections.push({
     id: `at_${n}`,
     connection_id: `ac_${n}`,
-    provider_id: AUTH_PROVIDER,
+    provider_id: AUTH_PROVIDER_INSTANCE,
     user_id: userId,
     provider_user_info: { name: `Account ${n}` },
   });
@@ -373,6 +384,28 @@ function installVendor() {
         url: `https://vendor.example/consent/${id}?secret=bearer-capability`,
       });
     },
+  );
+
+  /*
+   * THE PROJECT'S CONFIGURED AUTH PROVIDERS, in the live shape: `id` is the INSTANCE and
+   * `provider_id` is the TYPE. This is the listing that bridges a toolkit's type to the instance
+   * ids its connection rows carry; `cpk-poc` is here so the bridge has something to exclude.
+   */
+  stub(
+    (client) => client.admin.authProviders,
+    "list",
+    () =>
+      Promise.resolve({
+        items: [
+          { id: "cpk-poc", provider_id: "github", type: "oauth2" },
+          {
+            id: AUTH_PROVIDER_INSTANCE,
+            provider_id: AUTH_PROVIDER,
+            type: "oauth2",
+          },
+        ],
+        total_count: 2,
+      }),
   );
 
   stub(

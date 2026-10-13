@@ -131,6 +131,10 @@ describe("createArcadeClient", () => {
     Object.getPrototypeOf(
       new Arcade({ apiKey: "never-dialled" }).admin.userConnections,
     ) as Methods;
+  const authProvidersProto = (): Methods =>
+    Object.getPrototypeOf(
+      new Arcade({ apiKey: "never-dialled" }).admin.authProviders,
+    ) as Methods;
   const account = { vendorUserId: "u1" } as never;
 
   test("ensureAuthConfig answers not-needed in every case", async () => {
@@ -174,7 +178,7 @@ describe("createArcadeClient", () => {
         for (const r of rows) yield r;
       })(),
     );
-    // The toolkit's own listing names the provider its connections are held under.
+    // The toolkit's own listing names the provider TYPE its connections are held under.
     stub(toolsProto(), "list", () =>
       Promise.resolve({
         items: [
@@ -185,18 +189,29 @@ describe("createArcadeClient", () => {
         ],
       }),
     );
+    // And the project's configured providers map that type to its INSTANCE ids, which is what a
+    // connection row carries. See `connectionsFor`.
+    stub(authProvidersProto(), "list", () =>
+      Promise.resolve({
+        items: [{ id: "cpk-poc", provider_id: "github" }],
+        total_count: 1,
+      }),
+    );
     const { broker } = createArcadeClient("never-dialled");
     const ask = () => broker.accountName({ account, toolkit: "Github" });
     rows.push({
-      provider_id: "github",
+      provider_id: "cpk-poc",
       provider_user_info: { name: "Ada", login: "ada1" },
     });
     expect(await ask()).toBe("Ada");
     rows.length = 0;
-    rows.push({ provider_id: "github", provider_user_info: { login: "ada1" } });
+    rows.push({
+      provider_id: "cpk-poc",
+      provider_user_info: { login: "ada1" },
+    });
     expect(await ask()).toBe("ada1");
     rows.length = 0;
-    rows.push({ provider_id: "github", provider_user_info: {} });
+    rows.push({ provider_id: "cpk-poc", provider_user_info: {} });
     expect(await ask()).toBeNull();
   });
 
