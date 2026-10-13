@@ -1317,6 +1317,64 @@ function pendingAuthorizationFromRow(
 }
 
 /**
+ * The instant a caller names an authorization attempt by, as a `Date`, or a refusal naming the
+ * field.
+ *
+ * THE DECLARED TYPE IS `Date` AND THE VALUE IS NOT ALWAYS ONE. `PendingAuthorization.createdAt` is
+ * typed `Date` and is one while it stays in this process, but an attempt that has been through
+ * JSON — serialised into a job, a cache or a cross-process hop and parsed back — carries an ISO
+ * STRING under a `Date` annotation. Handed to drizzle, that string reaches
+ * `PgTimestamp.mapToDriverValue`, which calls `.toISOString()` on it and raises
+ * `TypeError: value.toISOString is not a function` from inside the driver: a failure that names
+ * neither the field nor the caller. An ISO string names the same instant perfectly well, so it is
+ * accepted; anything that names NO instant is refused HERE, where the message can say what was
+ * wrong, rather than running as a query that silently matches nothing.
+ */
+function attemptInstant(createdAt: Date | string): Date {
+  const instant =
+    createdAt instanceof Date
+      ? createdAt
+      : typeof createdAt === "string"
+        ? new Date(createdAt)
+        : new Date(Number.NaN);
+  if (Number.isNaN(instant.getTime())) {
+    throw new Error(
+      `An authorization attempt's created_at must be a Date or an ISO timestamp, not ${JSON.stringify(createdAt) ?? String(createdAt)}.`,
+    );
+  }
+  return instant;
+}
+
+/**
+ * The condition that names ONE actor's attempt by the `created_at` a caller holds.
+ *
+ * MATCHED AT MILLISECOND PRECISION ON BOTH SIDES, BECAUSE THE TWO SIDES DO NOT CARRY THE SAME ONE.
+ * `created_at` is a `timestamptz`, which PostgreSQL keeps to the MICROSECOND, and the `Date` the
+ * driver hands back carries MILLISECONDS. A row stored at `…13.407577` is read back as
+ * `…13.407Z`, and an exact `=` against that `Date` matches NOTHING — so the mint writes no
+ * `auth_id`, and per {@link pendingAuthorizations}, "an attempt holding null can never complete":
+ * a silently dead attempt that waits out its fifteen minutes.
+ *
+ * {@link createPluginStore}'s `claimAuthorizationAttempt` writes `date_trunc('milliseconds', now())`
+ * for exactly this reason, but THAT ONLY HOLDS FOR THE ONE WRITER THAT REMEMBERS. The column's
+ * default is `now()` at full precision, which is what drizzle's inferred insert type invites any
+ * other writer — a fixture, a backfill, a future route — to take. Truncating the COLUMN in the
+ * comparison holds whatever wrote the row, which is why the invariant lives here rather than in
+ * the schema: it needs no migration and no writer's cooperation.
+ *
+ * TRUNCATING CAN NEVER MATCH A DIFFERENT ROW: `actor_id` is the table's PRIMARY KEY, so there is at
+ * most one attempt per actor and `created_at` is the staleness guard on that one row, never a
+ * selector among several. It still refuses a value naming an OLDER attempt, which is what stops a
+ * late discard from deleting the replacement that took the key.
+ */
+function attemptNamed(actorId: string, createdAt: Date | string) {
+  return and(
+    eq(pendingAuthorizations.actorId, actorId),
+    sql`date_trunc('milliseconds', ${pendingAuthorizations.createdAt}) = ${attemptInstant(createdAt).toISOString()}::timestamptz`,
+  );
+}
+
+/**
  * The literal recorded on the row, which is the scheme a later call must keep using.
  *
  * TYPED AS {@link RecordedScheme} RATHER THAN `string`, so that what this writes and what
@@ -6286,8 +6344,10 @@ export function createPluginStore(options: PluginStoreOptions) {
      * snapshot is live but not yet visible to it, and the caller's 409 then names nothing.
      *
      * `created_at` is truncated to milliseconds so the `Date` handed back names the stored value
-     * exactly. {@link recordAuthorizationMint} and {@link discardAuthorizationAttempt} match on it,
-     * and a microsecond the `Date` cannot carry would match nothing.
+     * exactly — a microsecond no `Date` can carry would otherwise sit in the row unreachable.
+     * {@link recordAuthorizationMint} and {@link discardAuthorizationAttempt} do not RELY on that:
+     * they truncate the column in the comparison too, so a row written by anything else — the
+     * column's own `defaultNow()`, say — is still reachable. See {@link attemptNamed}.
      */
     async claimAuthorizationAttempt(input: {
       actorId: string;
@@ -6336,24 +6396,21 @@ export function createPluginStore(options: PluginStoreOptions) {
     },
 
     /**
-     * Write the `ar_...` the vendor minted onto the attempt, matched on `(actor_id, created_at)`.
+     * Write the `ar_...` the vendor minted onto the attempt, matched on `(actor_id, created_at)`
+     * through {@link attemptNamed}, which is where the precision of that match is argued.
      * Answers whether it wrote: false is an attempt that was discarded or replaced meanwhile.
      */
     async recordAuthorizationMint(input: {
       actorId: string;
-      createdAt: Date;
+      /** A `Date`, or the ISO string one becomes through JSON; see {@link attemptInstant}. */
+      createdAt: Date | string;
       /** Null when the vendor answered with no id: the attempt then can never complete. */
       authId: string | null;
     }): Promise<boolean> {
       const written = await database
         .update(pendingAuthorizations)
         .set({ authId: input.authId })
-        .where(
-          and(
-            eq(pendingAuthorizations.actorId, input.actorId),
-            eq(pendingAuthorizations.createdAt, input.createdAt),
-          ),
-        )
+        .where(attemptNamed(input.actorId, input.createdAt))
         .returning({ actorId: pendingAuthorizations.actorId });
       return written.length > 0;
     },
@@ -6365,16 +6422,12 @@ export function createPluginStore(options: PluginStoreOptions) {
      */
     async discardAuthorizationAttempt(input: {
       actorId: string;
-      createdAt: Date;
+      /** A `Date`, or the ISO string one becomes through JSON; see {@link attemptInstant}. */
+      createdAt: Date | string;
     }): Promise<boolean> {
       const deleted = await database
         .delete(pendingAuthorizations)
-        .where(
-          and(
-            eq(pendingAuthorizations.actorId, input.actorId),
-            eq(pendingAuthorizations.createdAt, input.createdAt),
-          ),
-        )
+        .where(attemptNamed(input.actorId, input.createdAt))
         .returning({ actorId: pendingAuthorizations.actorId });
       return deleted.length > 0;
     },

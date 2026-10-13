@@ -265,3 +265,87 @@ describe("authorizationAttemptFor", () => {
     expect(await store.authorizationAttemptFor(a)).toBeNull();
   });
 });
+
+/**
+ * Naming an attempt by its `created_at` has to work for a row ANY writer wrote, and for a value
+ * that has been through JSON on the way back.
+ *
+ * `claimAuthorizationAttempt` truncates what it writes to milliseconds, but the COLUMN DEFAULT is
+ * `now()`, which PostgreSQL keeps to the microsecond; a row that takes the default — which is what
+ * drizzle's inferred insert type invites — is read back as a millisecond `Date` naming a different
+ * instant than the one stored. An exact `=` then matches nothing and the attempt is silently dead:
+ * no `auth_id` is ever written, and per the table's own docblock "an attempt holding null can never
+ * complete".
+ */
+describe("naming an attempt by created_at", () => {
+  /** Takes the column default, the way any writer using the inferred insert type does. */
+  const insertWithDefaultCreatedAt = async (actorId: string) => {
+    const [row] = await database
+      .insert(pendingAuthorizations)
+      .values({
+        actorId,
+        serverId,
+        action: "connect",
+        holder: "person",
+        userId: actorId,
+        vendorUserId: `v-${actorId}`,
+      })
+      .returning();
+    if (!row) throw new Error("insert returned nothing");
+    return row;
+  };
+
+  test("a mint matches a row written with the column default", async () => {
+    const a = actor("default-mint");
+    const row = await insertWithDefaultCreatedAt(a);
+    const wrote = await store.recordAuthorizationMint({
+      actorId: a,
+      createdAt: row.createdAt,
+      authId: "ar_default",
+    });
+    expect(wrote).toBe(true);
+    expect((await store.authorizationAttemptFor(a))?.authId).toBe("ar_default");
+  });
+
+  test("a discard matches a row written with the column default", async () => {
+    const a = actor("default-discard");
+    const row = await insertWithDefaultCreatedAt(a);
+    expect(
+      await store.discardAuthorizationAttempt({
+        actorId: a,
+        createdAt: row.createdAt,
+      }),
+    ).toBe(true);
+    expect(await store.authorizationAttemptFor(a)).toBeNull();
+  });
+
+  test("a created_at that has been through JSON still names its attempt", async () => {
+    const a = actor("json-mint");
+    const got = await claim(a);
+    if (!got.claimed) throw new Error("claim failed");
+    // The declared type says `Date`; a serialised attempt hands back a string.
+    const serialised: { createdAt: Date } = JSON.parse(
+      JSON.stringify(got.attempt),
+    );
+    const wrote = await store.recordAuthorizationMint({
+      actorId: a,
+      createdAt: serialised.createdAt,
+      authId: "ar_json",
+    });
+    expect(wrote).toBe(true);
+    expect((await store.authorizationAttemptFor(a))?.authId).toBe("ar_json");
+  });
+
+  test("a created_at that names no instant is refused, not matched", async () => {
+    const a = actor("bad-instant");
+    await claim(a);
+    await expect(
+      store.recordAuthorizationMint({
+        actorId: a,
+        createdAt: new Date("not a date"),
+        authId: "ar_bad",
+      }),
+    ).rejects.toThrow(/created_at/);
+    expect((await store.authorizationAttemptFor(a))?.authId).toBeNull();
+  });
+});
