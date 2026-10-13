@@ -48,6 +48,23 @@ export function toolkitOf(url: string): string | null {
  * documents a boolean), IS A DESTRUCTIVE WRITE, which is also what a listing that would not say
  * already records in `./mcp`. It fails safe by putting an approval in front of a read, which is
  * annoying and correct; the alternative lets a deletion through unannounced.
+ *
+ * AN EMPTY BEHAVIOUR OBJECT IS A VENDOR THAT SAID NOTHING, AND IS READ EXACTLY AS AN ABSENT ONE.
+ * `{}` — or a block carrying only `idempotent` and the like — states NEITHER flag, so the two
+ * `flagOf(…, false)` defaults below would otherwise manufacture "not destructive, not read-only"
+ * out of nothing and answer the plain-write verdict: a container Arcade opened and put nothing in,
+ * read as Arcade declaring the action safe to run unannounced. The absence of a stated restriction
+ * is not the absence of a restriction, and an EMPTY container cannot be allowed to be worth more
+ * than NO container two lines above it.
+ *
+ * NOT THE SAME CALL AS `arcade-adapter.ts`'s `connectionIsLive`, WHERE SILENCE IS DELIBERATELY
+ * PERMISSIVE AND SAYS SO AT LENGTH. There
+ * the silent field is `connection_status`, optional on the wire, and a pessimistic reading
+ * un-connects every real connection against any engine that omits it — the cost of failing closed
+ * falls on people who did nothing wrong. Here the cost of failing closed is one approval prompt in
+ * front of an action that may turn out to be a read; the cost of failing open is a deletion that
+ * nobody was asked about. The flags' per-field defaults stand once EITHER flag is stated, which is
+ * the vendor describing this action rather than saying nothing at all.
  */
 export function classify(metadata: unknown): {
   effect: "read" | "write";
@@ -58,6 +75,8 @@ export function classify(metadata: unknown): {
   const behavior = (metadata as { behavior?: unknown }).behavior;
   if (typeof behavior !== "object" || behavior === null) return closed;
   const flags = behavior as { destructive?: unknown; read_only?: unknown };
+  const stated = (value: unknown) => value !== undefined && value !== null;
+  if (!stated(flags.destructive) && !stated(flags.read_only)) return closed;
   const destructive = flagOf(flags.destructive, false);
   const readOnly = flagOf(flags.read_only, false);
   if (destructive === null || readOnly === null) return closed;
