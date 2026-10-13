@@ -10,6 +10,7 @@ import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { createDatabase } from "../src/db/client";
 import { mcpServers, pendingAuthorizations } from "../src/db/schema/plugins";
+import { checkRoster } from "./support/constraints";
 import { TEST_POOL, testDatabaseUrl } from "./support/database";
 
 const database = createDatabase(testDatabaseUrl(), TEST_POOL);
@@ -105,6 +106,27 @@ describe("pending_authorizations holds its declared unions", () => {
         insert({ holder: "deployment", userId: `user-${suite}` }),
       ),
     ).toBe("pending_authorizations_holder_check");
+  });
+
+  /**
+   * The rosters themselves, because every test above asks only about one value outside them.
+   *
+   * `llama` and `banana` go on being refused by a constraint that has quietly grown a member, and
+   * `cancelled` goes on being refused right up until the day it is the member that was added — at
+   * which point that test fails for the right reason and these two say which roster moved. The
+   * TypeScript unions in `schema/plugins` are erased at runtime, so these lines and the migration
+   * are the only two places the rosters exist; they have to be read against each other.
+   */
+  test("the holder CHECK admits exactly the two holders", async () => {
+    expect(
+      await checkRoster(database, "pending_authorizations_holder_check"),
+    ).toEqual(["deployment", "person"]);
+  });
+
+  test("the outcome CHECK admits exactly the four outcomes", async () => {
+    expect(
+      await checkRoster(database, "pending_authorizations_outcome_check"),
+    ).toEqual(["completed", "failed", "unreconciled", "withdrawn"]);
   });
 
   test("the legal shapes are all still accepted", async () => {
