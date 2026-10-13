@@ -31,6 +31,13 @@ import { Separator } from "@/components/ui/separator";
 import { currentUserQueryOptions } from "@/lib/auth/queries";
 import { connectAccountMutationOptions } from "@/lib/plugins/mutations";
 import {
+  brokeredAccountPageDescription,
+  brokeredConsentTrip,
+  brokeredDisconnectNote,
+  brokeredProvenance,
+  disconnectSiblingsNotice,
+} from "@/lib/plugins/provider-vocabulary";
+import {
   connectionSiblingsQueryOptions,
   connectionsQueryOptions,
   type PluginServer,
@@ -38,13 +45,7 @@ import {
   pluginsPageQueryOptions,
   pluginsProvider,
 } from "@/lib/plugins/queries";
-import {
-  brokeredAccountPageDescription,
-  brokeredConsentTrip,
-  brokeredDisconnectNote,
-  brokeredProvenance,
-  disconnectSiblingsNotice,
-} from "@/lib/plugins/provider-vocabulary";
+import { searchTextEntry } from "@/lib/search-text";
 
 /**
  * Whether this server is reached through Composio AS THIS PERSON.
@@ -105,9 +106,13 @@ export const Route = createFileRoute(
    * `?action=` is the verifier's redirect saying WHICH action the consent just completed was for,
    * so the page can land on it rather than on the app. The key is omitted when absent rather than
    * set to undefined, which would make `search` a required prop on every Link to this route.
+   *
+   * Read as text whatever the router parsed it into (`searchText`): an action name made of digits
+   * or shaped like JSON arrives as a number or an object, and a `typeof` guard would land the page
+   * on the app as though the verifier had never said which action it was.
    */
   validateSearch: (search: Record<string, unknown>): { action?: string } =>
-    typeof search.action === "string" ? { action: search.action } : {},
+    searchTextEntry("action", search.action),
 });
 
 function RouteComponent() {

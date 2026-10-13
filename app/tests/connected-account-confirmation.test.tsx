@@ -376,7 +376,7 @@ test("a landing without an action behaves as it did", async () => {
   expect(view.container.textContent).not.toContain("just authorized");
 });
 
-test("validateSearch omits the key when absent and keeps a string action", () => {
+test("validateSearch omits the key when absent and reads the action as text", () => {
   const validate = (
     ConnectedAccountRoute as unknown as {
       options: { validateSearch: (s: Record<string, unknown>) => object };
@@ -384,10 +384,16 @@ test("validateSearch omits the key when absent and keeps a string action", () =>
   ).options.validateSearch;
   expect(validate({})).toEqual({});
   expect("action" in validate({})).toBe(false);
-  expect(validate({ action: 5 })).toEqual({});
   expect(validate({ action: "Gmail.ListEmails" })).toEqual({
     action: "Gmail.ListEmails",
   });
+  /*
+   * The router JSON-parses search values, so an action name made of digits arrives as a number and
+   * a JSON-shaped one as an object. Both are still what the verifier put in the URL: the key is
+   * read as text (`searchText`) rather than dropped for having parsed into something else.
+   */
+  expect(validate({ action: 5 })).toEqual({ action: "5" });
+  expect(validate({ action: { a: 1 } })).toEqual({ action: '{"a":1}' });
 });
 
 test("an empty or absurdly long action is not drawn", () => {

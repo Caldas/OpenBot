@@ -42,6 +42,7 @@ import {
   personalConnections,
   pluginsPageQueryOptions,
 } from "@/lib/plugins/queries";
+import { searchTextEntry } from "@/lib/search-text";
 import { clearTeamBotConsentsMutationOptions } from "@/lib/team-bots";
 
 /**
@@ -63,23 +64,24 @@ export const Route = createFileRoute("/_authed/settings/connected-accounts/")({
    *
    * The key is omitted rather than set to undefined. Present-but-undefined makes `search` a required
    * prop on every Link to this route, which is a lot of ripple for a parameter only the callback sets.
+   *
+   * EACH IS READ AS TEXT WHATEVER THE ROUTER PARSED IT INTO (`searchText`): the router JSON-parses
+   * search values, so a server key or reason code that happens to be digits or JSON-shaped arrives
+   * as a number or an object, and a `typeof` guard would quietly turn the callback's report into
+   * no report at all.
    */
   validateSearch: (
     search: Record<string, unknown>,
   ): { connected?: string; authorized?: string; linked?: string } => ({
-    ...(typeof search.connected === "string"
-      ? { connected: search.connected }
-      : {}),
+    ...searchTextEntry("connected", search.connected),
     /*
      * A CHANNEL OF ITS OWN, BESIDE `?connected=` AND NEVER FOLDED INTO IT. That one is the Composio
      * OAuth callback's and carries a server key or `failed`; this one is the brokered per-action
      * verifier's and carries a reason code. Two senders answering different questions on one
      * parameter is how a notice comes to be drawn for the wrong thing.
      */
-    ...(typeof search.authorized === "string"
-      ? { authorized: search.authorized }
-      : {}),
-    ...(typeof search.linked === "string" ? { linked: search.linked } : {}),
+    ...searchTextEntry("authorized", search.authorized),
+    ...searchTextEntry("linked", search.linked),
   }),
 });
 

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   AUTHORIZATION_NOTICES,
   authorizationNoticeFor,
+  Route,
 } from "@/routes/_authed/settings/connected-accounts/index";
 
 /**
@@ -110,3 +111,22 @@ test.each([
     if (notice !== null) expect(typeof notice).toBe("string");
   },
 );
+
+/**
+ * AND THE CODE REACHES THAT LOOKUP AT ALL, whatever the router parsed the parameter into.
+ *
+ * Search values are JSON-parsed, so a reason code or server key made of digits arrives as a number
+ * and a JSON-shaped one as an object. All three parameters on this screen are read as text
+ * (`searchText`), so what the callback reported is what the screen decides on rather than silently
+ * nothing at all.
+ */
+test("every parameter on this screen is read as text, whatever it parsed into", () => {
+  const validate = Route.options.validateSearch as (s: unknown) => object;
+  expect(
+    validate({ connected: 12345, authorized: 678, linked: { a: 1 } }),
+  ).toEqual({ connected: "12345", authorized: "678", linked: '{"a":1}' });
+  expect(validate({ authorized: "no-attempt" })).toEqual({
+    authorized: "no-attempt",
+  });
+  expect(validate({})).toEqual({});
+});
