@@ -14,6 +14,7 @@ import {
 } from "@/lib/auth/client";
 import { resumeUrlFor, verifierPathFor } from "@/lib/auth/resume";
 import { appConfig } from "@/lib/generated/application-config";
+import { searchTextEntry } from "@/lib/search-text";
 import {
   type AuthProviderId,
   authProvidersQueryOptions,
@@ -31,13 +32,17 @@ export const Route = createFileRoute("/sign")({
    * `?flow_id=` is the handle a brokered authorization arrived with, sent here when its session had
    * lapsed. It is a value to carry back, never a place to go: see `resumeUrlFor`.
    *
+   * READ AS TEXT WHATEVER THE ROUTER PARSED IT INTO, which is what `searchText` is for: a handle
+   * made of digits arrives here as a number and a JSON-shaped one as an object, so a `typeof`
+   * guard would drop the correlation for whichever handles the vendor's generator happens to emit
+   * — working in testing and losing the return leg's binding in production.
+   *
    * The key is omitted rather than set to undefined, for the reason the connected-accounts screen
    * gives for `?connected=`: present-but-undefined makes `search` a required prop on every Link to
    * this route, which is a lot of ripple for a parameter only the verifier sets.
    */
-  validateSearch: (search: Record<string, unknown>): { flow_id?: string } => ({
-    ...(typeof search.flow_id === "string" ? { flow_id: search.flow_id } : {}),
-  }),
+  validateSearch: (search: Record<string, unknown>): { flow_id?: string } =>
+    searchTextEntry("flow_id", search.flow_id),
   beforeLoad: async ({ context, search }) => {
     const user = await context.queryClient.ensureQueryData(
       currentUserQueryOptions(),

@@ -70,12 +70,32 @@ test("resumeUrlFor puts an encoded handle on the verifier, and is the origin wit
   ).toBeLessThan(600);
 });
 
-test("validateSearch keeps a string flow_id, omits the key otherwise", () => {
+test("validateSearch keeps the handle whatever shape the router parsed it into", () => {
   const validate = Route.options.validateSearch as (s: unknown) => object;
   expect(validate({ flow_id: "abc" })).toEqual({ flow_id: "abc" });
-  expect(validate({ flow_id: 42 })).toEqual({});
-  expect("flow_id" in validate({ flow_id: ["a"] })).toBe(false);
+  /*
+   * THE ROUTER JSON-PARSES SEARCH VALUES, so a handle the vendor happened to mint out of digits
+   * arrives as a number and a JSON-shaped one as an object. Both are still the text the verifier
+   * sent; dropping them is losing the correlation for whichever ids the generator happens to emit.
+   */
+  expect(validate({ flow_id: 12345 })).toEqual({ flow_id: "12345" });
+  expect(validate({ flow_id: { a: 1 } })).toEqual({ flow_id: '{"a":1}' });
+  expect(validate({ flow_id: ["a"] })).toEqual({ flow_id: '["a"]' });
+  expect(validate({ flow_id: true })).toEqual({ flow_id: "true" });
   expect("flow_id" in validate({})).toBe(false);
+});
+
+/** The whole return leg: what the verifier put in the URL is what sign-in carries back to it. */
+test("a numeric or JSON-shaped handle survives the round trip to the verifier", async () => {
+  const validate = Route.options.validateSearch as (s: unknown) => {
+    flow_id?: string;
+  };
+  const numeric = await redirectFrom(validate({ flow_id: 12345 }));
+  expect(numeric.options.href).toBe("/api/plugins/arcade/verify?flow_id=12345");
+  const shaped = await redirectFrom(validate({ flow_id: { a: 1 } }));
+  expect(shaped.options.href).toBe(
+    `/api/plugins/arcade/verify?flow_id=${encodeURIComponent('{"a":1}')}`,
+  );
 });
 
 function signedInContext() {
