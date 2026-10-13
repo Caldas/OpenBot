@@ -1,10 +1,10 @@
 import Arcade, { APIError } from "@arcadeai/arcadejs";
-import { classify, type ArcadeActions, type ArcadeFailure } from "./arcade";
+import { type ArcadeActions, type ArcadeFailure, classify } from "./arcade";
 import {
-  BrokerRefusalError,
-  flagOf,
   type BrokerApp,
+  BrokerRefusalError,
   type ConnectedAppBroker,
+  flagOf,
   type GrantState,
 } from "./broker";
 
@@ -478,6 +478,25 @@ async function connectionsFor(
 const LIVE_CONNECTION_STATUS = "active";
 
 /**
+ * The `status` spellings a FRESH MINT may answer under which sending somebody to the consent screen
+ * is the right next step: the flow has not begun (`not_started`) or is waiting for them (`pending`).
+ *
+ * AN ALLOWLIST, AND NOT THE SDK'S UNION TURNED AROUND, for {@link LIVE_CONNECTION_STATUS}'s reason.
+ * `AuthorizationResponse.status` is declared as a four-way union in the generated types, but the
+ * union is a description of what Arcade sends today, not a constraint on what arrives: a spelling
+ * outside it deserializes with no complaint from anybody. The two outcomes that are NOT a consent
+ * screen — `completed` and `failed` — are therefore refused by absence rather than by name, so that
+ * a fifth spelling is refused with them instead of being handed to a browser as a live redirect.
+ *
+ * SEPARATE FROM {@link grantStateOf}'S READING, deliberately. That one reads the LISTING's
+ * `requirements.authorization`, whose vocabulary is `token_status` plus an `active`/`inactive`
+ * status, and whose question is "what does this account already hold". This one reads a mint's own
+ * answer, whose question is "is a consent screen what happens next". Sharing a table between them
+ * would make one vendor's change to either vocabulary move the other answer too.
+ */
+const MINT_AWAITS_CONSENT_STATUSES = new Set(["not_started", "pending"]);
+
+/**
  * Whether a connection row is one somebody can actually USE, read off the row's OWN `connection_status`.
  *
  * THE ROW'S EXISTENCE IS NOT THE ANSWER, WHICH IS WHAT THIS IS FOR. A user-connection row carries
@@ -811,6 +830,39 @@ export function createArcadeClient(apiKey: string): {
         tool_name: action,
         user_id: account.vendorUserId,
       });
+      // WHAT THE VENDOR SAID ABOUT THIS AUTHORIZATION, READ BEFORE ITS URL IS READ AS A NEXT STEP.
+      // `tools.authorize` does not only answer "go to this screen": it answers `completed` for an
+      // account that already holds the grant, `failed` for one the vendor could not begin — and it
+      // may answer either WITH a `url` beside it, so the absent-url refusal below is not this guard
+      // in disguise. Unread, both were handed back as a live consent link: somebody already
+      // connected is sent round a screen they finished, and a failed authorization is dressed up
+      // as a working one, with an `ar_…` recorded against the attempt that can never complete.
+      //
+      // AN ALLOWLIST OF THE SPELLINGS UNDER WHICH CONSENT IS GENUINELY THE NEXT STEP, for the
+      // reason {@link LIVE_CONNECTION_STATUS} gives: the dead vocabulary cannot be enumerated from
+      // here. The SDK's declared union is a convenience, not a promise about the wire — an engine
+      // answering `revoked` or `expired` type-checks as nothing and a denylist missing that
+      // spelling goes on sending a browser to it, which is the defect itself.
+      //
+      // SILENCE IS NOT A NO, as it is not in {@link connectionIsLive}: `status` is OPTIONAL on the
+      // wire, so an absent or blank field leaves the url and the id as the whole of the evidence
+      // and they stand. FOLDED AND TRIMMED for this file's standing reason: a case the vendor
+      // changes must not change what somebody is told about their own account.
+      //
+      // A `BrokerRefusalError` AND NOT A BARE `Error`, which is the difference between being told
+      // and being locked out. The mint route keys its three outcomes on what was thrown: an
+      // authored refusal is DEFINITE, so the attempt is discarded and the actor may press Authorize
+      // again at once, with this sentence shown; a bare `Error` normalizes to `null` and is read as
+      // "the mint may be live", leaving the attempt standing for its fifteen-minute TTL. Nothing
+      // IS live here — the vendor answered, and said this is not a consent to walk through.
+      const status = textOf(answer.status)?.trim().toLowerCase();
+      if (status !== undefined && !MINT_AWAITS_CONSENT_STATUSES.has(status)) {
+        throw new BrokerRefusalError(
+          status === "completed"
+            ? `Arcade answered that this account's authorization for ${action} is already completed, so nobody was sent to a consent screen. Reload this page: the grant it is reporting is already in place.`
+            : `Arcade answered that this account's authorization for ${action} is "${status}" rather than one waiting for consent, so nobody was sent anywhere and nothing was connected. Press Authorize again to start a fresh one.`,
+        );
+      }
       // The url is a bearer capability: it goes back to the caller and nowhere else.
       const url = answer.url;
       if (typeof url !== "string" || url === "") {
