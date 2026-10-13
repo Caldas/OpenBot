@@ -195,6 +195,7 @@ function pluginsPage(
     botsMayCallBack: true,
     redirectUri: null,
     composioConfigured,
+    authorizesPerAction: false,
   };
 }
 

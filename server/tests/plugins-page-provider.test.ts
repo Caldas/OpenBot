@@ -100,6 +100,7 @@ describe("the Plugins page names the active provider", () => {
       [
         "botsMayCallBack",
         "catalogue",
+        "authorizesPerAction",
         "composioConfigured",
         "provider",
         "redirectUri",
@@ -110,5 +111,48 @@ describe("the Plugins page names the active provider", () => {
     const body = JSON.stringify(page);
     expect(body).not.toContain(VENDOR_KEY);
     expect(body).not.toContain("grantIsLocal");
+  });
+});
+
+/*
+ * THE PER-ACTION CAPABILITY, which is a different question from the vendor's name and is answered
+ * by a presence test on what the broker declared. The two happen to agree on today's brokers; these
+ * cases pin that the payload follows the DECLARATION, because the routes behind the buttons the
+ * flag draws (`/servers/:id/authorize`, `/arcade/verify`) gate on that same expression.
+ */
+describe("the Plugins page declares whether the broker authorizes per action", () => {
+  test("a broker with an authorization flow serves true", async () => {
+    const page = await pageFor({
+      broker: { key: VENDOR_KEY, authorizations: { verify: () => {} } },
+      provider: "arcade",
+    });
+    expect(page.authorizesPerAction).toBe(true);
+  });
+
+  test("a Composio deployment serves false", async () => {
+    const page = await pageFor({
+      broker: { key: VENDOR_KEY, authorizations: null },
+      provider: "composio",
+    });
+    expect(page.authorizesPerAction).toBe(false);
+  });
+
+  test("a deployment with no broker serves false", async () => {
+    const page = await pageFor(undefined);
+    expect(page.authorizesPerAction).toBe(false);
+  });
+
+  /*
+   * WHERE THE NAME AND THE CAPABILITY DISAGREE, and the capability wins. This is the deployment the
+   * name comparison got wrong: `provider` still says arcade, because that is what the copy is
+   * written from, and the flag says false, because `/servers/:id/authorize` would refuse it 503.
+   */
+  test("a broker named arcade with no flow serves arcade and false", async () => {
+    const page = await pageFor({
+      broker: { key: VENDOR_KEY, authorizations: null },
+      provider: "arcade",
+    });
+    expect(page.provider).toBe("arcade");
+    expect(page.authorizesPerAction).toBe(false);
   });
 });

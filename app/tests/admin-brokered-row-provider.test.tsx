@@ -97,6 +97,7 @@ function install(setup: {
     botsMayCallBack: true,
     redirectUri: null,
     composioConfigured: setup.configured,
+    authorizesPerAction: setup.provider === "arcade",
     provider: setup.provider,
   };
   const json = (body: unknown, status = 200) =>

@@ -8,6 +8,7 @@ const page = (extra: Partial<PluginsPage>): PluginsPage => ({
   botsMayCallBack: false,
   redirectUri: null,
   composioConfigured: true,
+  authorizesPerAction: false,
   ...extra,
 });
 

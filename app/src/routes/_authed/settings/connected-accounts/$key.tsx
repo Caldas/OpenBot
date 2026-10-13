@@ -183,12 +183,15 @@ function RouteComponent() {
       : null;
   const landedAction = landedActionFrom(action);
   /*
-   * THE GRANT LIST IS DRAWN FOR ARCADE ONLY. It is per-action and Arcade is the broker that grants
-   * per action; Composio's auth config fixes one state for the whole toolkit, its route answers the
-   * same degenerate entry N times, and the authorize route refuses it with 503. Gating on the NAME
-   * is what keeps every Composio render byte-identical.
+   * THE GRANT LIST IS DRAWN WHERE THE BROKER AUTHORIZES PER ACTION, read off the declared
+   * capability and never off the vendor's name. The server computes `authorizesPerAction` from the
+   * same expression `/servers/:id/authorize` behind the Authorize button gates on, so the list this
+   * screen draws and the route its buttons call cannot key on different facts. `provider ===
+   * "arcade"` keyed on a different one: the day a broker named arcade is reached with that flow
+   * absent, this drew the list and every press 503'd. False on Composio — whose auth config fixes
+   * one state for the whole toolkit — so every Composio render is unchanged.
    */
-  const perActionGrants = provider === "arcade";
+  const perActionGrants = plugins.data?.authorizesPerAction ?? false;
   /* Who is asking only matters to a Shared app's Authorize, so it is not read for anything else. */
   const sharedHere = server?.accountMode === "shared";
   const me = useQuery({

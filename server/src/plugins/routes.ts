@@ -429,6 +429,26 @@ export function createPluginRoutes(
        */
       composioConfigured: Boolean(composio),
       /*
+       * Whether this deployment's broker authorizes ONE ACTION AT A TIME, as a declared capability.
+       *
+       * A PRESENCE TEST ON A VALUE THE BROKER DECLARED, computed from the same expression the two
+       * routes that run that flow gate on — `/servers/:id/authorize` and the `/arcade/verify`
+       * return leg both read `composio.broker.authorizations`. The screen that draws the per-action
+       * grant list used to gate on `provider === "arcade"` instead, so the screen and the routes
+       * keyed on different facts: a broker named arcade reached with `authorizations` null would
+       * have drawn the list and 503'd every Authorize press. See {@link
+       * ConnectedAppBroker.authorizations} and `store.ts`'s gate comment, which records a defect of
+       * exactly that shape.
+       *
+       * A capability, never a name: what the screen asks is what the broker can DO, and two
+       * providers are free to share an answer. `provider` beside it stays a NAME and answers a
+       * different question — which vendor to put in copy.
+       *
+       * False on Composio, whose auth config fixes one state for a whole toolkit, so every Composio
+       * render is unchanged.
+       */
+      authorizesPerAction: Boolean(composio?.broker.authorizations),
+      /*
        * WHICH vendor brokers this deployment's apps, as a name.
        *
        * Handed in with the broker, never read off it: the broker declares what it can do, not who

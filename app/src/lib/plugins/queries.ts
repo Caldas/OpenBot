@@ -215,6 +215,20 @@ export type PluginsPage = {
    */
   composioConfigured: boolean;
   /**
+   * Whether this deployment's broker authorizes ONE ACTION AT A TIME.
+   *
+   * A DECLARED CAPABILITY, read with a presence test and never a vendor name. The server computes
+   * it from the very expression `/servers/:id/authorize` and the `/arcade/verify` return leg gate
+   * on, so a screen that draws the per-action grant list and the routes that serve its buttons
+   * cannot key on different facts. Gating on `provider === "arcade"` instead left a broker named
+   * arcade whose flow is absent drawing a list whose every Authorize press 503s.
+   *
+   * Required, like `composioConfigured` and unlike `provider`: a capability is a value the server
+   * declares, so the type does not offer "did not say" as a third answer. False on Composio, whose
+   * auth config fixes one state for a whole toolkit, so a Composio deployment is unchanged.
+   */
+  authorizesPerAction: boolean;
+  /**
    * Which vendor brokers this deployment's apps, as a NAME. Read it through {@link pluginsProvider}.
    *
    * A screen that FILTERS by brokered-ness needs no provider name: one provider holds rows at a

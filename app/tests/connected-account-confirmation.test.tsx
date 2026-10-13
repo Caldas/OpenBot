@@ -104,6 +104,13 @@ type Setup = {
   siblings?: { siblings: string[]; unanswered: number };
   /** Whether the siblings read answers 500. */
   siblingsFail?: boolean;
+  /**
+   * Whether the deployment's broker authorizes per action, the capability the grant list is gated
+   * on. Defaults to what the named provider's broker declares today, so a case that says nothing
+   * about it gets the deployment it has always meant; set it against the name to build the
+   * deployment where the two DISAGREE.
+   */
+  authorizesPerAction?: boolean;
 };
 
 const siblingReads: string[] = [];
@@ -117,6 +124,8 @@ function install(setup: Setup) {
     botsMayCallBack: true,
     redirectUri: null,
     composioConfigured: setup.configured ?? true,
+    authorizesPerAction:
+      setup.authorizesPerAction ?? setup.provider === "arcade",
     provider: setup.provider,
   };
   const json = (body: unknown, status = 200) =>
