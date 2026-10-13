@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { createDatabase } from "../src/db/client";
 import { brokeredConnections } from "../src/db/schema/plugins";
+import { checkRoster } from "./support/constraints";
 import { TEST_POOL, testDatabaseUrl } from "./support/database";
 
 const database = createDatabase(testDatabaseUrl(), TEST_POOL);
@@ -38,6 +39,22 @@ describe("brokered_connections.provider", () => {
         }),
       ),
     ).toBe("inserted");
+  });
+
+  /**
+   * The roster, not a sample of it.
+   *
+   * The two tests around this one insert one legal value and one junk value, and both of them stay
+   * green through a migration that quietly admits a THIRD provider: `arcade` still inserts, `nope`
+   * is still refused, and nothing anywhere reads what the constraint now permits. A provider the
+   * broker has no adapter for is a row `assertActivatable` counts and no code can serve, so the
+   * roster is pinned here, read back from the database rather than from the migration that wrote
+   * it. Growing it is a deliberate act that has to come through this line.
+   */
+  test("the CHECK admits exactly the two providers the broker implements", async () => {
+    expect(
+      await checkRoster(database, "brokered_connections_provider_check"),
+    ).toEqual(["arcade", "composio"]);
   });
 
   test("an unknown provider is refused by the CHECK", async () => {
