@@ -999,17 +999,28 @@ export function brokerSentence(error: unknown): string | null {
  * One key set selects that provider. Both set is legal and expected, since ending an account at
  * the old vendor needs its key, so `brokerProvider` decides and unset means `null`. A
  * `brokerProvider` naming a provider whose key is unset is refused (`null`), never selected.
+ *
+ * A KEY OF NOTHING IS NO KEY, AND THIS DECIDES THAT ITSELF. `ARCADE_API_KEY=` with nothing after
+ * it, or a value that is all whitespace, is an operator typo and not a configured provider: a
+ * `!== undefined` test calls it configured, and `./provider-wiring` goes on to build a vendor
+ * client on an empty credential, which fails later and somewhere else — at the vendor, on
+ * somebody's first connect — rather than here, where the setting is. `./config` trims every
+ * optional environment value and so happens to turn those into `undefined` today, but that is one
+ * incidental guard in a distant module standing between a typo and a client built on "", and this
+ * function takes config-shaped VALUES rather than an environment, so every other caller (a test,
+ * an embedder, a future loader) reaches it untrimmed. What "configured" means for a credential is
+ * this function's own question, so it is answered here.
  */
 export function activeProvider(c: {
   composioApiKey?: string;
   arcadeApiKey?: string;
   brokerProvider?: BrokerProvider;
 }): BrokerProvider | null {
-  const composio = c.composioApiKey !== undefined;
-  const arcade = c.arcadeApiKey !== undefined;
+  const credential = (key: string | undefined): boolean =>
+    key !== undefined && key.trim() !== "";
   const configured: BrokerProvider[] = [];
-  if (composio) configured.push("composio");
-  if (arcade) configured.push("arcade");
+  if (credential(c.composioApiKey)) configured.push("composio");
+  if (credential(c.arcadeApiKey)) configured.push("arcade");
   const named = c.brokerProvider;
   if (named !== undefined) return configured.includes(named) ? named : null;
   return configured.length === 1 ? configured[0] : null;

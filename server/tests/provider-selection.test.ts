@@ -39,6 +39,42 @@ describe("activeProvider", () => {
     expect(activeProvider({ brokerProvider: "arcade" })).toBe(null);
   });
 
+  /**
+   * A key is a CREDENTIAL, so a key of nothing is no key. `ARCADE_API_KEY=` with nothing after it,
+   * or a value that is all whitespace, is an operator typo rather than a configured provider, and
+   * selecting on it builds a vendor client on an empty credential. `../src/config` happens to trim
+   * today, but that is one distant guard and not this function's answer, so the config values here
+   * are constructed directly to put the blank key in front of `activeProvider` itself.
+   */
+  test("an empty or whitespace-only key is not a configured provider", () => {
+    expect(activeProvider({ arcadeApiKey: "" })).toBe(null);
+    expect(activeProvider({ composioApiKey: "" })).toBe(null);
+    expect(activeProvider({ arcadeApiKey: "   " })).toBe(null);
+    expect(activeProvider({ composioApiKey: "\t\n " })).toBe(null);
+  });
+
+  test("a blank key beside a real one leaves the real one unambiguous", () => {
+    expect(activeProvider({ composioApiKey: "c", arcadeApiKey: "" })).toBe(
+      "composio",
+    );
+    expect(activeProvider({ composioApiKey: "  ", arcadeApiKey: "a" })).toBe(
+      "arcade",
+    );
+  });
+
+  test("a brokerProvider whose key is blank is refused, like one that is unset", () => {
+    expect(activeProvider({ arcadeApiKey: "", brokerProvider: "arcade" })).toBe(
+      null,
+    );
+    expect(
+      activeProvider({
+        composioApiKey: "c",
+        arcadeApiKey: " ",
+        brokerProvider: "arcade",
+      }),
+    ).toBe(null);
+  });
+
   test("a brokerProvider whose key is unset is refused, not selected", () => {
     expect(
       activeProvider({ composioApiKey: "c", brokerProvider: "arcade" }),
@@ -168,6 +204,30 @@ describe("selectProviderWiring", () => {
     expect(wiring.provider).toBeNull();
     expect(wiring.broker).toBeNull();
     expect(wiring.install).toEqual({ composio: null, arcade: null });
+  });
+
+  test("a blank key builds no client at all", () => {
+    const f = factories();
+    const wiring = selectProviderWiring({ arcadeApiKey: "" }, f.create);
+    expect(wiring.provider).toBeNull();
+    expect(wiring.broker).toBeNull();
+    expect(wiring.install).toEqual({ composio: null, arcade: null });
+    expect(f.calls).toEqual([]);
+    const g = factories();
+    const composio = selectProviderWiring({ composioApiKey: "  " }, g.create);
+    expect(composio.provider).toBeNull();
+    expect(g.calls).toEqual([]);
+  });
+
+  test("a named provider whose key is blank is surfaced, not built from nothing", () => {
+    const f = factories();
+    expect(() =>
+      selectProviderWiring(
+        { arcadeApiKey: "", brokerProvider: "arcade" },
+        f.create,
+      ),
+    ).toThrow(/ARCADE_API_KEY/);
+    expect(f.calls).toEqual([]);
   });
 
   test("a named provider whose key is unset is surfaced, not treated as no broker", () => {
