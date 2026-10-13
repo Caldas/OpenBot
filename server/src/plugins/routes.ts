@@ -5,8 +5,8 @@ import { PERSON_INITIATOR } from "../audit";
 import type { AppVariables } from "../auth/guards";
 import { requireAdmin } from "../auth/guards";
 import { reasonWithoutStatement } from "../db/query-failure";
-import type { AccountModeSwitch } from "./account-mode";
 import { BROKERED_PROFILE, type BrokerProvider, toolkitOfFor } from "./access";
+import type { AccountModeSwitch } from "./account-mode";
 import { normalizeArcadeError } from "./arcade-adapter";
 import {
   type AuthorizationFlow,
@@ -344,6 +344,24 @@ export function createPluginRoutes(
    * answer, and `server/src/index.ts` is where the system says so.
    */
   const activeProvider: BrokerProvider = composio?.provider ?? "composio";
+
+  /**
+   * The ACTIVE broker's name, as the sentences on this layer spell it.
+   *
+   * ONE READING FOR EVERY SENTENCE, AND NEVER A LITERAL. Every refusal below used to spell
+   * "Composio" into the prose — the app that would not be removed, the app that would not be
+   * enabled, the six ways a key app's connect fails, the consent with nowhere to send anybody, and
+   * the confirm, re-check and disconnect tails. On an Arcade deployment each of them named a vendor
+   * this deployment holds no key for and never dials, and sent the reader to check a key that does
+   * not exist. The name comes off {@link activeProvider}'s profile, which is also what the brokered
+   * reads below parse with, so the vendor a sentence names and the vendor a route actually reached
+   * cannot come apart.
+   *
+   * THE PROFILE RATHER THAN A TERNARY, because {@link BROKERED_PROFILE} is where a provider's
+   * vocabulary is written down once — a second spelling here is the second home the record exists
+   * to prevent, and a provider added to it without being added here would typecheck.
+   */
+  const activeVendor = BROKERED_PROFILE[activeProvider].vendor;
 
   /**
    * Which app a brokered row is, read by the parser belonging to the broker this deployment runs.
@@ -765,7 +783,7 @@ export function createPluginRoutes(
           JSON.stringify({
             type: "mcp-server-not-removed",
             server: serverId,
-            note: "Removing a server failed for a reason neither this deployment nor Composio put a sentence to. The administrator was answered 502 with the generic sentence, and the server row is still there.",
+            note: `Removing a server failed for a reason neither this deployment nor ${activeVendor} put a sentence to. The administrator was answered 502 with the generic sentence, and the server row is still there.`,
             error: reasonWithoutStatement(error),
           }),
         );
@@ -773,7 +791,7 @@ export function createPluginRoutes(
 
       const refusal = brokerRefusal(
         error,
-        "Removing this app did not finish, and neither this deployment nor Composio said why, so the app is still here rather than gone with grants of its own left live at the vendor. Press Remove again: every account is withdrawn at Composio before anything here is deleted, so repeating it is safe and asks only for what is left. Check this deployment's Composio key if it persists.",
+        `Removing this app did not finish, and neither this deployment nor ${activeVendor} said why, so the app is still here rather than gone with grants of its own left live at the vendor. Press Remove again: every account is withdrawn at ${activeVendor} before anything here is deleted, so repeating it is safe and asks only for what is left. Check this deployment's ${activeVendor} key if it persists.`,
       );
       return context.json({ error: refusal.error }, refusal.status);
     }
@@ -1220,7 +1238,7 @@ export function createPluginRoutes(
           JSON.stringify({
             type: "composio-app-not-enabled",
             slug: app.slug,
-            note: "Enabling a brokered app failed for a reason neither this deployment nor Composio put a sentence to. The administrator was answered 502 with the generic sentence.",
+            note: `Enabling a brokered app failed for a reason neither this deployment nor ${activeVendor} put a sentence to. The administrator was answered 502 with the generic sentence.`,
             error: reasonWithoutStatement(error),
           }),
         );
@@ -1228,7 +1246,7 @@ export function createPluginRoutes(
 
       const refusal = brokerRefusal(
         error,
-        `${app.name} could not be enabled, and Composio said nothing about why. Try again, and check this deployment's Composio key if it persists.`,
+        `${app.name} could not be enabled, and ${activeVendor} said nothing about why. Try again, and check this deployment's ${activeVendor} key if it persists.`,
       );
       return context.json({ error: refusal.error }, refusal.status);
     }
@@ -1544,7 +1562,7 @@ export function createPluginRoutes(
         } catch (error) {
           const refusal = brokerRefusal(
             error,
-            `Composio would not say what ${row.title} asks for, and said nothing about why. Try again, and ask an administrator to check this deployment's Composio key if it persists.`,
+            `${activeVendor} would not say what ${row.title} asks for, and said nothing about why. Try again, and ask an administrator to check this deployment's ${activeVendor} key if it persists.`,
           );
           return context.json({ error: refusal.error }, refusal.status);
         }
@@ -1574,7 +1592,7 @@ export function createPluginRoutes(
         if (published.length === 0) {
           return context.json(
             {
-              error: `${row.title} publishes no boxes to fill in, so there is nothing you could type that would reach it and no account was made. An administrator has to look at how ${row.title} is set up at Composio; removing it on the Plugins page and adding it again is what records the way Composio connects it now.`,
+              error: `${row.title} publishes no boxes to fill in, so there is nothing you could type that would reach it and no account was made. An administrator has to look at how ${row.title} is set up at ${activeVendor}; removing it on the Plugins page and adding it again is what records the way ${activeVendor} connects it now.`,
             },
             400,
           );
@@ -1652,7 +1670,7 @@ export function createPluginRoutes(
           const optional = published.map((field) => field.name).join(", ");
           return context.json(
             {
-              error: `${row.title} publishes no box it says has to be filled in — only ${optional} — so nothing you could type would be a credential it insists on, and no account was made. An app that genuinely needs none is one Composio publishes as needing no authentication, and ${row.title} is recorded here as an app whose secret you type. An administrator has to look at how ${row.title} is set up at Composio; removing it on the Plugins page and adding it again is what records the way Composio connects it now.`,
+              error: `${row.title} publishes no box it says has to be filled in — only ${optional} — so nothing you could type would be a credential it insists on, and no account was made. An app that genuinely needs none is one ${activeVendor} publishes as needing no authentication, and ${row.title} is recorded here as an app whose secret you type. An administrator has to look at how ${row.title} is set up at ${activeVendor}; removing it on the Plugins page and adding it again is what records the way ${activeVendor} connects it now.`,
             },
             400,
           );
@@ -1718,7 +1736,7 @@ export function createPluginRoutes(
              */
             return context.json(
               {
-                error: `That is not the form ${row.title} publishes, so nothing was sent to Composio. Press Connect again to draw it from what the app asks for now, and fill in the boxes it shows; each one holds text.`,
+                error: `That is not the form ${row.title} publishes, so nothing was sent to ${activeVendor}. Press Connect again to draw it from what the app asks for now, and fill in the boxes it shows; each one holds text.`,
               },
               400,
             );
@@ -1766,7 +1784,7 @@ export function createPluginRoutes(
         if (missing.length > 0) {
           return context.json(
             {
-              error: `${row.title} cannot be connected without ${missing.join(", ")}, so nothing was sent to Composio. Fill in every box the form marks required — a box holding only spaces is an empty one — and press Connect again.`,
+              error: `${row.title} cannot be connected without ${missing.join(", ")}, so nothing was sent to ${activeVendor}. Fill in every box the form marks required — a box holding only spaces is an empty one — and press Connect again.`,
             },
             400,
           );
@@ -1807,7 +1825,7 @@ export function createPluginRoutes(
           }
           const refusal = brokerRefusal(
             error,
-            `${row.title} could not be connected with what you entered, and Composio said nothing about why. Try again, and ask an administrator to check this deployment's Composio key if it persists.`,
+            `${row.title} could not be connected with what you entered, and ${activeVendor} said nothing about why. Try again, and ask an administrator to check this deployment's ${activeVendor} key if it persists.`,
           );
           return context.json({ error: refusal.error }, refusal.status);
         }
@@ -1834,7 +1852,7 @@ export function createPluginRoutes(
       if (kind === "unreadable") {
         return context.json(
           {
-            error: `This deployment cannot tell how ${row.title} connects, so nothing was sent to Composio and no account was made. An administrator has to remove it on the Plugins page and add it again, which records the way Composio connects it now.`,
+            error: `This deployment cannot tell how ${row.title} connects, so nothing was sent to ${activeVendor} and no account was made. An administrator has to remove it on the Plugins page and add it again, which records the way ${activeVendor} connects it now.`,
           },
           400,
         );
@@ -1868,8 +1886,7 @@ export function createPluginRoutes(
       if (!connect?.appUrl) {
         return context.json(
           {
-            error:
-              "This deployment has no app URL configured, so Composio would have nowhere to send you back to. Set OPENBOT_APP_URL.",
+            error: `This deployment has no app URL configured, so ${activeVendor} would have nowhere to send you back to. Set OPENBOT_APP_URL.`,
           },
           503,
         );
@@ -1932,7 +1949,7 @@ export function createPluginRoutes(
       } catch (error) {
         const refusal = brokerRefusal(
           error,
-          `Composio would not begin a connection to ${row.title}, and said nothing about why. Try again, and ask an administrator to check this deployment's Composio key if it persists.`,
+          `${activeVendor} would not begin a connection to ${row.title}, and said nothing about why. Try again, and ask an administrator to check this deployment's ${activeVendor} key if it persists.`,
         );
         return context.json({ error: refusal.error }, refusal.status);
       }
@@ -2266,7 +2283,7 @@ export function createPluginRoutes(
          */
         const refusal = brokerRefusal(
           error,
-          "Composio would not say whether this account is connected, and gave no reason, so what is shown here is the last answer it gave rather than a fresh one. Try again, and ask an administrator to check this deployment's Composio key if it persists.",
+          `${activeVendor} would not say whether this account is connected, and gave no reason, so what is shown here is the last answer it gave rather than a fresh one. Try again, and ask an administrator to check this deployment's ${activeVendor} key if it persists.`,
         );
         return context.json({ error: refusal.error }, refusal.status);
       }
@@ -2354,7 +2371,7 @@ export function createPluginRoutes(
          */
         const refusal = brokerRefusal(
           error,
-          "Composio would not say whether this connection still works, and gave no reason, so what is shown here is the last answer it gave rather than a fresh one. Press Re-check again, and ask an administrator to check this deployment's Composio key if it persists.",
+          `${activeVendor} would not say whether this connection still works, and gave no reason, so what is shown here is the last answer it gave rather than a fresh one. Press Re-check again, and ask an administrator to check this deployment's ${activeVendor} key if it persists.`,
         );
         return context.json({ error: refusal.error }, refusal.status);
       }
@@ -2421,7 +2438,7 @@ export function createPluginRoutes(
        */
       const refusal = brokerRefusal(
         error,
-        "Composio would not end this account, and gave no reason. Press Disconnect again: the revoke at Composio runs before anything here is deleted, so repeating it is safe and is the whole recovery. Ask an administrator to check this deployment's Composio key if it persists.",
+        `${activeVendor} would not end this account, and gave no reason. Press Disconnect again: the revoke at ${activeVendor} runs before anything here is deleted, so repeating it is safe and is the whole recovery. Ask an administrator to check this deployment's ${activeVendor} key if it persists.`,
       );
       return context.json({ error: refusal.error }, refusal.status);
     }
