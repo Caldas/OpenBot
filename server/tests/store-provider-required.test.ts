@@ -4,7 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { createAuditStore } from "../src/audit";
 import { createDatabase } from "../src/db/client";
 import { brokeredConnections, mcpServers } from "../src/db/schema";
-import type { BrokerProvider } from "../src/plugins/access";
+import { BROKERED_PROFILE, type BrokerProvider } from "../src/plugins/access";
 import type { ConnectedAppBroker } from "../src/plugins/broker";
 import { createPluginStore } from "../src/plugins/store";
 import { TEST_POOL, testDatabaseUrl } from "./support/database";
@@ -66,7 +66,7 @@ describe("the store reads and writes its own provider's slice", () => {
     await database.insert(mcpServers).values({
       id,
       title: "Example",
-      vendor: "arcade",
+      vendor: BROKERED_PROFILE.arcade.vendor,
       url: `arcade://${app}`,
       provenance: "arcade",
       authScheme: "OAUTH2",
@@ -112,7 +112,7 @@ describe("the store reads and writes its own provider's slice", () => {
     await database.insert(mcpServers).values({
       id,
       title: "Example",
-      vendor: "composio",
+      vendor: BROKERED_PROFILE.composio.vendor,
       url: `composio://${app}`,
       provenance: "composio",
       authScheme: "OAUTH2",
@@ -153,6 +153,66 @@ describe("the store reads and writes its own provider's slice", () => {
     expect(written[0]?.userId).toBe(`user-${suite}`);
 
     const seen = await storeFor("composio").accountsOn(id);
+    expect(seen?.accounts).toEqual([
+      {
+        holder: "person",
+        userId: `user-${suite}`,
+        vendorUserId: `vendor-${suite}`,
+      },
+    ]);
+  });
+  /*
+   * THE MIRROR OF THE TEST ABOVE, and it is here because half a cross-provider guard is not one.
+   * The slice is keyed on the store's own provider in both directions, so a composio row sitting
+   * under an arcade store's app must be as invisible as the arcade row is to a composio store.
+   */
+  test("an arcade store writes arcade rows and does not see the composio ones", async () => {
+    const app = `Notion${suite}`;
+    const id = `required-${suite}-${randomUUID().slice(0, 6)}`;
+    await database.insert(mcpServers).values({
+      id,
+      title: "Example",
+      vendor: BROKERED_PROFILE.arcade.vendor,
+      url: `arcade://${app}`,
+      provenance: "arcade",
+      authScheme: "OAUTH2",
+    });
+    serverIds.push(id);
+    apps.push(app);
+
+    // A composio row already filed under the same app name, which an arcade store must not read.
+    await database.insert(brokeredConnections).values({
+      provider: "composio",
+      app,
+      holder: "person",
+      userId: `other-${suite}`,
+      vendorUserId: `othervendor-${suite}`,
+    });
+
+    await storeFor("arcade").recordBrokeredConnection({
+      toolkit: app,
+      account: {
+        holder: "person",
+        userId: `user-${suite}`,
+        vendorUserId: `vendor-${suite}`,
+      },
+      verified: true,
+      probeAction: null,
+    });
+
+    const written = await database
+      .select({ userId: brokeredConnections.userId })
+      .from(brokeredConnections)
+      .where(
+        and(
+          eq(brokeredConnections.app, app),
+          eq(brokeredConnections.provider, "arcade"),
+        ),
+      );
+    expect(written).toHaveLength(1);
+    expect(written[0]?.userId).toBe(`user-${suite}`);
+
+    const seen = await storeFor("arcade").accountsOn(id);
     expect(seen?.accounts).toEqual([
       {
         holder: "person",
