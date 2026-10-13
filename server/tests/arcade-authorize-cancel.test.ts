@@ -24,6 +24,7 @@ const database = createDatabase(testDatabaseUrl(), TEST_POOL);
 const suite = randomUUID().slice(0, 8);
 const personalApp = `arcade-cp-${suite}`;
 const sharedApp = `arcade-cs-${suite}`;
+const otherApp = `arcade-co-${suite}`;
 const SHARED_VENDOR_ID = `openbot-deployment:acme-${suite}:R`;
 const ACTION = "Gmail.SendEmail";
 const SECRET_URL = "https://vendor.example/consent?secret=bearer-capability";
@@ -163,18 +164,28 @@ beforeAll(async () => {
       accountMode: "shared",
       sharedVendorUserId: SHARED_VENDOR_ID,
     },
+    {
+      id: otherApp,
+      title: "Slack",
+      vendor: "Arcade",
+      url: `arcade://O${suite}`,
+      provenance: "arcade",
+      authScheme: "OAUTH2",
+      accountMode: "personal",
+    },
   ]);
-  await database
-    .insert(mcpTools)
-    .values(
-      [personalApp, sharedApp].map((serverId) => ({ serverId, name: ACTION })),
-    );
+  await database.insert(mcpTools).values(
+    [personalApp, sharedApp, otherApp].map((serverId) => ({
+      serverId,
+      name: ACTION,
+    })),
+  );
 });
 
 afterAll(async () => {
   await database
     .delete(mcpServers)
-    .where(inArray(mcpServers.id, [personalApp, sharedApp]));
+    .where(inArray(mcpServers.id, [personalApp, sharedApp, otherApp]));
   if (actors.length) {
     await database
       .delete(pendingAuthorizations)
@@ -234,6 +245,23 @@ describe("DELETE /servers/:id/authorize", () => {
     const response = await cancel(appAs("user", actor), personalApp);
     expect(response.status).toBeLessThan(300);
     expect(await attemptsFor(actor)).toEqual([]);
+  });
+
+  test("a cancel naming one app does not cancel this actor's attempt on another", async () => {
+    const actor = person("otherapp");
+    const app = appAs("user", actor);
+    expect((await authorize(app, personalApp)).status).toBe(200);
+    const [before] = await attemptsFor(actor);
+    expect(before?.serverId).toBe(personalApp);
+
+    const response = await cancel(app, otherApp);
+    expect(response.status).toBeLessThan(300);
+    expect(await response.json()).toEqual({ cancelled: false });
+
+    const [after] = await attemptsFor(actor);
+    expect(after?.serverId).toBe(personalApp);
+    expect(after?.createdAt.getTime()).toBe(before?.createdAt.getTime());
+    expect(after?.authId).toBe("ar_minted_1");
   });
 
   test("a cancel issued for an OLD created_at does not remove a NEWER attempt by the same actor", async () => {
