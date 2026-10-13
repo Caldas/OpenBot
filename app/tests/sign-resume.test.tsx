@@ -24,12 +24,27 @@ type SignInSpy = (
   start: unknown,
   callbackURL?: string,
 ) => Promise<void>;
+type DomainSignInSpy = (
+  email: string,
+  start: unknown,
+  callbackURL?: string,
+) => Promise<void>;
 const realAuthClient = { ...(await import("@/lib/auth/client")) };
 let signInSpy: SignInSpy = async () => {};
+let domainSignInSpy: DomainSignInSpy = async () => {};
+/*
+ * BOTH LEGS ARE SPIED, AND NEITHER IS A NO-OP. Replacing the module is how the screen is tested at
+ * all, but a replacement nobody asserts against tests nothing: `signInWithEmailDomain` stood here
+ * as `async () => {}` while the SSO form's callbackURL went unpinned, so the screen could stop
+ * passing the resume URL and this file stayed green. What the module boundary cannot see — the
+ * real client dropping a callbackURL it was handed — is pinned in `auth-client.test.ts`, which
+ * drives the real functions through their injectable starter. The two together cover the handoff.
+ */
 mock.module("@/lib/auth/client", () => ({
   providerName: () => "Google",
   signInWith: (...args: Parameters<SignInSpy>) => signInSpy(...args),
-  signInWithEmailDomain: async () => {},
+  signInWithEmailDomain: (...args: Parameters<DomainSignInSpy>) =>
+    domainSignInSpy(...args),
 }));
 const { Route } = await import("@/routes/sign");
 
@@ -124,17 +139,14 @@ test("a signed-in arrival with a handle goes to the verifier, without one to /",
   expect(without.options.href).toBeUndefined();
 });
 
-test("the sign-in starter gets the resume URL as its callbackURL", async () => {
+/** The sign screen on `/sign?flow_id=h1`, with whichever ways in the deployment offers. */
+function renderSignScreen(options: {
+  providers: string[];
+  sso: boolean;
+  ssoRequired: boolean;
+}) {
   const queryClient = new QueryClient();
-  queryClient.setQueryData(authKeys.providers(), {
-    providers: ["google"],
-    sso: false,
-    ssoRequired: false,
-  });
-  const asked: string[] = [];
-  signInSpy = async (_provider, _start, callbackURL) => {
-    asked.push(callbackURL ?? "");
-  };
+  queryClient.setQueryData(authKeys.providers(), options);
 
   queryClient.setQueryData(authKeys.currentUser(), null);
   const root = createRootRoute();
@@ -154,12 +166,56 @@ test("the sign-in starter gets the resume URL as its callbackURL", async () => {
       <RouterProvider router={router} />
     </QueryClientProvider>,
   );
-  const user = userEvent.setup({ document: view.container.ownerDocument });
+  return {
+    view,
+    user: userEvent.setup({ document: view.container.ownerDocument }),
+  };
+}
+
+/** Where a press on this screen has to send the browser back to, with `?flow_id=h1` carried in. */
+const RESUME_URL = "/api/plugins/arcade/verify?flow_id=h1";
+
+test("the sign-in starter gets the resume URL as its callbackURL", async () => {
+  const asked: string[] = [];
+  signInSpy = async (_provider, _start, callbackURL) => {
+    asked.push(callbackURL ?? "");
+  };
+
+  const { view, user } = renderSignScreen({
+    providers: ["google"],
+    sso: false,
+    ssoRequired: false,
+  });
   await user.click(await view.findByText(/Continue with Google/));
   await waitFor(() => expect(asked).toHaveLength(1));
-  expect(asked[0]).toBe(
-    `${window.location.origin}/api/plugins/arcade/verify?flow_id=h1`,
+  expect(asked[0]).toBe(`${window.location.origin}${RESUME_URL}`);
+});
+
+/**
+ * The company-account way in resumes too, and it was the leg nothing watched.
+ *
+ * A deployment whose people arrive through their own IdP has no provider buttons to press, so the
+ * form below them IS the sign-in for everybody there. Leaving its callbackURL unpinned meant the
+ * resume could be dropped for exactly those deployments and every test stayed green.
+ */
+test("the company-account form gets the resume URL as its callbackURL", async () => {
+  const asked: string[] = [];
+  domainSignInSpy = async (_email, _start, callbackURL) => {
+    asked.push(callbackURL ?? "");
+  };
+
+  const { view, user } = renderSignScreen({
+    providers: [],
+    sso: true,
+    ssoRequired: false,
+  });
+  await user.type(
+    await view.findByPlaceholderText("you@company.com"),
+    "someone@company.com",
   );
+  await user.click(await view.findByText(/Continue with your company account/));
+  await waitFor(() => expect(asked).toHaveLength(1));
+  expect(asked[0]).toBe(`${window.location.origin}${RESUME_URL}`);
 });
 
 /*
