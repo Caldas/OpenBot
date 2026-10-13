@@ -88,6 +88,7 @@ import {
   type AccountMode,
   type AccountRef,
   accountFor,
+  asAccountRef,
 } from "./shared-accounts";
 import type { SharedUseGate } from "./shared-use-store";
 import { transportFor } from "./transport";
@@ -4152,20 +4153,32 @@ export function createPluginStore(options: PluginStoreOptions) {
          * which may still be standing after a switch back that has not retired it yet. Each is
          * revoked as the account its row says it is, under the vendor id the row was filed under,
          * so the deployment's account is asked for as the deployment's and never as whoever
-         * pressed "remove". A person row always carries its user id (the table's holder check),
-         * so the fallback to the deployment form below is the shape a corrupt row would need, not
-         * a reading anything here relies on.
+         * pressed "remove".
+         *
+         * READ THROUGH {@link asAccountRef}, AND A ROW THAT NAMES NO ACCOUNT STOPS THE REMOVAL
+         * BEFORE ANYTHING IS ASKED OR DELETED. This was a ternary whose else-branch absorbed every
+         * pair it did not recognise into `{ holder: "deployment" }`, and the two readings below —
+         * the revoke and the trail's `owner` — each repeated it. `brokered_connections_holder_check`
+         * makes `person` with a NULL user id unwritable, which is exactly why this is a refusal
+         * rather than a coercion: a state the database says cannot exist, absorbed into the other
+         * holder, is a withdrawal aimed at the DEPLOYMENT's account over a person's row. The
+         * EMPTY STRING is not hypothetical — `IS NOT NULL` does not stop `''` — and the old
+         * reading's `!== null` let it through as a person ref under nobody's id, which reached
+         * `rowBroker.revoke` and was filed as an `owner` of `""`.
+         *
+         * RESOLVED FOR THE WHOLE SET UP FRONT, so the throw lands before the first revoke rather
+         * than part-way through one: a removal that had already withdrawn two accounts at the
+         * vendor and then threw would leave their rows standing and no trail for either.
          */
-        const accountOf = (
-          connection: (typeof connected)[number],
-        ): AccountRef =>
-          connection.holder === "person" && connection.userId !== null
-            ? {
-                holder: "person",
-                userId: connection.userId,
-                vendorUserId: connection.vendorUserId,
-              }
-            : { holder: "deployment", vendorUserId: connection.vendorUserId };
+        const accounts = connected.map((connection): AccountRef => {
+          const account = asAccountRef(connection);
+          if (!account) {
+            throw new PluginInvariantError(
+              `${toolkit} holds a connection row whose holder and user id name no account, so the accounts standing for it cannot be ended.`,
+            );
+          }
+          return account;
+        });
 
         /*
          * What the broker was actually asked for each of them, kept so the trail below records the
@@ -4197,7 +4210,7 @@ export function createPluginStore(options: PluginStoreOptions) {
          * {@link resolveSiblings} for why one call's worth is semantically free.
          */
         const authProviders = new Map<string, Promise<string | null>>();
-        for (const connection of connected) {
+        for (const account of accounts) {
           /*
            * ASKED OF `rowBroker` AND NOT OF `broker`, both here and at the revoke below.
            * {@link resolveSiblings} resolves against the CONFIGURED provider's rows and the active
@@ -4207,19 +4220,11 @@ export function createPluginStore(options: PluginStoreOptions) {
            */
           endedBesides.push(
             rowBroker
-              ? await resolveSiblings(
-                  { toolkit, account: accountOf(connection) },
-                  authProviders,
-                )
+              ? await resolveSiblings({ toolkit, account }, authProviders)
               : { siblings: [], unanswered: 0 },
           );
           vendorRevocationRequested.push(
-            rowBroker
-              ? await rowBroker.revoke({
-                  account: accountOf(connection),
-                  toolkit,
-                })
-              : false,
+            rowBroker ? await rowBroker.revoke({ account, toolkit }) : false,
           );
         }
 
@@ -4231,7 +4236,7 @@ export function createPluginStore(options: PluginStoreOptions) {
           ),
         );
 
-        for (const [index, connection] of connected.entries()) {
+        for (const [index, account] of accounts.entries()) {
           await recordAuditEvent(auditStore, {
             eventType: "mcp.account_disconnected",
             targetType: "mcp_server",
@@ -4260,11 +4265,11 @@ export function createPluginStore(options: PluginStoreOptions) {
               server: toolkit,
               // Whose account this was, by the rule {@link disconnectBrokered} names it by: a
               // person's own under their id, the deployment's own as the deployment, never as
-              // the administrator who removed the app.
+              // the administrator who removed the app. Taken off the SAME `AccountRef` the revoke
+              // above was asked with — read once, by `asAccountRef` — so the trail cannot name a
+              // holder the withdrawal did not use.
               owner:
-                connection.holder === "person" && connection.userId !== null
-                  ? connection.userId
-                  : "deployment",
+                account.holder === "person" ? account.userId : "deployment",
               // The same three-way distinction the vault loop above draws, and the same answer: an
               // administrator took the whole app away and the person did nothing.
               reason: "mcp_server_removed",
@@ -4298,13 +4303,12 @@ export function createPluginStore(options: PluginStoreOptions) {
          * siblings it deletes: `true` here requires `rowBroker`, and there is no `rowBroker` for a
          * row the other broker minted.
          */
-        for (const [index, connection] of connected.entries()) {
+        for (const [index, account] of accounts.entries()) {
           const { siblings, unanswered } = endedBesides[index] ?? {
             siblings: [],
             unanswered: 0,
           };
           if (!vendorRevocationRequested[index]) continue;
-          const account = accountOf(connection);
           for (const app of siblings) {
             const [deleted] = await database
               .delete(brokeredConnections)
@@ -5031,7 +5035,20 @@ export function createPluginStore(options: PluginStoreOptions) {
       return rows.map((row) => row.url);
     },
 
-    /** Every account any holder has on a brokered app, as the broker would be asked to end it. */
+    /**
+     * Every account any holder has on a brokered app, as the broker would be asked to end it.
+     *
+     * READ THROUGH {@link asAccountRef}, AND A ROW THAT NAMES NO ACCOUNT STOPS THE READ. Every
+     * account handed back here is passed straight to {@link disconnectBrokered} by the mode
+     * switch, so what is minted here is what a revoke is aimed at and what the trail records. The
+     * reading this replaces was `userId: row.userId ?? ""`, the quiet direction of the same
+     * coercion `asAccountRef` exists to refuse: a person row carrying no user id came out as a
+     * person ref belonging to NOBODY and was withdrawn under an owner of `""`. `''` is the pair
+     * that is actually reachable — `brokered_connections_holder_check` tests `IS NOT NULL`, which
+     * `''` satisfies — and `null` is unwritable, which is why both are a refusal rather than a
+     * default. The `null` answer below still means only "not a brokered app at this broker";
+     * a row that cannot be read is this deployment contradicting its own CHECK, and says so.
+     */
     async accountsOn(
       serverId: string,
     ): Promise<{ toolkit: string; accounts: AccountRef[] } | null> {
@@ -5057,16 +5074,15 @@ export function createPluginStore(options: PluginStoreOptions) {
         );
       return {
         toolkit,
-        accounts: held.map(
-          (row): AccountRef =>
-            row.holder === "person"
-              ? {
-                  holder: "person",
-                  userId: row.userId ?? "",
-                  vendorUserId: row.vendorUserId,
-                }
-              : { holder: "deployment", vendorUserId: row.vendorUserId },
-        ),
+        accounts: held.map((row): AccountRef => {
+          const account = asAccountRef(row);
+          if (!account) {
+            throw new PluginInvariantError(
+              `${toolkit} holds a connection row whose holder and user id name no account, so the accounts standing for it cannot be listed.`,
+            );
+          }
+          return account;
+        }),
       };
     },
 
