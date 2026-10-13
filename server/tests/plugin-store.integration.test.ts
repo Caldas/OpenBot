@@ -6795,7 +6795,8 @@ function brokerSpy(answers: {
     broker: {
       // This stub stands in for Composio, whose grant is held locally; see `ConnectedAppBroker.grantIsLocal`.
       grantIsLocal: true,
-      // Nothing here asks what auth provider a connection is held under.
+      // A broker that does not say what auth provider a connection is held under, which is what
+      // the sibling resolution has to treat as "we do not know" rather than as "none".
       authProviderOf: async () => null,
       // Nothing here reads either member; both are declared because the seam requires a
       // broker to SAY what it runs — see `ConnectedAppBroker.authorizations`.

@@ -8316,6 +8316,52 @@ export function createPluginStore(options: PluginStoreOptions) {
         .orderBy(asc(brokeredConnections.app));
 
       /*
+       * THE APPS EACH OF THIS PERSON'S REVOCATIONS ENDS BESIDES THE ONE ASKED ABOUT, read BEFORE a
+       * single revoke goes out and through {@link resolveSiblings}, the one place that answers it.
+       *
+       * WHY THIS LOOP NEEDS IT AT ALL, when it already asks about every app the person holds.
+       * Where a connection is keyed `(identity, auth provider)` — Arcade — the FIRST app's revoke
+       * ends the connection and every app sharing it, so the ask for a sibling that follows finds
+       * nothing left and answers `false`. Passed through, that is `vendorRevocationRequested:
+       * false` on the trail for a grant this deployment asked for and got, which is the one
+       * reading of that field that must never be written: it says "no vendor was asked" about an
+       * account that was withdrawn, to whoever later checks that an offboarding completed. The
+       * order the rows come back in decides which app gets the truthful row and which gets the
+       * false one, which is to say nothing decides it.
+       *
+       * Where each app is its own auth provider — Composio — every set here is empty by
+       * construction, each ask stands alone, and nothing below differs from what this method
+       * always did.
+       *
+       * RESOLVED AGAINST THE PERSON'S OWN IDENTITY, the same `account` the revokes below are asked
+       * with. MEMOIZED ACROSS THE WHOLE OFFBOARDING for the reason {@link removeServer} gives:
+       * `authProviderOf` is a live vendor call on Arcade, and the bound is then the number of
+       * DISTINCT TOOLKITS this person holds rather than that number squared. Empty with no broker
+       * configured, where nothing is asked of anybody and the `false` below is the whole truth.
+       */
+      const account: AccountRef = {
+        holder: "person",
+        userId,
+        vendorUserId: userId,
+      };
+      const authProviders = new Map<string, Promise<string | null>>();
+      const endedBesides = new Map<
+        string,
+        { siblings: string[]; unanswered: number }
+      >();
+      if (broker) {
+        for (const connection of brokered) {
+          endedBesides.set(
+            connection.toolkit,
+            await resolveSiblings(
+              { toolkit: connection.toolkit, account },
+              authProviders,
+            ),
+          );
+        }
+      }
+
+      /*
        * What the broker was actually asked for each app, kept so the trail below records the answer
        * rather than the call. False where there is no broker at all: a deployment whose key has
        * since been unset can still offboard somebody, and it could not have been calling Composio
@@ -8345,10 +8391,13 @@ export function createPluginStore(options: PluginStoreOptions) {
                   /*
                    * THE PERSON'S OWN ACCOUNT, NAMED AS ONE. Offboarding somebody ends what they
                    * held and never the deployment's shared account, whoever connected it — so the
-                   * holder is fixed here rather than read off anything, and the vendor id is the
-                   * person's own, which is what a personal account is filed under at Composio.
+                   * holder is fixed above rather than read off anything, and the vendor id is the
+                   * person's own, which is what a personal account is filed under at Composio. The
+                   * SAME value the siblings were resolved against, because an answer about one
+                   * identity describing a revocation on another is the whole of what that set is
+                   * for.
                    */
-                  account: { holder: "person", userId, vendorUserId: userId },
+                  account,
                   toolkit: connection.toolkit,
                 })
               : false,
@@ -8388,8 +8437,39 @@ export function createPluginStore(options: PluginStoreOptions) {
         );
       }
 
+      /*
+       * WHICH OF THIS PERSON'S APPS WERE ENDED BY ANOTHER APP'S REVOCATION, and by which one.
+       *
+       * Only from a revoke that ANSWERED TRUE: `false` means nothing was found to withdraw or the
+       * auth provider could not be resolved, and the vendor was not shown to have ended anything,
+       * so nothing is claimed on the strength of it — the rule {@link removeServer} files its
+       * siblings by. The asked app is skipped in favour of its own answer, and the first ender
+       * wins, which is deterministic because the rows are walked in app order.
+       *
+       * APPS THIS PERSON HOLDS ARE ALL THIS CAN SPEAK FOR. A sibling resolved on the same identity
+       * but held by the deployment, or an app whose own revoke threw and so has no row here, is
+       * left alone: this map only corrects what the loop below is already about to write.
+       */
+      const endedWith = new Map<string, string>();
+      for (const entry of withdrawn) {
+        if (!entry.requested) continue;
+        for (const app of endedBesides.get(entry.toolkit)?.siblings ?? []) {
+          if (app === entry.toolkit) continue;
+          if (!endedWith.has(app)) endedWith.set(app, entry.toolkit);
+        }
+      }
+
       for (const connection of withdrawn) {
         retired += 1;
+        /*
+         * The app whose revocation ended this one, where this one's own ask came back empty
+         * because that revocation had already taken it. Absent for an app that was ended by its
+         * own ask, which needs no other grant named beside it.
+         */
+        const endedBy = connection.requested
+          ? undefined
+          : endedWith.get(connection.toolkit);
+        const resolved = endedBesides.get(connection.toolkit);
         await recordAuditEvent(auditStore, {
           eventType: "mcp.account_disconnected",
           targetType: "mcp_server",
@@ -8410,8 +8490,27 @@ export function createPluginStore(options: PluginStoreOptions) {
              * withdrawal asked for, or there was nothing to ask about, or there was no broker to
              * ask. The value of the field is exactly that a reader can tell those apart, so a
              * constant here would be worse than none.
+             *
+             * OR WHAT WAS ASKED ABOUT THE CONNECTION THIS APP SHARES, which is the same claim
+             * made about the same grant. On Arcade the ask that ended this app may have been
+             * spelled with a sibling's name, and `revoke`'s `false` here then means "already
+             * gone", not "nobody asked" — `endedWith` beside it names the app that asked.
              */
-            vendorRevocationRequested: connection.requested,
+            vendorRevocationRequested: connection.requested || Boolean(endedBy),
+            /*
+             * AND WHERE A SIBLING RELATIONSHIP IS BEING CLAIMED, HOW MANY apps on this identity
+             * could not be asked about and so could not be ruled siblings either way — an
+             * integer, never their names; see {@link resolveSiblings}. Beside `endedWith` and
+             * nowhere else, which is where {@link removeServer} puts it and for its reason: the
+             * count qualifies a claim about which apps went together, and a row making no such
+             * claim would be carrying a number about nothing.
+             */
+            ...(endedBy
+              ? {
+                  endedWith: endedBy,
+                  unansweredSiblings: resolved?.unanswered ?? 0,
+                }
+              : {}),
           },
         });
       }
