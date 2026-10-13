@@ -336,3 +336,70 @@ describe("removing an app", () => {
     expect(await trailFor([t.gmail, t.calendar])).toEqual([]);
   });
 });
+
+describe("offboarding a person", () => {
+  /*
+   * CRITERION. Every app the vendor ended as part of this offboarding is recorded as one the
+   * vendor was asked about, and names the grant it went with.
+   *
+   * THE BROKER HERE IS ARCADE'S OWN SHAPE: one connection per (identity, auth provider). The
+   * first revoke on a provider ends it and answers true; a second, for a sibling app on the same
+   * connection, answers that there was nothing left to end. Passing that second answer through
+   * untouched files the sibling as a grant nobody asked about, on the one trail that is supposed
+   * to say whether the person's access was really withdrawn.
+   */
+  test("records a sibling app as revoked, naming the app whose revoke ended it", async () => {
+    const t = run();
+    await hold(t.gmail, t.person);
+    await hold(t.calendar, t.person); // same identity, same provider: ended with Gmail
+    await hold(t.slack, t.person); // its own provider: asked and answered on its own
+
+    const ended = new Set<string>();
+    const arcade: ConnectedAppBroker = {
+      ...broker,
+      revoke: async ({ account, toolkit }) => {
+        const connection = `${account.vendorUserId}:${providerOf(toolkit)}`;
+        if (ended.has(connection)) return false;
+        ended.add(connection);
+        return true;
+      },
+    };
+    const arcadeStore = createPluginStore({
+      brokerProvider: "arcade",
+      database,
+      auditStore: createAuditStore(database),
+      credentials: {} as never,
+      encryptionKey: "x".repeat(44),
+      policy: () => ({ mode: "enforce" as const, deny: [], allow: ["true"] }),
+      broker: arcade,
+      deploymentId: "acme",
+      sharedUse: async () => ({ allowed: true }),
+    });
+
+    expect(await arcadeStore.retireConnectionsFor(t.person, "admin")).toEqual({
+      retired: 3,
+    });
+    expect(await rowsFor([t.gmail, t.calendar, t.slack])).toEqual([]);
+
+    const trail = await trailFor([t.gmail, t.calendar, t.slack]);
+    const row = (app: string) => trail.find((event) => event.app === app);
+    // The app whose revoke ended the Google connection, and the one on its own provider: both
+    // asked directly, neither ended with anything else.
+    expect(row(t.gmail)?.payload).toMatchObject({
+      reason: "person_removed",
+      vendorRevocationRequested: true,
+    });
+    expect(row(t.gmail)?.payload.endedWith).toBeUndefined();
+    expect(row(t.slack)?.payload).toMatchObject({
+      vendorRevocationRequested: true,
+    });
+    expect(row(t.slack)?.payload.endedWith).toBeUndefined();
+    // And the sibling, whose own ask answered false because Gmail's had already ended it.
+    expect(row(t.calendar)?.payload).toMatchObject({
+      reason: "person_removed",
+      vendorRevocationRequested: true,
+      endedWith: t.gmail,
+      unansweredSiblings: 0,
+    });
+  });
+});
