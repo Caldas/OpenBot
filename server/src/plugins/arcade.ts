@@ -197,7 +197,17 @@ export async function listTools(connection: {
       );
     }
     raw.push(...items);
-    if (typeof answer.total_count === "number") total = answer.total_count;
+    // THE HIGHEST ANY PAGE REPORTED, NEVER THE LAST. An engine that truncates at 250 of 300 drops
+    // `total_count` from its short final page, and keeping the last value would erase the 300 page
+    // one reported and commit 250 actions as a complete listing. (`total_count` reaching here is
+    // already honest about absence: `createArcadeClient` omits the field when the vendor omitted
+    // it, because the SDK's page object coerces an absent total to `0`.)
+    if (typeof answer.total_count === "number") {
+      total =
+        total === undefined
+          ? answer.total_count
+          : Math.max(total, answer.total_count);
+    }
     if (items.length < PAGE_SIZE) {
       exhausted = false;
       break;

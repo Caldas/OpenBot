@@ -60,6 +60,88 @@ const CATALOGUE_PAGE_SIZE = 100;
 /** A runaway guard, not a bound. */
 const CATALOGUE_MAX_PAGES = 1000;
 
+/**
+ * The `total_count` ARCADE ITSELF SENT, read off the RAW BODY and never off the SDK's page object.
+ *
+ * `OffsetPage`'s constructor does `this.total_count = body.total_count || 0`, so a listing that
+ * never sent the field presents a numeric `0` — and an ABSENT total becomes INDISTINGUISHABLE FROM
+ * A REPORTED ZERO. Every `typeof reported === "number"` test then passes on a field the vendor
+ * never sent, the cross-check becomes `seen < 0`, and a truncated listing commits as complete.
+ * `AbstractPage` keeps the parsed body untouched beside it, so the honest value is read from there;
+ * the page's own property is the fallback for an answer that has no `body` at all, which is what
+ * `admin.authProviders.list` (a plain `APIPromise`, not a page) and every hand-built stub return.
+ */
+function reportedTotalOf(answer: unknown): number | undefined {
+  const page = record(answer);
+  if (!page) return undefined;
+  const raw = (record(page.body) ?? page).total_count;
+  return typeof raw === "number" ? raw : undefined;
+}
+
+/**
+ * The HIGHEST total any page reported, never the LAST one.
+ *
+ * Keeping the last page's value loses the same way `reportedTotalOf` describes, one step later: an
+ * engine that truncates at 250 of 300 and drops `total_count` on its short page would otherwise
+ * erase the 300 that page one reported, and the cross-check would have nothing to compare against.
+ */
+const highestTotal = (
+  total: number | undefined,
+  reported: number | undefined,
+): number | undefined =>
+  reported === undefined
+    ? total
+    : total === undefined
+      ? reported
+      : Math.max(total, reported);
+
+/** One listing's page size, runaway guard, page call and the three sentences a failure carries. */
+type Listing = {
+  pageSize: number;
+  maxPages: number;
+  page: (offset: number) => Promise<unknown>;
+  malformed: string;
+  unending: string;
+  incomplete: (seen: number, total: number) => string;
+};
+
+/**
+ * ONE LISTING READ TO ITS END, as a stream of items.
+ *
+ * PAGINATION ENDS ON A SHORT PAGE, never on `total_count`, which is optional on the wire; the
+ * reported total is a CROSS-CHECK and is taken through {@link reportedTotalOf} and
+ * {@link highestTotal} so that "the vendor did not say" can never read as "the vendor said zero".
+ *
+ * THE SDK'S OWN AUTO-PAGINATION IS NOT USED by anything that goes through here, and that is the
+ * point: `OffsetPage.nextPageRequestOptions` returns `null` the moment `total_count` is falsy, so
+ * `for await (… of client.x.list(…))` silently stops after page one against any engine that omits
+ * the field — and the caller cannot tell a complete answer from a first page of it.
+ *
+ * THE INCOMPLETENESS THROW IS THE LAST THING THIS YIELDS, after every item, so a caller that folds
+ * items as they arrive still never sees a short listing finish as a whole one.
+ */
+async function* pagedItems(listing: Listing): AsyncGenerator<unknown> {
+  let seen = 0;
+  let total: number | undefined;
+  let ended = false;
+  for (let index = 0; index < listing.maxPages; index += 1) {
+    const answer = await listing.page(seen);
+    const items = record(answer)?.items;
+    if (!Array.isArray(items)) throw new Error(listing.malformed);
+    yield* items;
+    seen += items.length;
+    total = highestTotal(total, reportedTotalOf(answer));
+    if (items.length < listing.pageSize) {
+      ended = true;
+      break;
+    }
+  }
+  if (!ended) throw new Error(listing.unending);
+  if (total !== undefined && seen < total) {
+    throw new Error(listing.incomplete(seen, total));
+  }
+}
+
 /** The verdict `classify` falls back to when it could not read a behaviour. See {@link isClassified}. */
 const CLOSED_VERDICT = { effect: "write", destructive: true } as const;
 
@@ -139,69 +221,46 @@ async function listApps(client: Arcade): Promise<BrokerApp[]> {
     permissions: Set<string>;
   };
   const counts = new Map<string, Tally>();
-  let seen = 0;
-  let total: number | undefined;
-  let ended = false;
-  for (let page = 0; page < CATALOGUE_MAX_PAGES; page += 1) {
-    const answer = await client.tools.list({
-      limit: CATALOGUE_PAGE_SIZE,
-      offset: seen,
-    });
-    const items = (answer as { items?: unknown } | null)?.items;
-    if (!Array.isArray(items)) {
-      throw new Error(
-        "Arcade did not answer with a tool list, so its app catalogue could not be read.",
-      );
-    }
-    for (const item of items) {
-      const toolkit = (
-        item as { toolkit?: { name?: unknown; description?: unknown } } | null
-      )?.toolkit;
-      if (!toolkit || typeof toolkit.name !== "string") continue;
-      const classified = isClassified(record(item)?.metadata);
-      const scopes = scopesOf(item);
-      const standing =
-        counts.get(toolkit.name) ??
-        ({
-          slug: toolkit.name,
-          name: toolkit.name,
-          description:
-            typeof toolkit.description === "string" ? toolkit.description : "",
-          logo: null,
-          categories: [],
-          actionCount: 0,
-          classifiedCount: 0,
-          scopedActionCount: 0,
-          permissions: new Set<string>(),
-          connection: { kind: "consent" },
-        } satisfies Tally);
-      standing.actionCount += 1;
-      if (classified) standing.classifiedCount += 1;
-      if (scopes.length > 0) {
-        standing.scopedActionCount += 1;
-        // SORTED, THEN JOINED. The other order makes one permission into two the first time the
-        // vendor lists the same scopes in a different sequence.
-        standing.permissions.add([...scopes].sort().join(" "));
-      }
-      counts.set(toolkit.name, standing);
-    }
-    seen += items.length;
-    const reported = (answer as { total_count?: unknown }).total_count;
-    if (typeof reported === "number") total = reported;
-    if (items.length < CATALOGUE_PAGE_SIZE) {
-      ended = true;
-      break;
-    }
-  }
-  if (!ended) {
-    throw new Error(
-      `Arcade's catalogue never ended after ${CATALOGUE_MAX_PAGES} pages, so it is not trusted.`,
-    );
-  }
-  if (total !== undefined && seen < total) {
-    throw new Error(
+  for await (const item of pagedItems({
+    pageSize: CATALOGUE_PAGE_SIZE,
+    maxPages: CATALOGUE_MAX_PAGES,
+    page: (offset) => client.tools.list({ limit: CATALOGUE_PAGE_SIZE, offset }),
+    malformed:
+      "Arcade did not answer with a tool list, so its app catalogue could not be read.",
+    unending: `Arcade's catalogue never ended after ${CATALOGUE_MAX_PAGES} pages, so it is not trusted.`,
+    incomplete: (seen, total) =>
       `Arcade listed ${seen} of ${total} actions, so its app catalogue is incomplete.`,
-    );
+  })) {
+    const toolkit = (
+      item as { toolkit?: { name?: unknown; description?: unknown } } | null
+    )?.toolkit;
+    if (!toolkit || typeof toolkit.name !== "string") continue;
+    const classified = isClassified(record(item)?.metadata);
+    const scopes = scopesOf(item);
+    const standing =
+      counts.get(toolkit.name) ??
+      ({
+        slug: toolkit.name,
+        name: toolkit.name,
+        description:
+          typeof toolkit.description === "string" ? toolkit.description : "",
+        logo: null,
+        categories: [],
+        actionCount: 0,
+        classifiedCount: 0,
+        scopedActionCount: 0,
+        permissions: new Set<string>(),
+        connection: { kind: "consent" },
+      } satisfies Tally);
+    standing.actionCount += 1;
+    if (classified) standing.classifiedCount += 1;
+    if (scopes.length > 0) {
+      standing.scopedActionCount += 1;
+      // SORTED, THEN JOINED. The other order makes one permission into two the first time the
+      // vendor lists the same scopes in a different sequence.
+      standing.permissions.add([...scopes].sort().join(" "));
+    }
+    counts.set(toolkit.name, standing);
   }
   // `permissionCount` IS READ OFF THE FINISHED SET, never kept per page: a size taken mid-listing
   // is a count of the sets seen so far, which is a different number on every page but the last.
@@ -220,6 +279,11 @@ type ConnectionRow = Arcade.Admin.UserConnectionResponse;
 const AUTH_PROVIDER_PAGE_SIZE = 100;
 /** A runaway guard, not a bound. */
 const AUTH_PROVIDER_MAX_PAGES = 100;
+
+/** Page size for the user-connection listing. A short page ends it, as `listApps`. */
+const CONNECTION_PAGE_SIZE = 100;
+/** A runaway guard, not a bound. */
+const CONNECTION_MAX_PAGES = 100;
 
 /**
  * The INSTANCE ids of every auth provider this project has configured of one TYPE.
@@ -249,43 +313,23 @@ async function authProviderInstances(
 ): Promise<Set<string>> {
   const wanted = authProvider.toLowerCase();
   const instances = new Set<string>();
-  let seen = 0;
-  let total: number | undefined;
-  let ended = false;
-  for (let page = 0; page < AUTH_PROVIDER_MAX_PAGES; page += 1) {
-    const answer = await client.admin.authProviders.list({
-      query: { limit: AUTH_PROVIDER_PAGE_SIZE, offset: seen },
-    });
-    const items = (answer as { items?: unknown } | null)?.items;
-    if (!Array.isArray(items)) {
-      throw new Error(
-        `Arcade did not answer with an auth-provider list, so the configurations of ${authProvider} its connections are held under could not be read.`,
-      );
-    }
-    for (const item of items) {
-      const config = record(item);
-      const instance = textOf(config?.id);
-      if (instance && textOf(config?.provider_id)?.toLowerCase() === wanted) {
-        instances.add(instance.toLowerCase());
-      }
-    }
-    seen += items.length;
-    const reported = (answer as { total_count?: unknown }).total_count;
-    if (typeof reported === "number") total = reported;
-    if (items.length < AUTH_PROVIDER_PAGE_SIZE) {
-      ended = true;
-      break;
-    }
-  }
-  if (!ended) {
-    throw new Error(
-      `Arcade's auth-provider list never ended after ${AUTH_PROVIDER_MAX_PAGES} pages, so it is not trusted.`,
-    );
-  }
-  if (total !== undefined && seen < total) {
-    throw new Error(
+  for await (const item of pagedItems({
+    pageSize: AUTH_PROVIDER_PAGE_SIZE,
+    maxPages: AUTH_PROVIDER_MAX_PAGES,
+    page: (offset) =>
+      client.admin.authProviders.list({
+        query: { limit: AUTH_PROVIDER_PAGE_SIZE, offset },
+      }),
+    malformed: `Arcade did not answer with an auth-provider list, so the configurations of ${authProvider} its connections are held under could not be read.`,
+    unending: `Arcade's auth-provider list never ended after ${AUTH_PROVIDER_MAX_PAGES} pages, so it is not trusted.`,
+    incomplete: (seen, total) =>
       `Arcade listed ${seen} of ${total} auth providers, so its configuration list is incomplete.`,
-    );
+  })) {
+    const config = record(item);
+    const instance = textOf(config?.id);
+    if (instance && textOf(config?.provider_id)?.toLowerCase() === wanted) {
+      instances.add(instance.toLowerCase());
+    }
   }
   return instances;
 }
@@ -325,6 +369,17 @@ async function authProviderInstances(
  * `provider_id` is in that set (case-insensitively — Amendment 16's client-side fold stands). Both
  * the provider and the configuration list are read ONCE per call, never per row.
  *
+ * PAGED THROUGH {@link pagedItems}, NEVER THROUGH THE SDK'S `for await (… of … .list(…))`. That
+ * iterator asks `OffsetPage.nextPageRequestOptions`, which returns `null` the moment `total_count`
+ * is falsy — and the constructor coerces an ABSENT `total_count` to `0`. So against any engine that
+ * omits the field, the SDK's own auto-pagination stops after page one: measured at 30 connections
+ * served 10 to a page, ONE request went out, `isConnected` answered `true`, `accountName` read a
+ * name off page one, and `revoke` DELETED TEN AND ANSWERED `true` while twenty connections stayed
+ * live at the vendor. That is the outcome `revoke`'s own comment forbids — a partial ask reading as
+ * a clean success. Reading to a SHORT PAGE instead ends on evidence the engine cannot omit, and an
+ * unverifiable listing THROWS rather than answering short, so no caller here can mistake a first
+ * page for the whole of what somebody holds.
+ *
  * A ROW UNDER AN INSTANCE THE CONFIG LIST DOES NOT NAME DOES NOT MATCH — a provider configuration
  * deleted while a connection outlives it. That is fail-closed: the row is left alone rather than
  * deleted on a guess about which vendor it belongs to.
@@ -344,9 +399,21 @@ async function connectionsFor(
   if (authProvider === null) return [];
   const instances = await authProviderInstances(client, authProvider);
   const rows: ConnectionRow[] = [];
-  for await (const row of client.admin.userConnections.list({
-    user_id: vendorUserId,
+  for await (const item of pagedItems({
+    pageSize: CONNECTION_PAGE_SIZE,
+    maxPages: CONNECTION_MAX_PAGES,
+    page: (offset) =>
+      client.admin.userConnections.list({
+        user_id: vendorUserId,
+        limit: CONNECTION_PAGE_SIZE,
+        offset,
+      }),
+    malformed: `Arcade did not answer with a connection list, so what this account holds at ${toolkit} could not be read.`,
+    unending: `Arcade's connection list never ended after ${CONNECTION_MAX_PAGES} pages, so it is not trusted.`,
+    incomplete: (seen, total) =>
+      `Arcade listed ${seen} of ${total} connections, so what this account holds at ${toolkit} could not be read in full.`,
   })) {
+    const row = item as ConnectionRow;
     const instance = textOf(row.provider_id)?.toLowerCase();
     if (instance !== undefined && instances.has(instance)) rows.push(row);
   }
@@ -464,20 +531,36 @@ function grantStateOf(item: unknown): GrantState[] {
  * and reads no per-person state off the answer, because a catalogue is the same for everybody and a
  * per-person listing would make it one person's. Here the question IS about a person, so the
  * account's vendor id goes out with it.
+ *
+ * PAGED TO THE END, as `listApps` is and for its reason: this answers ONE `GrantState` PER ACTION,
+ * so a single first page would quietly drop every action past it — `GithubApi` publishes hundreds —
+ * and the grants screen would show a partial holding as the whole of one. A short page ends it and
+ * an unverifiable listing throws; see {@link pagedItems}.
  */
 async function grantsFor(
   client: Arcade,
   vendorUserId: string,
   toolkit: string,
 ): Promise<GrantState[]> {
-  const page = await client.tools.list({ toolkit, user_id: vendorUserId });
-  const items = page?.items;
-  if (!Array.isArray(items)) {
-    throw new Error(
-      `Arcade did not answer with an action list for ${toolkit}, so what this account holds there could not be read.`,
-    );
+  const grants: GrantState[] = [];
+  for await (const item of pagedItems({
+    pageSize: CATALOGUE_PAGE_SIZE,
+    maxPages: CATALOGUE_MAX_PAGES,
+    page: (offset) =>
+      client.tools.list({
+        toolkit,
+        user_id: vendorUserId,
+        limit: CATALOGUE_PAGE_SIZE,
+        offset,
+      }),
+    malformed: `Arcade did not answer with an action list for ${toolkit}, so what this account holds there could not be read.`,
+    unending: `Arcade's action list for ${toolkit} never ended after ${CATALOGUE_MAX_PAGES} pages, so it is not trusted.`,
+    incomplete: (seen, total) =>
+      `Arcade listed ${seen} of ${total} actions for ${toolkit}, so what this account holds there could not be read in full.`,
+  })) {
+    grants.push(...grantStateOf(item));
   }
-  return items.flatMap(grantStateOf);
+  return grants;
 }
 
 /**
@@ -494,6 +577,14 @@ async function grantsFor(
  * ONE PAGE AND NO PAGING, which is what makes this free: every tool in a toolkit shares its auth
  * provider — that is what makes it a toolkit. `listApps` pages to the end because it is COUNTING
  * actions; this is reading a per-toolkit fact off any of them.
+ *
+ * IT IS THE ONLY LISTING IN THIS FILE LEFT UNPAGED, DELIBERATELY. `grantsFor` and `connectionsFor`
+ * were paged because each answers ONE THING PER ROW, so a first page of theirs is a partial answer
+ * wearing a whole one's clothes. This answers one thing for the WHOLE TOOLKIT, so a further page
+ * can only repeat what the first already said — and the cost of paging it would be paid on every
+ * `isConnected`, `accountName` and `revoke`. A toolkit whose later pages disagreed with its first
+ * would be resolved here rather than unanswered; that is the known edge of this choice, and it is
+ * the vendor contradicting what a toolkit is.
  *
  * AND IT GUARDS RATHER THAN ASSUMES. The DISTINCT non-null provider ids on the page are collected
  * and anything other than exactly one answers `null`, so a toolkit that disagrees with itself is
@@ -540,12 +631,25 @@ export function createArcadeClient(apiKey: string): {
 } {
   const client = new Arcade({ apiKey });
   const actions: ArcadeActions = {
-    listTools: async (q) =>
-      await client.tools.list({
+    // `total_count` IS NORMALIZED HERE, and this is the only place it can be. The transport
+    // (`./arcade`) must not import this file — that direction is a cycle — so it cannot reach
+    // {@link reportedTotalOf}, and what it receives has to already tell "the vendor did not say"
+    // apart from "the vendor said zero". Handing it the SDK's `OffsetPage` does not: that object's
+    // `total_count` is `body.total_count || 0`, so `listTools` read a `0` off an answer that
+    // carried no total and its `raw.length < total` cross-check could never fire. The FIELD IS
+    // OMITTED when the vendor omitted it, which is what the declared `total_count?: number` means.
+    listTools: async (q) => {
+      const answer = await client.tools.list({
         toolkit: q.toolkit,
         limit: q.limit,
         offset: q.offset,
-      }),
+      });
+      // Passed through unchecked: a malformed listing is the transport's sentence to write, and
+      // its own `Array.isArray` guard is what writes it.
+      const items = record(answer)?.items as unknown[];
+      const total = reportedTotalOf(answer);
+      return total === undefined ? { items } : { items, total_count: total };
+    },
     execute: async (r) => {
       try {
         return await client.tools.execute({

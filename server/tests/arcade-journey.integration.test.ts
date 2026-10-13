@@ -414,9 +414,13 @@ function installVendor() {
     (...args: unknown[]) => {
       const { user_id: userId } = args[0] as { user_id: string };
       const rows = vendorConnections.filter((row) => row.user_id === userId);
-      return (async function* () {
-        for (const row of rows) yield row;
-      })();
+      // A PAGE, as the real `list` resolves to. `connectionsFor` pages the listing itself: the
+      // SDK's own auto-pagination stops after page one when the engine omits `total_count`.
+      return Promise.resolve({
+        items: rows,
+        offset: 0,
+        total_count: rows.length,
+      });
     },
   );
 
