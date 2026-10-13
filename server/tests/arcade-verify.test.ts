@@ -66,6 +66,8 @@ const MINTED = "ar_minted_for_this_attempt";
 const APP_URL = "https://app.example";
 /** A stand-in for the live `gho_…` the vendor's own status reply carries beside the three fields. */
 const TOKEN = `gho_live_access_token_${suite}`;
+/** The profile address the same reply carries, which is no more the route's to repeat. */
+const EMAIL = "person@example.test";
 
 /** Every call this suite lets reach the seam. A refusal that spends one is a refusal too late. */
 let confirmCalls: { handle: string; vendorUserId: string }[] = [];
@@ -258,6 +260,79 @@ async function expectNothingWritten() {
     connections: connections.length,
     successEvents: events.length,
   }).toEqual({ connections: 0, successEvents: 0 });
+}
+
+/**
+ * EVERY STRING A VALUE CARRIES, however deeply it is buried, and not `String(value)`.
+ *
+ * A console argument is not a string, an audit row is not a string, and a response is not a string.
+ * `String({ token })` is `"[object Object]"`, so a confinement check that flattened each argument
+ * that way would read a leaked credential as six harmless characters — and the vendor status reply
+ * the D31 case feeds through carries its token inside `context: { token }`, which is exactly the
+ * shape that flattening hides. `JSON.stringify` is better but still blind to a `Map`, a `Set`, an
+ * `Error`'s message, a key that IS the secret, and anything that renders itself through its own
+ * `toString`. So the value is WALKED: array and set members, map keys and values, own property
+ * names and their values, an error's message, name, stack and cause, and the rendering of any
+ * object that renders as something other than its default tag.
+ */
+function harvest(value: unknown, into: string[], seen: Set<object>): void {
+  if (value === null || value === undefined) return;
+  if (typeof value === "string") {
+    into.push(value);
+    return;
+  }
+  if (typeof value !== "object" && typeof value !== "function") {
+    into.push(String(value));
+    return;
+  }
+  const object = value as object;
+  if (seen.has(object)) return;
+  seen.add(object);
+  // Anything with a `toString` of its own: an Error, a URL, a Buffer, a class that renders itself.
+  try {
+    const rendered = String(object);
+    if (rendered !== Object.prototype.toString.call(object))
+      into.push(rendered);
+  } catch {
+    // A value that refuses to render still has its properties walked below.
+  }
+  if (value instanceof Error) {
+    into.push(value.name, value.message, value.stack ?? "");
+    harvest((value as { cause?: unknown }).cause, into, seen);
+  }
+  if (Array.isArray(value) || value instanceof Set) {
+    for (const item of value) harvest(item, into, seen);
+  }
+  if (value instanceof Map) {
+    for (const [key, item] of value) {
+      harvest(key, into, seen);
+      harvest(item, into, seen);
+    }
+  }
+  for (const key of Reflect.ownKeys(object)) {
+    if (typeof key === "string") into.push(key);
+    try {
+      harvest((object as Record<PropertyKey, unknown>)[key], into, seen);
+    } catch {
+      // A throwing getter hides nothing the other properties do not already show.
+    }
+  }
+}
+
+/**
+ * Where a secret shows up inside a value, as the strings that carry it — EMPTY when it is confined.
+ * Returned rather than asserted so a failure names the leaking string instead of saying `false`.
+ */
+function mentionsOf(value: unknown, secret: string): string[] {
+  const found: string[] = [];
+  harvest(value, found, new Set());
+  return found.filter((text) => text.includes(secret));
+}
+
+/** A whole answer as the browser would receive it: every header, and the body, never one field. */
+async function asDelivered(response: Response) {
+  const copy = response.clone();
+  return { headers: [...copy.headers], body: await copy.text() };
 }
 
 /** The attempt row itself, which is what every "nothing was written" case is really about. */
@@ -698,7 +773,9 @@ describe("what the authorization's own status decides", () => {
 
     const response = await verify(ACTOR, "?flow_id=flow-abc");
     await expectRefusal(response, "vendor-unavailable");
-    expect(response.headers.get("location")).not.toContain(TOKEN);
+    // THE WHOLE ANSWER: the vendor's failure carries the token in its message, so a check of
+    // `Location` alone would miss it riding another header or the body.
+    expect(mentionsOf(await asDelivered(response), TOKEN)).toEqual([]);
 
     const row = await attemptRow();
     expect(row?.completedAt).toBeNull();
@@ -1009,13 +1086,16 @@ describe("a return leg that completes", () => {
         scopes: ["gmail.read"],
         token: TOKEN,
         context: { token: TOKEN },
-        user_info: { email: "person@example.test" },
+        user_info: { email: EMAIL },
       }) as never;
 
-    const said: string[] = [];
+    /**
+     * THE ARGUMENTS THEMSELVES, not a rendering of them: a token logged inside an object is the
+     * case this test constructs, and it is the case any flattening would hide. See `harvest`.
+     */
+    const said: unknown[][] = [];
     const before = globalThis.console;
-    const hear = (...args: unknown[]) =>
-      said.push(args.map((arg) => String(arg)).join(" "));
+    const hear = (...args: unknown[]) => said.push(args);
     globalThis.console = {
       ...before,
       log: hear,
@@ -1032,13 +1112,20 @@ describe("a return leg that completes", () => {
     }
 
     expect(response.status).toBe(303);
-    expect(said.join("\n")).not.toContain(TOKEN);
-    expect(response.headers.get("location")).not.toContain(TOKEN);
+    expect(mentionsOf(said, TOKEN)).toEqual([]);
+    expect(mentionsOf(said, EMAIL)).toEqual([]);
+
+    // THE WHOLE ANSWER, because a credential that misses `Location` can still ride another header
+    // or the body the browser is handed on the way to it.
+    const delivered = await asDelivered(response);
+    expect(mentionsOf(delivered, TOKEN)).toEqual([]);
+    expect(mentionsOf(delivered, EMAIL)).toEqual([]);
 
     const { connections, events } = await written();
-    expect(JSON.stringify(events)).not.toContain(TOKEN);
-    expect(JSON.stringify(events)).not.toContain("person@example.test");
-    expect(JSON.stringify(connections)).not.toContain(TOKEN);
+    expect(mentionsOf(events, TOKEN)).toEqual([]);
+    expect(mentionsOf(events, EMAIL)).toEqual([]);
+    expect(mentionsOf(connections, TOKEN)).toEqual([]);
+    expect(mentionsOf(connections, EMAIL)).toEqual([]);
   });
 });
 
