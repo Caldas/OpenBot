@@ -590,6 +590,7 @@ afterAll(async () => {
     .delete(mcpServers)
     .where(inArray(mcpServers.id, [MAIL_ROW, DIARY_ROW]));
   await database.delete(agents).where(eq(agents.id, BOT));
+  await database.$client.close();
 });
 
 describe("an Arcade deployment, from the picker to the disconnect", () => {

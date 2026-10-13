@@ -1,5 +1,5 @@
 // server/tests/arcade-siblings.test.ts
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { inArray } from "drizzle-orm";
 import { createAuditStore } from "../src/audit";
@@ -12,6 +12,13 @@ import { connectionSiblings, createPluginStore } from "../src/plugins/store";
 import { TEST_POOL, testDatabaseUrl } from "./support/database";
 
 const database = createDatabase(testDatabaseUrl(), TEST_POOL);
+
+/* The pool this file opened, given back. `bun test` runs every file in one process and nothing
+ * reaps an idle connection, so a pool held to the end of the run is two connections the rest of
+ * the suite cannot have. */
+afterAll(async () => {
+  await database.$client.close();
+});
 const suite = randomUUID().slice(0, 8);
 const gmail = `Gmail-${suite}`;
 const calendar = `GoogleCalendar-${suite}`;

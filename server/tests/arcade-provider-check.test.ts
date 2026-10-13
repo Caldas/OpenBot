@@ -23,6 +23,7 @@ afterAll(async () => {
   await database.execute(
     sql`delete from brokered_connections where app = ${app}`,
   );
+  await database.$client.close();
 });
 
 describe("brokered_connections.provider", () => {

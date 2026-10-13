@@ -180,6 +180,7 @@ const grants = (
 
 afterAll(async () => {
   await database.delete(mcpServers).where(inArray(mcpServers.id, ids));
+  await database.$client.close();
 });
 
 describe("whose identity is asked about", () => {

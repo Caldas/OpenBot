@@ -97,6 +97,7 @@ beforeAll(async () => {
 afterAll(async () => {
   // Cascades to the attempts.
   await database.delete(mcpServers).where(eq(mcpServers.id, serverId));
+  await database.$client.close();
 });
 
 describe("claimAuthorizationAttempt", () => {

@@ -42,6 +42,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await database.execute(sql`delete from mcp_servers where id = ${serverId}`);
+  await database.$client.close();
 });
 
 describe("pending_authorizations", () => {

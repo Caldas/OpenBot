@@ -78,6 +78,12 @@ async function seed(provider: BrokerProvider) {
 
 beforeEach(cleanup);
 afterAll(cleanup);
+/* The pool this file opened, given back. `bun test` runs every file in one process and nothing
+ * reaps an idle connection, so a pool held to the end of the run is two connections the rest of
+ * the suite cannot have. */
+afterAll(async () => {
+  await database.$client.close();
+});
 
 for (const provider of ["arcade", "composio"] as const) {
   describe(`shared use urls under ${provider}`, () => {

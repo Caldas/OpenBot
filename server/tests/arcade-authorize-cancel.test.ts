@@ -180,6 +180,7 @@ afterAll(async () => {
       .delete(pendingAuthorizations)
       .where(inArray(pendingAuthorizations.actorId, actors));
   }
+  await database.$client.close();
 });
 
 beforeEach(() => {

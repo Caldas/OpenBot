@@ -331,6 +331,7 @@ afterAll(async () => {
     .delete(brokeredConnections)
     .where(like(brokeredConnections.app, `Gmail-${suite}-%`));
   await database.delete(mcpServers).where(eq(mcpServers.id, APP));
+  await database.$client.close();
 });
 
 /**

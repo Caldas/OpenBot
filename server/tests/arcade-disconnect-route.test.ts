@@ -186,6 +186,7 @@ afterAll(async () => {
       toolkits.map((t) => `srv-${t}`),
     ),
   );
+  await database.$client.close();
 });
 
 describe("the sibling list the confirmation shows", () => {

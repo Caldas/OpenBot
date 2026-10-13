@@ -187,6 +187,7 @@ afterAll(async () => {
   await database
     .delete(brokeredConnections)
     .where(like(brokeredConnections.app, `%-${suite}`));
+  await database.$client.close();
 });
 
 describe("completeAuthorizationAttempt", () => {
