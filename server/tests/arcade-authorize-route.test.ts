@@ -409,6 +409,28 @@ describe("POST /servers/:id/authorize", () => {
       expect(survivor?.createdAt.getTime()).toBe(newer?.createdAt.getTime());
     });
 
+    test("a definite refusal whose clean-up also fails still answers the refusal, not a bodyless 500", async () => {
+      const actor = person("definite-stuck");
+      beforeMint = refuse;
+      const response = await authorize(
+        appAs("user", actor, "arcade", {
+          discardAuthorizationAttempt: async () => {
+            throw new Error("Failed query: delete from pending_authorizations");
+          },
+        }),
+        personalApp,
+      );
+      // The refusal the handler worked out, not the generic 500 a thrown clean-up produces.
+      expect(response.status).toBe(502);
+      const body = (await response.json()) as { error?: string };
+      expect(typeof body.error).toBe("string");
+      expect(JSON.stringify(body)).not.toContain("vendor-body-secret");
+      expect(JSON.stringify(body)).not.toContain("Failed query");
+      // Nothing cleared it, so the row stands and expires on its own.
+      const [row] = await attemptsFor(actor);
+      expect(row).toMatchObject({ authId: null, completedAt: null });
+    });
+
     test("an authored refusal is definite: nothing reached the vendor, so the attempt is deleted", async () => {
       const actor = person("authored");
       const { BrokerRefusalError } = await import("../src/plugins/broker");
