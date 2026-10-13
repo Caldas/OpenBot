@@ -22,7 +22,7 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { getCookies } from "better-auth/cookies";
-import { and, eq, like } from "drizzle-orm";
+import { and, asc, eq, inArray, like, sql } from "drizzle-orm";
 import { createApp } from "../src/app";
 import { createAuditStore } from "../src/audit";
 import { createAuth } from "../src/auth/index";
@@ -97,7 +97,8 @@ let revokeAnswer: () => Promise<boolean> = async () => true;
  * only where an operator named their provider configuration after the app, so a route deriving one
  * from the other would pass here and be wrong where it shipped.
  */
-let authProviderAnswer: () => Promise<string | null> = async () => "google";
+let authProviderAnswer: (toolkit: string) => Promise<string | null> =
+  async () => "google";
 
 /**
  * A broker that DECLARES the correlated authorization flow, which is the only thing this route's
@@ -106,7 +107,13 @@ let authProviderAnswer: () => Promise<string | null> = async () => "google";
  */
 const broker: ConnectedAppBroker = {
   grantIsLocal: false,
-  authProviderOf: async () => authProviderAnswer(),
+  /*
+   * PER TOOLKIT, because which apps share one connection is the question `(identity, auth
+   * provider)` answers and a stub that gave every app the same provider could not pose it: an app
+   * on ANOTHER provider, held by the same identity and not ended by this revoke, is the control
+   * for the sibling cases below.
+   */
+  authProviderOf: async (toolkit) => authProviderAnswer(toolkit),
   authorizations: {
     status: async (id) => {
       statusCalls.push(id);
@@ -880,6 +887,52 @@ describe("a consent whose account context has moved on", () => {
       .where(eq(mcpServers.id, APP));
   }
 
+  /** A connection this identity holds for one app, as the row this deployment keeps for it. */
+  async function hold(app: string, vendorUserId: string) {
+    await database.insert(brokeredConnections).values({
+      provider: "arcade",
+      app,
+      holder: "person",
+      userId: vendorUserId,
+      vendorUserId,
+    });
+  }
+
+  /**
+   * Which of these apps this deployment still records a connection for ON ONE IDENTITY, in name
+   * order. Keyed on the identity because the whole question here is which identity's rows went:
+   * the retired one's, and never the account that is live now.
+   */
+  const rowsFor = async (names: string[], vendorUserId: string) =>
+    (
+      await database
+        .select({ app: brokeredConnections.app })
+        .from(brokeredConnections)
+        .where(
+          and(
+            inArray(brokeredConnections.app, names),
+            eq(brokeredConnections.vendorUserId, vendorUserId),
+          ),
+        )
+        .orderBy(asc(brokeredConnections.app))
+    ).map((row) => row.app);
+
+  /** What the trail says ended, by app, with the payload a reader would be answered with. */
+  const disconnectsFor = (names: string[]) =>
+    database
+      .select({
+        app: auditEvents.targetId,
+        payload: sql<Record<string, unknown>>`payload`,
+      })
+      .from(auditEvents)
+      .where(
+        and(
+          eq(auditEvents.eventType, "mcp.account_disconnected"),
+          inArray(auditEvents.targetId, names),
+        ),
+      )
+      .orderBy(asc(auditEvents.targetId));
+
   test("refuses, withdraws the RETIRED identity's grant and leaves the CURRENT account alone", async () => {
     await giveAttempt({ authId: MINTED, ageMinutes: 1 });
     await switchToShared();
@@ -952,6 +1005,134 @@ describe("a consent whose account context has moved on", () => {
     expect(row?.completedAt).not.toBeNull();
     expect(row?.authId).toBe(MINTED);
     await expectNothingWritten();
+  });
+
+  /*
+   * G3: THE ONE REVOKE ABOVE ENDS MORE THAN THE APP IT NAMES, AND THE ROWS HERE HAVE TO SAY SO.
+   *
+   * On Arcade a connection is keyed `(identity, auth provider)`, so withdrawing the retired
+   * identity's app ends every app of that identity sharing the provider. A sibling's row left
+   * standing is this deployment claiming a live connection for an app the vendor has already
+   * disconnected: the person sees it listed as connected and it fails on first use.
+   *
+   * The apps are named off this test's own suite-scoped toolkit, so the suite's `like` cleanup
+   * takes them and no other case can see them.
+   */
+  const siblingApp = () => `${TOOLKIT}+calendar`;
+  const otherProviderApp = () => `${TOOLKIT}+slack`;
+
+  test("the apps the same revoke ended lose their rows too, and the trail names what ended them", async () => {
+    await giveAttempt({ authId: MINTED, ageMinutes: 1 });
+    await switchToShared();
+    await giveCurrentAccountAConnection();
+    // The retired identity holds the app this consent was for and two more: one on the SAME auth
+    // provider, which this revoke ends with it, and one on another, which it cannot reach.
+    await hold(TOOLKIT, ACTOR);
+    await hold(siblingApp(), ACTOR);
+    await hold(otherProviderApp(), ACTOR);
+    authProviderAnswer = async (toolkit) =>
+      toolkit.endsWith("+slack") ? "slack" : "google";
+
+    await expectRefusal(
+      await verify(ACTOR, "?flow_id=flow-abc"),
+      "context-changed",
+    );
+
+    // STILL ONE ASK, AND STILL ONLY THE RETIRED IDENTITY'S: the siblings are what that ask ends,
+    // not more calls to make.
+    expect(revokeCalls).toEqual([
+      {
+        account: { holder: "person", userId: ACTOR, vendorUserId: ACTOR },
+        toolkit: TOOLKIT,
+      },
+    ]);
+
+    // The retired identity's two apps on the ended connection are gone from this deployment's
+    // records; the app on another provider is untouched.
+    expect(
+      await rowsFor([TOOLKIT, siblingApp(), otherProviderApp()], ACTOR),
+    ).toEqual([otherProviderApp()]);
+
+    // AND THE CURRENT ACCOUNT'S ROW IS STILL THERE: a connection is keyed on the identity.
+    const { connections } = await written();
+    expect(connections.length).toBe(1);
+    expect(connections[0]?.holder).toBe("deployment");
+    expect(connections[0]?.vendorUserId).toBe(SHARED_IDENTITY);
+
+    const trail = await disconnectsFor([
+      TOOLKIT,
+      siblingApp(),
+      otherProviderApp(),
+    ]);
+    expect(trail.map((event) => event.app)).toEqual(
+      [TOOLKIT, siblingApp()].sort(),
+    );
+    // The sibling's row names the app whose withdrawal ended it, and claims the vendor WAS asked:
+    // `vendorRevocationRequested: false` would say nobody asked about an account that is gone.
+    expect(
+      trail.find((event) => event.app === siblingApp())?.payload,
+    ).toMatchObject({
+      reason: "context_changed",
+      endedWith: TOOLKIT,
+      unansweredSiblings: 0,
+      vendorRevocationRequested: true,
+      owner: ACTOR,
+    });
+    // The asked app's own row names no other app beside it: it was ended by its own ask.
+    const asked = trail.find((event) => event.app === TOOLKIT)?.payload;
+    expect(asked).toMatchObject({
+      reason: "context_changed",
+      vendorRevocationRequested: true,
+      owner: ACTOR,
+    });
+    expect(asked).not.toHaveProperty("endedWith");
+
+    const row = await attemptRow();
+    expect(row?.outcome).toBe("withdrawn");
+  });
+
+  test("a revoke that answers false clears nothing and claims no collateral", async () => {
+    await giveAttempt({ authId: MINTED, ageMinutes: 1 });
+    await switchToShared();
+    await hold(TOOLKIT, ACTOR);
+    await hold(siblingApp(), ACTOR);
+    revokeAnswer = async () => false;
+
+    await expectRefusal(
+      await verify(ACTOR, "?flow_id=flow-abc"),
+      "context-changed",
+    );
+
+    // "Nothing found, or we could not work out what to withdraw": no row may be cleared and no
+    // app claimed ended on the strength of an answer nobody got.
+    expect(await rowsFor([TOOLKIT, siblingApp()], ACTOR)).toEqual(
+      [TOOLKIT, siblingApp()].sort(),
+    );
+    expect(await disconnectsFor([TOOLKIT, siblingApp()])).toEqual([]);
+    expect((await attemptRow())?.outcome).toBe("unreconciled");
+  });
+
+  test("a sibling set this deployment could not resolve stops the revoke rather than widening it", async () => {
+    await giveAttempt({ authId: MINTED, ageMinutes: 1 });
+    await switchToShared();
+    await hold(TOOLKIT, ACTOR);
+    await hold(siblingApp(), ACTOR);
+    authProviderAnswer = async () => {
+      throw new Error("the vendor would not say which provider holds this");
+    };
+
+    await expectRefusal(
+      await verify(ACTOR, "?flow_id=flow-abc"),
+      "context-changed",
+    );
+
+    // Ending apps this deployment cannot then name is the failure this is about, so nothing is
+    // asked of the vendor at all and the grant is left as a row somebody can act on.
+    expect(revokeCalls).toEqual([]);
+    expect(await rowsFor([TOOLKIT, siblingApp()], ACTOR)).toEqual(
+      [TOOLKIT, siblingApp()].sort(),
+    );
+    expect((await attemptRow())?.outcome).toBe("unreconciled");
   });
 });
 

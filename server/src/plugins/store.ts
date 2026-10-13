@@ -8168,6 +8168,108 @@ export function createPluginStore(options: PluginStoreOptions) {
     },
 
     /**
+     * THE LOCAL SIDE OF A WITHDRAWAL SOMEBODY ELSE ALREADY MADE AT THE VENDOR: the rows this
+     * deployment holds for an account a revoke has just ended, and the trail that says why they
+     * went.
+     *
+     * WHO THIS IS FOR. The verifier refuses a consent whose context moved on and withdraws the
+     * RETIRED identity's app at the vendor — a revoke it issues itself, outside this store,
+     * because the decision is the route's and the attempt row is what records it. On Arcade that
+     * one revoke ends the whole `(identity, auth provider)` connection and so every app sharing
+     * it, and the rows here for those apps would otherwise be left standing: this deployment's own
+     * records claiming live connections for apps the vendor has already disconnected. A person
+     * then sees apps listed as connected that fail on first use, and nothing tells them otherwise.
+     * This is the write that stops that, and it is a STORE method rather than route code for the
+     * reason every other row write is: `brokered_connections` and the trail are this file's.
+     *
+     * IT ASKS NOTHING OF ANY VENDOR AND DECIDES NOTHING BUT WHAT A LOCAL ROW SAYS. The caller
+     * resolved the siblings — of
+     * {@link siblingApps}, BEFORE its revoke went out, which is the ordering {@link
+     * disconnectBrokered} and {@link removeServer} both keep — and the caller watched its revoke
+     * ANSWER TRUE. Called on anything less, it would be claiming an account gone on the strength
+     * of an answer nobody got; that rule is {@link removeServer}'s and this one is its other half.
+     *
+     * ONLY A ROW THAT WAS ACTUALLY HERE GETS A TRAIL ROW (`if (!deleted) continue`), which is
+     * again {@link removeServer}'s rule. The act itself is already recorded — on the attempt row,
+     * as `withdrawn` — so these rows exist to explain why an app's connection VANISHED from this
+     * deployment's records, and an app that had no row here had nothing to explain.
+     *
+     * `reason` IS ONE WORD AND IT IS THIS ONE. "The consent's context moved on" is not any of the
+     * four {@link disconnectBrokered} takes — nobody disconnected anything, nobody was offboarded,
+     * and a mode switch is only one of the several ways the context can move — so the trail gets
+     * its own word rather than the nearest-looking lie. Fixed in the type so there is no second
+     * caller spelling it differently.
+     */
+    async clearWithdrawnAccount(input: {
+      toolkit: string;
+      account: AccountRef;
+      /** The apps the caller's revoke ended besides `toolkit`; {@link siblingApps} answers it. */
+      siblings: string[];
+      /**
+       * How many apps on this identity could not be asked about, an integer and never names, which
+       * qualifies the `endedWith` claim and goes beside it and nowhere else; see
+       * {@link resolveSiblings}.
+       */
+      unanswered: number;
+      by: string;
+      reason: "context_changed";
+    }): Promise<{ cleared: string[] }> {
+      const cleared: string[] = [];
+      /*
+       * The asked app first, then the apps that went with it, so the trail reads in the order the
+       * withdrawal happened. The asked app's own row names no other app beside it — it was ended
+       * by its own ask — and a sibling's names the app that asked, which is the only thing that
+       * tells a reader why a connection they never touched is gone.
+       */
+      for (const app of new Set([input.toolkit, ...input.siblings])) {
+        /*
+         * AN APP THIS DEPLOYMENT HOLDS A KEY FOR IS NOT WHAT THAT REVOKE ENDED, so its row stands
+         * and the trail says nothing about it. The withdrawal ended an OAuth connection; a key
+         * sits in this deployment's own records and no revoke at the vendor reaches it. Deleting
+         * it would destroy a credential nothing withdrew, and recording it would claim a vendor
+         * ended something it never held — which is the reading {@link disconnectBrokered} writes
+         * `vendorRevocationRequested: false` for, there on an act that really was about that app.
+         * The scheme is read off the row while the row is still here, and it is a local read.
+         */
+        if ((await brokeredAppKind(app)) === "key") continue;
+        const [deleted] = await database
+          .delete(brokeredConnections)
+          .where(accountRow(app, input.account))
+          .returning({ app: brokeredConnections.app });
+        if (!deleted) continue;
+        cleared.push(app);
+        await recordAuditEvent(auditStore, {
+          eventType: "mcp.account_disconnected",
+          targetType: "mcp_server",
+          targetId: app,
+          payload: {
+            actor: input.by,
+            server: app,
+            owner:
+              input.account.holder === "person"
+                ? input.account.userId
+                : "deployment",
+            reason: input.reason,
+            /*
+             * TRUE FOR EVERY ROW HERE, AND IT IS NOT A GUESS: this method is reached only from a
+             * revoke that answered true, and on Arcade that ask ended the siblings with the app it
+             * named. `vendorRevocationRequested: false` means "no vendor was asked", which is the
+             * one thing none of these rows may say.
+             */
+            vendorRevocationRequested: true,
+            ...(app === input.toolkit
+              ? {}
+              : {
+                  endedWith: input.toolkit,
+                  unansweredSiblings: input.unanswered,
+                }),
+          },
+        });
+      }
+      return { cleared };
+    },
+
+    /**
      * Retire every connector credential belonging to one person.
      *
      * WHAT THIS IS FOR. "We removed their access" has to be true of the thing that matters, which is
