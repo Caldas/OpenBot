@@ -276,6 +276,50 @@ export type ArcadeFailure = {
 };
 
 /**
+ * A REFUSAL FROM ARCADE AS A REAL `Error`, CARRYING THIS DEPLOYMENT'S SENTENCE AND NOT THE VENDOR'S.
+ *
+ * TWO DEFECTS IN ONE CLASS, and both were measured rather than imagined.
+ *
+ * A BARE OBJECT IS NOT A REASON. `createArcadeClient`'s `execute` used to `throw` the normalized
+ * failure itself — a plain `{ status, name, message }`. `reasonWithoutStatement`, which is the one
+ * door every log line in `routes.ts` copies a reason through, answers `String(thrown)` for anything
+ * that is not an `Error`: the literal text `[object Object]`. So the single log line written at the
+ * moment a tool call failed carried no information whatsoever, and there was no stack beside it.
+ *
+ * AND THE VENDOR'S WORDS ARE DROPPED HERE, which is the half the type enforces. The SDK's `APIError`
+ * builds its own `message` as `${status} ${body.message ?? JSON.stringify(body)}`
+ * (`@arcadeai/arcadejs`, `core/error.js: makeMessage`), so an `APIError` allowed to escape the
+ * adapter puts the vendor's RESPONSE BODY into every reader that quotes a message — an admin page,
+ * a log line, a model's context, an audit row. On this vendor that body is not inert: the auth
+ * paths answer with an `authorization` whose `url` is a bearer capability and whose `context.token`
+ * is a live provider access token, and the adapter's `authorizations.status` already inverts this
+ * codebase's carry-the-vendor-error-as-`cause` convention for exactly that reason. This is the same
+ * refusal one layer out: the constructor keeps `status` and the body's `error.name` — the two
+ * MACHINE fields this deployment keys decisions on, in {@link isAuthorizationRequired} and in the
+ * route that decides whether a failed mint is definite — and drops the vendor's PROSE on the floor.
+ * Nothing that is not stored cannot be logged.
+ *
+ * `status` IS ALSO A TOP-LEVEL FIELD, because that is what an `APIError` presents and callers that
+ * read it off the thrown value go on working across this change.
+ */
+export class ArcadeFailureError extends Error {
+  readonly status: number | undefined;
+  readonly failure: ArcadeFailure;
+  constructor(sentence: string, failure: ArcadeFailure) {
+    super(sentence);
+    this.name = "ArcadeFailureError";
+    this.status = failure.status;
+    // THE ONE DOOR THE VENDOR'S PROSE DOES NOT COME THROUGH. Written here rather than at each
+    // construction site so that a later caller cannot pass it on by forgetting to.
+    this.failure = {
+      status: failure.status,
+      name: failure.name,
+      message: undefined,
+    };
+  }
+}
+
+/**
  * KEYED ON THE BODY'S NAME, NEVER ON THE 403. A 403 is also what a revoked key, a disabled project
  * and a rate limit look like; keyed on the status, this would tell somebody to authorize an action
  * when the deployment's key is what is wrong.
@@ -289,8 +333,14 @@ export function isAuthorizationRequired(failure: ArcadeFailure): boolean {
  * that normalizes nothing and walks no `cause`, so a cast through it would let any object at all
  * stand in for a normalized failure. Only a `name` string is required, since that is the one field
  * `isAuthorizationRequired` keys on; the rest are read as-is or left undefined.
+ *
+ * {@link ArcadeFailureError} IS ASKED FIRST AND BY TYPE, because the shape reading cannot see it:
+ * an `Error`'s `name` is its CLASS name through the prototype chain, so a duck-typed read of one
+ * answers `"ArcadeFailureError"` for every refusal and the authorize prompt below would be
+ * unreachable — which is the same trap the adapter's own comment records for a raw `APIError`.
  */
 function arcadeFailure(thrown: unknown): ArcadeFailure | null {
+  if (thrown instanceof ArcadeFailureError) return thrown.failure;
   const raw = record(thrown);
   if (!raw || typeof raw.name !== "string") return null;
   return {
