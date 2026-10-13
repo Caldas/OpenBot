@@ -44,11 +44,22 @@ export const Route = createFileRoute("/sign")({
     );
     if (user) {
       /*
-       * Signed in already, so the handle has nowhere to be lost between here and the verifier. `href`
-       * rather than `to` because the verifier is an API path, not a router route.
+       * Signed in already, so the handle has nowhere to be lost between here and the verifier.
+       *
+       * `href` rather than `to` because the verifier is an API path, not a router route — and
+       * `reloadDocument` because of what follows from that. A redirect the router is left to
+       * handle is a navigation INSIDE the app: it resolves the href against the route tree, finds
+       * nothing (there is no route for `/api/…`, and there cannot be — the verifier is served by
+       * the server, not this build), and `__root.tsx` sends an address it does not know home. The
+       * person who was part-way through connecting an app would be dropped on the home screen with
+       * the authorization they started abandoned and nothing said about it, because no request for
+       * the verifier was ever made. `reloadDocument` makes this a document navigation, which is
+       * the only kind that leaves the app and therefore the only kind that arrives.
        */
       const verifier = verifierPathFor(search.flow_id);
-      throw verifier ? redirect({ href: verifier }) : redirect({ to: "/" });
+      throw verifier
+        ? redirect({ href: verifier, reloadDocument: true })
+        : redirect({ to: "/" });
     }
     // Loaded here so the screen paints with its buttons rather than painting empty and then
     // growing them, which reads as "no providers" for exactly as long as the request takes.

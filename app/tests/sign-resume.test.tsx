@@ -4,7 +4,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   createMemoryHistory,
   createRootRoute,
+  createRoute,
   createRouter,
+  Navigate,
+  Outlet,
   RouterProvider,
 } from "@tanstack/react-router";
 import { cleanup, render, waitFor } from "@testing-library/react";
@@ -137,4 +140,88 @@ test("the sign-in starter gets the resume URL as its callbackURL", async () => {
   expect(asked[0]).toBe(
     `${window.location.origin}/api/plugins/arcade/verify?flow_id=h1`,
   );
+});
+
+/*
+ * THE RETURN LEG HAS TO ACTUALLY ARRIVE.
+ *
+ * The verifier is an API path, not a route in this app's tree. A redirect the router is left to
+ * handle inside the app therefore matches nothing, and `__root.tsx`'s `notFoundComponent` sends an
+ * unknown address home — so somebody who was asked to sign in half-way through connecting an app
+ * signs in and lands on the home screen, with the authorization they started left behind and
+ * nothing said about it. Only a document navigation reaches the verifier at all, which is why this
+ * asserts on WHERE THE BROWSER ENDS UP rather than on the shape of the thrown redirect.
+ */
+test("a signed-in arrival with a handle lands on the verifier, not back on the home screen", async () => {
+  const queryClient = new QueryClient();
+  queryClient.setQueryData(authKeys.currentUser(), { id: "u1" });
+  queryClient.setQueryData(authKeys.providers(), {
+    providers: ["google"],
+    sso: false,
+    ssoRequired: false,
+  });
+
+  // Leaving the single-page app is an assignment to `window.location`; record it rather than ask
+  // happy-dom to fetch a path no server is listening on in this test.
+  const left: string[] = [];
+  const realLocation = window.location;
+  Object.defineProperty(window, "location", {
+    configurable: true,
+    value: {
+      origin: realLocation.origin,
+      get href() {
+        return left.at(-1) ?? `${realLocation.origin}/sign?flow_id=h1`;
+      },
+      set href(url: string) {
+        left.push(url);
+      },
+      replace: (url: string) => left.push(url),
+      assign: (url: string) => left.push(url),
+    },
+  });
+
+  const root = createRootRoute({
+    component: () => <Outlet />,
+    // Mirrors app/src/routes/__root.tsx: an address this build does not know goes home.
+    notFoundComponent: () => <Navigate replace to="/" />,
+  });
+  const home = createRoute({
+    getParentRoute: () => root,
+    path: "/",
+    component: () => <p>home</p>,
+  });
+  const sign = Route.update({
+    id: "/sign",
+    path: "/sign",
+    getParentRoute: () => root,
+  } as never);
+  // The route tree is assembled by hand, so its types cannot describe it.
+  const router = createRouter({
+    routeTree: root.addChildren([home, sign]),
+    context: { queryClient },
+    history: createMemoryHistory({ initialEntries: ["/sign?flow_id=h1"] }),
+  } as never) as never;
+
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
+    // Where the browser is: the document it was sent to, or the in-app location when it was never
+    // sent anywhere.
+    const destination = () =>
+      left.at(-1) ??
+      (router as unknown as { state: { location: { href: string } } }).state
+        .location.href;
+    await waitFor(() => expect(destination()).not.toContain("/sign"));
+    expect(destination()).toBe("/api/plugins/arcade/verify?flow_id=h1");
+    // And it got there by leaving the app, which is the only way the verifier is ever requested.
+    expect(left).toEqual(["/api/plugins/arcade/verify?flow_id=h1"]);
+  } finally {
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: realLocation,
+    });
+  }
 });
