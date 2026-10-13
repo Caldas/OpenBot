@@ -19,8 +19,24 @@ import {
 /** Deeper than any real wrapping; a bound, so a cyclic `cause` cannot loop. */
 const MAX_CAUSE_DEPTH = 16;
 
+/**
+ * THE TEXT A VENDOR FIELD CARRIES, OR NOTHING — AND A STRING WITH NO TEXT IN IT IS NOTHING.
+ *
+ * `""` is absence wearing a value's clothes, and answering it as a value is what breaks every
+ * caller that then writes `textOf(a) ?? textOf(b)`: `??` falls through on null and undefined ONLY,
+ * so an empty `provider_user_info.name` SHADOWED a perfectly good `login` and the Connected-accounts
+ * screen drew a blank name on a connection that is genuinely connected. The emptiness belongs here,
+ * in the function that claims to answer "is this text", and not in a `||` at each call site — one
+ * of which would be forgotten. Whitespace-only is the same fact: a name of three spaces draws the
+ * same blank.
+ *
+ * The value is returned UNTOUCHED when it has text; this answers whether there is any, it does not
+ * reformat what the vendor sent. `authorize` below already spells this rule inline for `url` and
+ * the authorization id (`typeof x !== "string" || x === ""`), which is the same judgement made one
+ * field at a time.
+ */
 const textOf = (value: unknown): string | undefined =>
-  typeof value === "string" ? value : undefined;
+  typeof value === "string" && value.trim() !== "" ? value : undefined;
 
 /**
  * Walk the `cause` chain to the FIRST `APIError` and read its `status` and the response body's
@@ -253,16 +269,21 @@ async function listApps(client: Arcade): Promise<BrokerApp[]> {
     const toolkit = (
       item as { toolkit?: { name?: unknown; description?: unknown } } | null
     )?.toolkit;
-    if (!toolkit || typeof toolkit.name !== "string") continue;
+    // AN EMPTY NAME IS NO NAME, the same judgement {@link textOf} makes: the name is this app's
+    // SLUG as well as its label, so an action whose toolkit is named `""` would otherwise raise a
+    // blank, unconnectable row in the picker rather than being skipped as unreadable.
+    const name = textOf(toolkit?.name);
+    if (!name) continue;
     const classified = isClassified(record(item)?.metadata);
     const scopes = scopesOf(item);
     const standing =
-      counts.get(toolkit.name) ??
+      counts.get(name) ??
       ({
-        slug: toolkit.name,
-        name: toolkit.name,
-        description:
-          typeof toolkit.description === "string" ? toolkit.description : "",
+        slug: name,
+        name,
+        // An absent description IS an empty one here: the field is a label with a blank default,
+        // not an identity, so nothing is shadowed by the two reading alike.
+        description: textOf(toolkit?.description) ?? "",
         logo: null,
         categories: [],
         actionCount: 0,
@@ -279,7 +300,7 @@ async function listApps(client: Arcade): Promise<BrokerApp[]> {
       // vendor lists the same scopes in a different sequence.
       standing.permissions.add([...scopes].sort().join(" "));
     }
-    counts.set(toolkit.name, standing);
+    counts.set(name, standing);
   }
   // `permissionCount` IS READ OFF THE FINISHED SET, never kept per page: a size taken mid-listing
   // is a count of the sets seen so far, which is a different number on every page but the last.

@@ -236,4 +236,20 @@ describe("authorizations.status narrows and drops the rest", () => {
     expect(narrowed.scopes).toEqual([]);
     expect(JSON.stringify(narrowed)).not.toContain(TOKEN);
   });
+
+  /**
+   * AN EMPTY STATUS IS NOT A STATUS AND AN EMPTY USER ID IS NOT AN ID. `??` falls through on null
+   * and undefined only, so a `textOf` answering `""` as text handed the return leg an empty status
+   * in place of `"unknown"` and an empty string where the identity comparison expects `null`.
+   */
+  test("an empty status and user_id read as absent, not as empty text", async () => {
+    statusAnswers({ status: "", user_id: "   ", scopes: [] });
+    const { broker } = createArcadeClient("never-dialled");
+    const flow = broker.authorizations;
+    if (!flow) throw new Error("Arcade must declare an authorization flow.");
+
+    const narrowed = await flow.status("auth_123");
+    expect(narrowed.status).toBe("unknown");
+    expect(narrowed.userId).toBeNull();
+  });
 });
