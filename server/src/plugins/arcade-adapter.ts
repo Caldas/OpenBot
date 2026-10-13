@@ -903,18 +903,37 @@ export function createArcadeClient(apiKey: string): {
       // A `user_mismatch` answer is an ANSWER, so it surfaces as `{ mismatch: true }`; any other
       // failure is an outage or a bug and is rethrown untouched.
       confirmReturn: async ({ handle, vendorUserId }) => {
+        let answer: { auth_id?: unknown };
         try {
-          const answer = await client.auth.confirmUser({
+          answer = await client.auth.confirmUser({
             flow_id: handle,
             user_id: vendorUserId,
           });
-          return { authorizationId: answer.auth_id };
         } catch (error) {
           if (normalizeArcadeError(error)?.name === "user_mismatch") {
             return { mismatch: true };
           }
           throw error;
         }
+        // THE WHOLE SUBJECT OF THE BINDING, CHECKED HERE AS THE MINT CHECKS ITS OWN — see
+        // `authorize` above. `ConfirmUserResponse.auth_id` is DECLARED required by the SDK's types
+        // and is VALIDATED by nothing in it, so an answer that omits the field arrives as
+        // `undefined` wearing the type `string`, and `{ authorizationId: undefined }` would be a
+        // confirmation made against nothing that the seam's own type says is an id.
+        //
+        // AND IT THROWS RATHER THAN ANSWERING `{ mismatch: true }`, which is the contract routes.ts
+        // states at its binding: where the vendor's real shape differs from what was assumed, this
+        // does NOT answer a clean refusal — the return leg surfaces an outage, which is honest,
+        // because an id that could not be read is not evidence that the handle belongs to somebody
+        // else. A refusal reading "not your authorization" would blame the person for an answer
+        // their vendor failed to make.
+        const authorizationId = answer.auth_id;
+        if (typeof authorizationId !== "string" || authorizationId === "") {
+          throw new Error(
+            "Arcade confirmed a return with no authorization id.",
+          );
+        }
+        return { authorizationId };
       },
     },
   };
