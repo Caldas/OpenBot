@@ -18,7 +18,7 @@ import { mcpServers, mcpTools, pendingAuthorizations } from "../src/db/schema";
 import type { BrokerProvider } from "../src/plugins/access";
 import type { ConnectedAppBroker } from "../src/plugins/broker";
 import { createPluginRoutes } from "../src/plugins/routes";
-import { createPluginStore } from "../src/plugins/store";
+import { createPluginStore, type PluginStore } from "../src/plugins/store";
 import { TEST_POOL, testDatabaseUrl } from "./support/database";
 
 const database = createDatabase(testDatabaseUrl(), TEST_POOL);
@@ -80,6 +80,9 @@ function appAs(
   role: "admin" | "user",
   id: string,
   provider: BrokerProvider = "arcade",
+  // What this app's store does differently. One test makes the local write after a SUCCESSFUL mint
+  // fail, which is the only way to reach the route's record-after-the-fact branch.
+  override: Partial<PluginStore> = {},
 ) {
   const broker = provider === "arcade" ? arcadeBroker : composioBroker;
   const store = createPluginStore({
@@ -102,7 +105,7 @@ function appAs(
   return new Hono().route(
     "/api/plugins",
     createPluginRoutes(
-      store,
+      { ...store, ...override },
       signedIn,
       async () => true,
       {
@@ -455,6 +458,79 @@ describe("POST /servers/:id/authorize", () => {
         completedAt: null,
         outcome: null,
       });
+    });
+  });
+
+  describe("a mint that succeeded and could not be recorded", () => {
+    // The local UPDATE after the vendor said yes. `DrizzleQueryError`'s own message is the
+    // statement and its bound values, which is the shape this route must not pass on.
+    const failWrite = {
+      recordAuthorizationMint: async () => {
+        throw new Error(
+          'Failed query: update "pending_authorizations" set "auth_id" = $1 -- params: ["ar_minted_1"]',
+        );
+      },
+    } as Partial<PluginStore>;
+
+    test("the person is told, is not sent to the consent screen, and the url does not travel", async () => {
+      const actor = person("unrecorded");
+      const response = await authorize(
+        appAs("user", actor, "arcade", failWrite),
+        personalApp,
+      );
+      // Not a bodyless 500: a sentence, and nothing of the vendor's answer in it.
+      expect(response.status).toBe(500);
+      const body = (await response.json()) as {
+        error?: string;
+        authorizationUrl?: string;
+      };
+      expect(typeof body.error).toBe("string");
+      expect(body.authorizationUrl).toBeUndefined();
+      expect(JSON.stringify(body)).not.toContain("bearer-capability");
+      expect(JSON.stringify(body)).not.toContain("Failed query");
+      // The mint really did happen at the vendor.
+      expect(mints).toHaveLength(1);
+    });
+
+    test("the actor is not blocked: the dead attempt is cleared and a second start mints again", async () => {
+      const actor = person("unrecorded-retry");
+      expect(
+        (
+          await authorize(
+            appAs("user", actor, "arcade", failWrite),
+            personalApp,
+          )
+        ).status,
+      ).toBe(500);
+      // A row holding a null auth_id can never complete and would hold the actor for the TTL.
+      expect(await attemptsFor(actor)).toEqual([]);
+      mints = [];
+      nextAuthId = "ar_after_retry";
+      const second = await authorize(appAs("user", actor), personalApp);
+      expect(second.status).toBe(200);
+      expect(mints).toHaveLength(1);
+      const [row] = await attemptsFor(actor);
+      expect(row).toMatchObject({ authId: "ar_after_retry", outcome: null });
+    });
+
+    test("a failed clean-up still answers a sentence rather than throwing past the handler", async () => {
+      const actor = person("unrecorded-stuck");
+      const response = await authorize(
+        appAs("user", actor, "arcade", {
+          ...failWrite,
+          discardAuthorizationAttempt: async () => {
+            throw new Error("Failed query: delete from pending_authorizations");
+          },
+        }),
+        personalApp,
+      );
+      expect(response.status).toBe(500);
+      const body = (await response.json()) as { error?: string };
+      expect(typeof body.error).toBe("string");
+      expect(JSON.stringify(body)).not.toContain("Failed query");
+      // Nothing cleared it, so the row stands and expires on its own.
+      const [row] = await attemptsFor(actor);
+      expect(row).toMatchObject({ authId: null, completedAt: null });
     });
   });
 
