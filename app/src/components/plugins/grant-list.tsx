@@ -30,10 +30,25 @@ import {
  * not connected and telling somebody to authorize what they already authorized sends them round
  * twice.
  *
- * NO ORDERING BY "RECENTLY REFUSED". Authorized actions come first and everything else sits behind
- * the search; there is no per-person, per-app refusal read on any route this page can call, and
- * inventing a column to order on would be a claim this page could not back.
+ * NO ORDERING BY "RECENTLY REFUSED". Authorized actions come first, then the unauthorized ones in
+ * state order, and only the tail beyond `UNAUTHORIZED_SHOWN` sits behind the search; there is no
+ * per-person, per-app refusal read on any route this page can call, and inventing a column to order
+ * on would be a claim this page could not back.
  */
+
+/** How many unauthorized actions are drawn before the rest are left to the search. */
+const UNAUTHORIZED_SHOWN = 10;
+
+/**
+ * The order the unauthorized tail is picked in, matching `groupGrants`'s own ranking so what is
+ * drawn with no search term is the front of the same list the groups are sorted by.
+ */
+const ORDER: Record<GrantState["state"], number> = {
+  authorized: 0,
+  "needs-consent": 1,
+  "needs-operator": 2,
+  unknown: 3,
+};
 export function GrantList({
   serverId,
   appNames,
@@ -113,12 +128,26 @@ export function GrantList({
   }
 
   const term = search.trim().toLowerCase();
-  const visible = (grant: GrantState) =>
+  const unauthorized = all
+    .filter((grant) => grant.state !== "authorized")
+    .sort(
+      (left, right) =>
+        ORDER[left.state] - ORDER[right.state] ||
+        left.action.localeCompare(right.action),
+    );
+  /* With no search term the first unauthorized actions are drawn as well: an Authorize that only
+     appears once somebody guesses a substring is an Authorize nobody on a fresh account can reach,
+     and a fresh account is every first visit. Beyond those, the count below still stands. */
+  const shown =
     term.length > 0
-      ? grant.action.toLowerCase().includes(term)
-      : grant.state === "authorized";
-  const hidden = term.length > 0 ? 0 : all.filter((g) => !visible(g)).length;
-  const groups: GrantGroup[] = groupGrants(all.filter(visible));
+      ? all.filter((grant) => grant.action.toLowerCase().includes(term))
+      : [
+          ...all.filter((grant) => grant.state === "authorized"),
+          ...unauthorized.slice(0, UNAUTHORIZED_SHOWN),
+        ];
+  const hidden =
+    term.length > 0 ? 0 : Math.max(unauthorized.length - UNAUTHORIZED_SHOWN, 0);
+  const groups: GrantGroup[] = groupGrants(shown);
   const consentActions = consentActionsFrom(all);
 
   return (
