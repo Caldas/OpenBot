@@ -3294,7 +3294,42 @@ export function createPluginRoutes(
         const row = await store.serverAddress(attempt.serverId);
         const retiredApp = row ? appOfUrl(row.url) : null;
         let withdrawn = false;
+        /*
+         * WHAT THIS WITHDRAWAL ENDS BESIDES THE APP IT NAMES, RESOLVED BEFORE THE REVOKE GOES OUT.
+         *
+         * Where a connection is keyed `(identity, auth provider)` — Arcade — the one revoke below
+         * ends the whole connection and so every app on the retired identity that shares it. Their
+         * rows here would be left standing, which makes this deployment's own records claim live
+         * connections for apps the vendor has already disconnected: a person sees apps listed as
+         * connected that fail on first use, and nothing here knows to tell them otherwise. The set
+         * is the store's, keyed on the pair and never on the provider alone, and BEFORE rather than
+         * after, which is the ordering `disconnectBrokered` and `removeServer` both keep: once the
+         * revoke has run, a sibling's auth provider is a question asked of a connection that is
+         * already gone. On Composio an app is its own auth provider, so it is always empty and
+         * nothing below differs from what this refusal always did.
+         *
+         * AND A SET THIS COULD NOT RESOLVE STOPS THE REVOKE RATHER THAN WIDENING IT. The ask is a
+         * live vendor call per app on a request a browser is held open on, so it is bounded — on
+         * the WHOLE resolution rather than on each call inside it, because the store's method takes
+         * no signal, which is the bound that matters to the browser. A timeout or a refusal leaves
+         * `collateral` null and nothing is then asked of the vendor at all. Ending apps this
+         * deployment cannot then name is the failure this whole branch is about, and the
+         * alternative is not silence: the attempt is kept `unreconciled` below, which is a row an
+         * operator can act on over a grant that is merely still live.
+         */
+        let collateral: { siblings: string[]; unanswered: number } | null =
+          null;
         if (retiredApp) {
+          try {
+            collateral = await withVendorDeadline(() =>
+              store.siblingApps({ toolkit: retiredApp, account: retired }),
+            );
+          } catch {
+            // Nothing from the vendor's answer travels with this, here as everywhere on this leg.
+            collateral = null;
+          }
+        }
+        if (retiredApp && collateral) {
           try {
             /*
              * THE BOOLEAN IS READ, NOT DROPPED. `false` used to mean only "nothing there", but the
@@ -3312,6 +3347,24 @@ export function createPluginRoutes(
             // Nothing from the vendor's answer travels with this, here as everywhere on this leg.
             withdrawn = false;
           }
+        }
+        /*
+         * AND THE ROWS FOR WHAT IT ENDED GO WITH IT, ONLY ON AN ANSWER OF TRUE. `false` is "nothing
+         * found, or we could not work out what to withdraw", and no local row may be cleared — nor
+         * any collateral claimed on the trail — on the strength of an answer nobody got. The trail
+         * rows this writes are what tell a person why an app they never touched stopped being
+         * connected here, and tell an operator that one withdrawal took several apps with it.
+         */
+        if (withdrawn && retiredApp && collateral) {
+          await store.clearWithdrawnAccount({
+            toolkit: retiredApp,
+            account: retired,
+            siblings: collateral.siblings,
+            unanswered: collateral.unanswered,
+            // The actor this attempt is keyed on, read once at the top like everything else here.
+            by: actorId,
+            reason: "context_changed",
+          });
         }
         if (withdrawn)
           await store.markAuthorizationWithdrawn({ actorId, authId });
