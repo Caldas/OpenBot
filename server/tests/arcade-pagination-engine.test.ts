@@ -58,6 +58,15 @@ type EngineOptions = {
    * the engine answers the single-config listing the other tests here want.
    */
   authProviders?: number;
+  /**
+   * The action listing DISAGREES WITH ITSELF ABOUT ITS AUTH PROVIDER from this index on: actions
+   * before it carry `requirements.authorization.provider_id: "google"`, actions from here on carry
+   * {@link toolLaterProvider}. Set past the first page, it is invisible to any reader that stops
+   * at page one.
+   */
+  toolProviderSplitAt?: number;
+  /** The provider id the actions from {@link toolProviderSplitAt} on carry. */
+  toolLaterProvider?: string;
 };
 
 type Engine = {
@@ -80,15 +89,22 @@ const connectionRow = (n: number, status: string | null = "active") => ({
   user_id: account.vendorUserId,
 });
 
-const toolRow = (toolkit: string, n: number) => ({
+const toolRow = (toolkit: string, n: number, provider = "google") => ({
   qualified_name: `${toolkit}.Action${n}`,
   description: "",
   toolkit: { name: toolkit, description: "" },
   input: { parameters: [] },
   requirements: {
-    authorization: { provider_id: "google", oauth2: { scopes: [] } },
+    authorization: { provider_id: provider, oauth2: { scopes: [] } },
   },
 });
+
+/** The provider id action `n` of the listing carries, per {@link EngineOptions.toolProviderSplitAt}. */
+function toolProviderOf(options: EngineOptions, n: number): string {
+  const split = options.toolProviderSplitAt;
+  if (split === undefined || n < split) return "google";
+  return options.toolLaterProvider ?? "microsoft";
+}
 
 /**
  * The project's auth-provider configurations, with the ONE that matters LAST.
@@ -179,7 +195,7 @@ function startEngine(options: EngineOptions): Engine {
         const toolsServed = options.toolsServed ?? claimed;
         const page: unknown[] = [];
         for (let n = offset; n < Math.min(offset + limit, toolsServed); n++) {
-          page.push(toolRow(toolkit, n));
+          page.push(toolRow(toolkit, n, toolProviderOf(options, n)));
         }
         const body: Record<string, unknown> = {
           items: page,
@@ -486,5 +502,78 @@ describe("the action listing's total_count cross-check survives a short final pa
     expect((await broker.grantsFor({ account, toolkit: "Gmail" })).length).toBe(
       250,
     );
+  });
+});
+
+/**
+ * THE ACTION LISTING BEHIND THE AUTH-PROVIDER READ IS PAGED TOO, AND ONLY A REAL ENGINE ASKS IT TO.
+ *
+ * `authProviderOf` read ONE request with no `limit`, no `offset` and no loop, on the argument that
+ * every tool in a toolkit shares its auth provider, so a further page could only repeat the first.
+ * Against a real engine that is false in exactly the way that matters: a 150-action `Gmail` listing
+ * whose first 100 actions sit under `google` and whose last 50 sit under `microsoft` answered
+ * `google` off one unpaged request — CONFIDENTLY, from a window the VENDOR chose, since the request
+ * carried no `limit` at all. The function's own guard (the distinct provider ids, anything but
+ * exactly one answering unanswered) was reading a prefix, so it could never fire.
+ *
+ * It cannot be seen by stubbing the SDK's prototypes: a hand-written generator serves the whole
+ * fixture whatever the caller asked for, so the missing `limit`/`offset` and the missing loop both
+ * vanish into the stub.
+ */
+describe("the auth provider is read off the WHOLE action listing", () => {
+  test("a toolkit whose later pages name another provider is left unanswered", async () => {
+    const e = engine({
+      connections: 1,
+      connectionTotal: false,
+      toolsClaimed: 150,
+      toolsServed: 150,
+      // The first page is uniformly `google`; the short second page is `microsoft`.
+      toolProviderSplitAt: 100,
+    });
+    const { broker } = createArcadeClient("never-dialled");
+
+    // UNANSWERED, which the three callers already spell fail-closed: no rows, so not connected, no
+    // name, and `revoke` answers false WITHOUT SPENDING A DELETE.
+    expect(await broker.isConnected({ account, toolkit: "Gmail" })).toBe(false);
+    expect(await broker.accountName({ account, toolkit: "Gmail" })).toBe(null);
+    expect(await broker.revoke({ account, toolkit: "Gmail" })).toBe(false);
+    expect(deletes(e).length).toBe(0);
+  });
+
+  test("the provider read asks for pages by limit and offset", async () => {
+    const e = engine({
+      connections: 1,
+      connectionTotal: false,
+      toolsClaimed: 150,
+      toolsServed: 150,
+    });
+    const { broker } = createArcadeClient("never-dialled");
+
+    // One provider across all 150 actions, so the toolkit still resolves and the person reads as
+    // connected — but it took two requests, and the window is this file's own page size rather than
+    // whatever the vendor happens to default to.
+    expect(await broker.isConnected({ account, toolkit: "Gmail" })).toBe(true);
+    expect(e.requests.filter((r) => r.startsWith("/v1/tools"))).toEqual([
+      "/v1/tools?toolkit=Gmail&limit=100&offset=0",
+      "/v1/tools?toolkit=Gmail&limit=100&offset=100",
+    ]);
+  });
+
+  test("a truncated action listing refuses rather than answering a provider off a prefix", async () => {
+    const e = engine({
+      connections: 1,
+      connectionTotal: false,
+      toolsClaimed: 300,
+      toolsServed: 250,
+    });
+    const { broker } = createArcadeClient("never-dialled");
+
+    await expect(
+      broker.isConnected({ account, toolkit: "Gmail" }),
+    ).rejects.toThrow(/listed 250 of 300 actions for Gmail/);
+    await expect(broker.revoke({ account, toolkit: "Gmail" })).rejects.toThrow(
+      /listed 250 of 300 actions for Gmail/,
+    );
+    expect(deletes(e).length).toBe(0);
   });
 });

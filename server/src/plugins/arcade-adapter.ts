@@ -604,8 +604,9 @@ async function authProviderInstances(
  * AN UNRESOLVED TOOLKIT (`null`) ANSWERS AS NO ROWS and does NOT fall back to the toolkit name: a
  * fallback would silently restore the defect under a different spelling, invisibly against every
  * fixture in the tree. Callers then answer `isConnected` false, `revoke` false (no delete spent),
- * `accountName` null. A malformed listing is different: `authProviderOf` and
- * {@link authProviderInstances} both THROW, and that propagates, onto the Disconnect path included.
+ * `accountName` null. A listing that could not be read WHOLE is different: `authProviderOf` and
+ * {@link authProviderInstances} both THROW on one that is malformed, truncated against its own
+ * reported total, or never-ending, and that propagates, onto the Disconnect path included.
  */
 async function connectionsFor(
   client: Arcade,
@@ -883,24 +884,38 @@ async function grantsFor(
  * only one, and would be invisible against every fixture in this tree, where `Github`, `Asana` and
  * `Attio` all happen to be named after themselves. There is NO FALLBACK to the toolkit name.
  *
- * ONE PAGE AND NO PAGING, which is what makes this free: every tool in a toolkit shares its auth
- * provider — that is what makes it a toolkit. `listApps` pages to the end because it is COUNTING
- * actions; this is reading a per-toolkit fact off any of them.
+ * PAGED TO ITS END THROUGH {@link pagedItems}, LIKE EVERY OTHER LISTING IN THIS FILE. An earlier
+ * revision read ONE unpaged request here and argued the saving was free: every tool in a toolkit
+ * shares its auth provider, so a further page could only repeat what the first already said. THAT
+ * ARGUMENT IS DISPROVEN, measured against a real HTTP engine — a 150-action `Gmail` listing whose
+ * first 100 actions sit under `google` and whose last 50 under `microsoft` answered `google`, off
+ * the single request `/v1/tools?toolkit=Gmail`. The guard below could not fire, because it was
+ * reading a PREFIX and a prefix agrees with itself. "Every tool shares its provider" is a statement
+ * about what a toolkit ought to be, not about what the vendor sends, and this function's whole job
+ * is to read what the vendor sends. The request also carried NO `limit`, so the window it judged
+ * from was the vendor's default rather than {@link CATALOGUE_PAGE_SIZE} — a number this deployment
+ * never chose and the vendor may change.
  *
- * IT IS THE ONLY LISTING IN THIS FILE LEFT UNPAGED, DELIBERATELY. `grantsFor` and `connectionsFor`
- * were paged because each answers ONE THING PER ROW, so a first page of theirs is a partial answer
- * wearing a whole one's clothes. This answers one thing for the WHOLE TOOLKIT, so a further page
- * can only repeat what the first already said — and the cost of paging it would be paid on every
- * `isConnected`, `accountName` and `revoke`. A toolkit whose later pages disagreed with its first
- * would be resolved here rather than unanswered; that is the known edge of this choice, and it is
- * the vendor contradicting what a toolkit is.
+ * The cost is one extra request only on a toolkit larger than a page, and it buys the same property
+ * `grantsFor` and `connectionsFor` are paged for: a first page can never present as the whole of
+ * one. A TRUNCATED LISTING NOW THROWS here too, rather than resolving a provider off whatever
+ * arrived — the `incomplete` sentence below — which is right for the reason `connectionsFor`'s
+ * comment gives: these three callers spend deletes.
  *
- * AND IT GUARDS RATHER THAN ASSUMES. The DISTINCT non-null provider ids on the page are collected
- * and anything other than exactly one answers `null`, so a toolkit that disagrees with itself is
- * UNANSWERED rather than silently resolved to whichever action came first. Case is carried through
- * untouched, so two spellings of one provider count as two and are likewise unanswered; whether
- * they are the same provider is the caller's comparison, and `connectionSiblings` folds case for
- * the one caller that makes it.
+ * AND IT GUARDS RATHER THAN ASSUMES. The DISTINCT non-null provider ids across the WHOLE listing
+ * are collected and anything other than exactly one answers `null`, so a toolkit that disagrees
+ * with itself is UNANSWERED rather than silently resolved to whichever action came first. Case is
+ * carried through untouched, so two spellings of one provider count as two and are likewise
+ * unanswered; whether they are the same provider is the caller's comparison, and
+ * `connectionSiblings` folds case for the one caller that makes it.
+ *
+ * `null` IS WHAT UNANSWERED MEANS, AND IT ALREADY MEANT IT. It is not "no provider": the sole
+ * caller, {@link connectionsFor}, answers NO ROWS for it and never falls back to the toolkit name,
+ * so `isConnected` reads false, `accountName` null and `revoke` false WITHOUT SPENDING A DELETE.
+ * That is fail-closed on all three — nothing is deleted and nothing is claimed connected on a
+ * toolkit nobody can attribute — which is exactly what an ambiguous toolkit deserves, so there is
+ * no second spelling of "unanswered" to invent. A toolkit with no provider id anywhere lands on the
+ * same answer for the same reason.
  *
  * `requirements.met` IS NOT READ HERE EITHER, for `grantStateOf`'s reason: this reads a DIFFERENT
  * field of the same `requirements.authorization` object.
@@ -909,17 +924,19 @@ async function authProviderOf(
   client: Arcade,
   toolkit: string,
 ): Promise<string | null> {
-  const page = await vendorCall(`the action listing for ${toolkit}`, () =>
-    client.tools.list({ toolkit }),
-  );
-  const items = sentItemsOf(page);
-  if (!Array.isArray(items)) {
-    throw new Error(
-      `Arcade did not answer with an action list for ${toolkit}, so the auth provider its connections are held under could not be read.`,
-    );
-  }
   const named = new Set<string>();
-  for (const item of items) {
+  for await (const item of pagedItems({
+    pageSize: CATALOGUE_PAGE_SIZE,
+    maxPages: CATALOGUE_MAX_PAGES,
+    page: (offset) =>
+      vendorCall(`the action listing for ${toolkit}`, () =>
+        client.tools.list({ toolkit, limit: CATALOGUE_PAGE_SIZE, offset }),
+      ),
+    malformed: `Arcade did not answer with an action list for ${toolkit}, so the auth provider its connections are held under could not be read.`,
+    unending: `Arcade's action list for ${toolkit} never ended after ${CATALOGUE_MAX_PAGES} pages, so the auth provider its connections are held under is not trusted.`,
+    incomplete: (seen, total) =>
+      `Arcade listed ${seen} of ${total} actions for ${toolkit}, so the auth provider its connections are held under could not be read in full.`,
+  })) {
     const authorization = record(record(item)?.requirements)?.authorization;
     const provider = textOf(record(authorization)?.provider_id);
     if (provider) named.add(provider);
