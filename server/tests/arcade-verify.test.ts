@@ -34,6 +34,7 @@ import {
   mcpServers,
   pendingAuthorizations,
 } from "../src/db/schema";
+import type { BrokerProvider } from "../src/plugins/access";
 import type { ConnectedAppBroker } from "../src/plugins/broker";
 import { AUTHORIZATION_REFUSALS } from "../src/plugins/routes";
 import type { AccountRef } from "../src/plugins/shared-accounts";
@@ -147,7 +148,9 @@ function build(
   who: string | null,
   options: {
     roles?: string[];
-    brokerBag?: { broker: ConnectedAppBroker; provider: string } | undefined;
+    brokerBag?:
+      | { broker: ConnectedAppBroker; provider: BrokerProvider }
+      | undefined;
     /** A handle whose behaviour one case alters; everything else runs on the suite's own. */
     database?: typeof database;
     /**
