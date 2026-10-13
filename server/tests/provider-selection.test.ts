@@ -71,6 +71,34 @@ describe("assertActivatable", () => {
     expect(() => assertActivatable("composio", 0)).not.toThrow();
   });
 
+  /**
+   * A count that is not a count refuses, and never reaches the sentence a person reads.
+   *
+   * `NaN <= 0` is false, so before this was guarded a NaN sailed past the "nothing to refuse" test
+   * and landed in the refusal as the literal words "NaN brokered connections". The refusal must say
+   * that the count could not be taken, which is the true thing, and must never print the sentinel.
+   */
+  test("a count that is not a whole number of rows refuses, without printing itself", () => {
+    for (const unusable of [
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      -1,
+      1.5,
+    ] as const) {
+      let caught: unknown;
+      try {
+        assertActivatable("arcade", unusable);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(BrokerRefusalError);
+      const sentence = brokerSentence(caught) ?? "";
+      expect(sentence).toContain("could not be counted");
+      expect(sentence).not.toContain(String(unusable));
+      expect(sentence).not.toContain("brokered connections still belong");
+    }
+  });
+
   test("one row for the other provider refuses, in the other direction and in the singular", () => {
     let caught: unknown;
     try {
