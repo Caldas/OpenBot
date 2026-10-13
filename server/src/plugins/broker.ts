@@ -516,14 +516,31 @@ export type ConnectedAppBroker = {
    * vendor does not say.
    *
    * IT IS NOT THE TOOLKIT NAME, AND THE COINCIDENCE IS NOT THE RULE. Arcade keys a connection on
-   * `(user_id, provider_id)`, and `provider_id` names an auth-provider CONFIGURATION rather than a
-   * toolkit: one Google connection serves `Gmail` and `GoogleCalendar` both, and a measured refusal
-   * envelope carries `"provider_id": "cpk-poc"`, which is an operator's name for a provider they
-   * registered. It equals the toolkit slug only where an operator named it that way — which
-   * `Github`, `Asana` and `Attio` all happen to do, and those are every toolkit in this tree's
-   * fixtures and stubs. So a derivation from the toolkit name, or a fallback to it where the vendor
-   * is silent, would pass every test here and be wrong about the deployment it was written for.
-   * `null` is the honest answer, and its callers leave such an app out rather than guess.
+   * `(user_id, provider_id)` rather than on a toolkit: one Google provider serves `Gmail` and
+   * `GoogleCalendar` both. A provider equals the toolkit slug only where an operator named it that
+   * way — which `Github`, `Asana` and `Attio` all happen to do, and those are every toolkit in this
+   * tree's fixtures and stubs. So a derivation from the toolkit name, or a fallback to it where the
+   * vendor is silent, would pass every test here and be wrong about the deployment it was written
+   * for. `null` is the honest answer, and its callers leave such an app out rather than guess.
+   *
+   * WHAT THIS MEMBER ANSWERS WITH IS THE PROVIDER TYPE, AND `provider_id` NAMES THREE DIFFERENT
+   * THINGS ON THREE ARCADE OBJECTS. Measured against the live API:
+   *
+   * - on a TOOL LISTING, `requirements.authorization.provider_id` is the provider TYPE (`google`) —
+   *   this is the one this member reads, and the one it returns;
+   * - on a USER-CONNECTION ROW, `provider_id` is the provider INSTANCE id, an operator's
+   *   configuration OF a type (`google-openbot`, `arcade-google`, `cpk-poc`). A refusal envelope's
+   *   `"provider_id": "cpk-poc"` is an instance too;
+   * - on an AUTH-PROVIDER CONFIG the two sit side by side — `id` is the INSTANCE and `provider_id`
+   *   is the TYPE — which is the only bridge between the first two, because a connection row
+   *   carries no vendor-type field at all: its `provider_type` is `"oauth2"`, the auth SCHEME.
+   *
+   * SO A CALLER MUST NOT COMPARE THIS ANSWER TO A CONNECTION ROW'S `provider_id`. `"google"` never
+   * equals `"google-openbot"`, so that comparison matched zero rows on every real deployment —
+   * Arcade's own defaults included, since those are `arcade-google` and `arcade-github` and never
+   * the bare type — and it read as "connected to nothing" rather than as an error. A caller wanting
+   * rows expands this type into the SET of configured instance ids of that type first; the Arcade
+   * adapter's `connectionsFor` is where that is done and why.
    *
    * NAMED `authProviderOf` AND NEVER `providerIdOf`. In this codebase `provider` means the BROKER —
    * {@link BrokerProvider}, `brokered_connections.provider` — and that collision has already been

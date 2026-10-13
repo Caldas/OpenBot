@@ -69,6 +69,15 @@ project in order to connect their mailbox — so a default provider cannot serve
 
 Arcade's admin API can create the OAuth provider, so that part can be scripted.
 
+> **Decide about the agentic-client checkbox deliberately — unproven.** Google's console offers
+> _"Use this client for an AI-powered agent"_ on an OAuth client. It is a self-declaration, and
+> ticking it puts that client under a separate administrative-policy surface; Google's own advice is
+> to register separate client ids for human workflows and agent workflows. Every brokered call
+> OpenBot makes is agent-initiated, so this is a choice a deployer should make on purpose rather
+> than leave at its default. **It was not exercised:** the client used for the measurements on this
+> page was registered with the box left unticked, deliberately, to keep a policy variable out of the
+> measurement. What ticking it changes in practice is therefore not known here.
+
 ### The verifier URL is the one dashboard-only step
 
 **The verifier URL cannot be automated.** It is set by hand in the Arcade dashboard, on the project,
@@ -130,6 +139,12 @@ issues per-request scopes. Measured, through a completed consent, from a clean b
 | Google (`Gmail`)          | `gmail.readonly` vs `gmail.send` vs `gmail.compose` | **11 of 30**                | yes       |
 | GitHub (via a GitHub App) | **none, for any action**                            | **43 of 43**                | no        |
 
+The Google row has since been re-measured through this deployment's own code against the live API,
+from a clean baseline and one real consent: before consenting, **0 of 30** scope-carrying `Gmail`
+actions were authorized; after consenting to a single action (`Gmail.GetEmail`), **11 of 30** — and
+**nothing outside the scopes that consent granted**. Per-action isolation on Google holds, measured
+twice now and no longer resting on the throwaway harness that first found it.
+
 On Google, consenting to a read authorizes the reads that share its scope and nothing that sends.
 On GitHub, consenting to `Github.CountStargazers` — **a read** — flipped all 43 actions to
 authorized, **the writes and the destructive one included**, because a GitHub App's permissions are
@@ -156,11 +171,56 @@ consenting to a broad scope does not hand any Bot more actions; a Bot with no gr
 cannot call it however much the account allows. On a provider that cannot narrow scopes (GitHub
 above), the tool grant is therefore the entire narrowing — the same position as Composio's.
 
+## `provider_id` means three different things
+
+An operator reading an Arcade dashboard, or an API response, or a refusal this deployment quotes,
+will meet the field `provider_id` on three different objects — and it means something different on
+each. _Measured_ against a live project:
+
+| Where you are reading it                            | What it is                                       | Example                              |
+| --------------------------------------------------- | ------------------------------------------------ | ------------------------------------ |
+| A **tool** listing, `requirements.authorization`     | the provider **type** — the vendor               | `google`                             |
+| A **user connection** row                            | the provider **instance** — a configuration      | `google-openbot`, `cpk-poc`          |
+| An **auth provider** config                          | `id` is the instance, `provider_id` is the type  | `id: arcade-google` of type `google` |
+
+The auth-provider config is the only bridge between the other two. Verbatim, from a live project:
+
+```
+{"id":"cpk-poc",        "provider_id":"github", "type":"oauth2", "status":"active"}
+{"id":"google-openbot", "provider_id":"google", "type":"oauth2", "status":"active"}
+{"id":"arcade-google",  "provider_id":"google", "type":"oauth2", "status":"active"}
+```
+
+A connection row carries **no vendor-type field at all**. Its full key set, verbatim:
+
+```
+id, provider_type, connection_id, connection_status, scopes, user_id, provider_id,
+provider_description, provider_user_info
+```
+
+`provider_type` there is `"oauth2"` — the auth **scheme**, not the vendor. So the instance id is the
+only thing on a connection that says which vendor it belongs to, and the only way from a tool's
+`google` to a person's row is through the list of configured providers of type `google`.
+
+**This bit this deployment once.** A connection lookup compared a tool's type against a row's
+instance — `"google"` against `"google-openbot"` — and so matched nothing on every real deployment,
+Arcade's own default providers included, since those are named `arcade-google` and `arcade-github`
+and never the bare type. It did not present as an error: a connection that existed read as
+**not connected**, with no account name beside it. It is fixed, and it is written down here because
+the same confusion is waiting for whoever next reads two Arcade objects side by side. **If a
+connection you can see in Arcade's dashboard looks absent in OpenBot, check that the provider the
+person connected under is one this project has configured** — a provider configuration deleted while
+somebody's connection outlived it reads the same way, and deliberately so: OpenBot leaves a row it
+cannot attribute alone rather than guess which vendor it belongs to.
+
 ## Disconnecting one app may end another
 
-Arcade's connections are per **auth provider**, not per app. One Google connection serves `Gmail`
-and `GoogleCalendar` both, and **no narrower instrument exists** — there is nothing to disconnect
-that ends only one of them.
+Arcade's connections are per **auth provider**, not per app, and the sharing is _measured_ rather
+than inferred: on a live project the provider behind both `Gmail` and `GoogleCalendar` is the single
+type `google` (`{"Gmail":["google"],"GoogleCalendar":["google"]}`), named after neither toolkit. One
+Google connection serves them both, and **no narrower instrument exists** — there is nothing to
+disconnect that ends only one of them. **Somebody disconnecting Gmail can end their Calendar**, in
+production, today.
 
 So before somebody confirms a disconnect, OpenBot names the apps that genuinely share the
 connection and would end with it. _Genuinely_ is exact: siblings are computed on the **pair (vendor
@@ -195,21 +255,29 @@ cached here and compared later: it is read **live from Arcade** — whether the 
 an action is asked of Arcade when the page is drawn, so the answer on screen is Arcade's current
 one. A connection that works and has never been "checked" is the normal state, not a fault.
 
+## A consent coming back for the wrong person
+
+A consent that completes but belongs to a different identity than the attempt it is returning to is
+refused, and nothing is written either way. **What Arcade answers in that case carries no reason**:
+_measured_, confirming a return as the wrong user answers a generic `400`, `coordinator_error`,
+message `"Bad request"`, with nothing in it that names an identity mismatch.
+
+So the refusal a person sees is the ordinary **vendor-unavailable** one, not a sentence about the
+wrong account. That is a worse message and nothing more: the attempt row is left untouched, and
+the returning authorization is in any case compared to the id this deployment minted, which is the
+check that actually binds the return leg to the attempt. An operator shown a vendor-unavailable
+refusal on a consent that seemed to complete should consider the wrong-account case among the
+causes, because the vendor will not say.
+
 ## What is unproven
 
-Nothing in this release has dialled the live Arcade API from this deployment's own code. The
-measurements above were taken through completed consents against a live project; the integration
-that acts on them is verified against recorded fixtures. Specifically:
+The measurements above were taken against a live Arcade project, most of them through this
+deployment's own code. What remains unproven is listed here, and nothing else on the page is.
 
-- **The `user_mismatch` error shape is assumed.** Arcade's SDK declares no such error, so what the
-  deployment recognises as `user_mismatch` — the vendor's answer when the returning consent does
-  not belong to the identity the attempt was started for — is the shape expected, not one observed. If a consent is refused for that reason and the page shows a generic failure instead of
-  its own sentence, this is where to look.
-- **`provider_id` is read as the auth-provider id, not the toolkit name.** That reading is inferred
-  from measurements and from a live refusal envelope carrying `"provider_id": "cpk-poc"`. **No
-  fixture has a toolkit whose provider is named differently from it**, so it has not been measured
-  on a Google-family toolkit — where `Gmail` and `GoogleCalendar` share one provider — and the
-  sibling computation above rests on it.
+- **The agentic-client checkbox was not exercised.** Google's _"Use this client for an AI-powered
+  agent"_ declaration was deliberately left unticked for the measurements, so that it was not a
+  variable in them. Its effect on consent, scopes or policy here is not known; see the deployer note
+  above.
 - **The wording of Arcade's dashboard is not described here.** This page says to set the project's
   verifier to the address above and does not name the dashboard's fields or screens, which were not
   checked against it and may change. The address itself is this deployment's.
