@@ -2,6 +2,7 @@ import Arcade, { APIError } from "@arcadeai/arcadejs";
 import { type ArcadeActions, type ArcadeFailure, classify } from "./arcade";
 import {
   type BrokerApp,
+  type BrokerConnection,
   BrokerRefusalError,
   type ConnectedAppBroker,
   flagOf,
@@ -230,6 +231,84 @@ function scopesOf(item: unknown): string[] {
 }
 
 /**
+ * WHAT ARRIVED WHERE A SHAPE BELONGED, named without quoting it.
+ *
+ * A listing row carries whatever the vendor chose to put on it, and a refusal from here is read off
+ * an admin page, so the SHAPE is the part that is both safe to say and the part that helps —
+ * `sent` in `composio-adapter.ts` says this at length and this is the same judgement, kept local
+ * because that file is the other vendor's door and neither imports the other.
+ */
+function shapeOf(value: unknown): string {
+  if (Array.isArray(value)) return "a list";
+  return `a ${typeof value}`;
+}
+
+/**
+ * Whether ARCADE SAYS this action needs a person to authorize it — read, never assumed.
+ *
+ * THIS REPLACES A HARDCODED `{ kind: "consent" }` THAT WAS A CLAIM ABOUT THE VENDOR MADE WITHOUT
+ * READING THE VENDOR. Every toolkit in the catalogue was announced to the rest of this deployment
+ * as an app somebody connects by clicking through a consent screen, and the live listing says
+ * otherwise about real apps: `Apollo` publishes NO `requirements.authorization` and one
+ * deployment-wide secret (`APOLLO_API_KEY`) instead — verbatim in `fixtures/arcade-catalogue.json`
+ * — so Connect sent somebody to a consent flow for a connection consent cannot complete, and
+ * `tools.authorize` was minted for an action that requires no authorization at all.
+ *
+ * AN AUTHORIZATION BLOCK IS THE WHOLE OF THE QUESTION, AND SECRETS ARE NOT PART OF IT. The two are
+ * different people's work and {@link grantStateOf} already keeps them apart for the same reason:
+ * a secret is set ONCE FOR EVERYBODY by an operator in the Arcade dashboard — {@link FIELDS_REFUSAL}
+ * is this deployment's standing sentence about that — so it is not something the person connecting
+ * can supply, and an app that asks only for one asks THEM for nothing. It is therefore `no-auth`
+ * here and `needs-operator` on the grants screen, which is the channel that already names the keys.
+ * Calling it `fields` would draw a form collecting one person's answer and share it with everyone;
+ * calling it `unsupported` would hide the app from the picker for good, including after the
+ * operator sets the secret and the app works perfectly.
+ *
+ * ANY ONE ACTION'S AUTHORIZATION MAKES THE TOOLKIT A CONSENT APP, because the question this answers
+ * is "how would somebody connect this app", and a toolkit with one authorized action has a consent
+ * flow that is how they reach it. Arcade grants per action, so the grants screen is where an action
+ * that needs nothing is told apart from one that does.
+ *
+ * AND A SHAPE THIS DEPLOYMENT CANNOT READ REFUSES RATHER THAN ANSWERING EITHER WAY. Both wrong
+ * answers are silent: a guessed `consent` is the defect above, and a guessed `no-auth` records an
+ * app as needing no connection, which hides the Connect button on an app that does. `routes.ts`
+ * holds the catalogue for the picker and the enable path both, so one refusal an operator can act
+ * on is worth more than several hundred rows, one of which is a guess — `connectionOf` in
+ * `composio-adapter.ts` gives that reasoning in full. `null` and an absent field are NOT unreadable
+ * shapes: they are the vendor saying this action requires nothing, which `AirtableApi`'s
+ * `metadata: null` shows Arcade does say.
+ */
+function requiresAuthorization(item: unknown, toolkit: string): boolean {
+  const requirements = record(item)?.requirements;
+  if (requirements === undefined || requirements === null) return false;
+  if (typeof requirements !== "object" || Array.isArray(requirements)) {
+    throw new BrokerRefusalError(
+      `Arcade sent ${shapeOf(requirements)} where ${toolkit}'s requirements belong, and that field is what says whether somebody has to authorize this app at all. A shape this deployment cannot read is not the vendor saying "nothing to authorize", so it is not read as one — the catalogue stops here rather than offer ${toolkit} under a flow nobody established it has. That is a change in what Arcade answers rather than a setting an operator can correct, so upgrading this deployment's @arcadeai/arcadejs is what fixes it.`,
+    );
+  }
+  const authorization = (requirements as Record<string, unknown>).authorization;
+  if (authorization === undefined || authorization === null) return false;
+  if (typeof authorization !== "object" || Array.isArray(authorization)) {
+    throw new BrokerRefusalError(
+      `Arcade sent ${shapeOf(authorization)} where ${toolkit}'s authorization requirement belongs, and this deployment reads that object to decide whether connecting ${toolkit} means sending somebody to a consent screen. A shape this deployment cannot read decides neither way, so the catalogue stops here rather than guess. That is a change in what Arcade answers rather than a setting an operator can correct, so upgrading this deployment's @arcadeai/arcadejs is what fixes it.`,
+    );
+  }
+  return true;
+}
+
+/**
+ * The flow an app gets, from the one fact {@link requiresAuthorization} measured over its actions.
+ *
+ * TWO OF THE FIVE KINDS AND NOT THE OTHER THREE, deliberately. `fields` and `self-registering` are
+ * Composio's shapes: Arcade has no per-person field entry ({@link FIELDS_REFUSAL}) and registers no
+ * client at consent time. `unsupported` is a verdict about an app this deployment cannot drive, and
+ * both answers here are apps it drives — the unreadable case REFUSES rather than landing here.
+ */
+function connectionOf(authorizes: boolean): BrokerConnection {
+  return authorizes ? { kind: "consent" } : { kind: "no-auth" };
+}
+
+/**
  * Every toolkit Arcade publishes, with `actionCount` taken from the FULL PAGED tool listing.
  *
  * COUNTED, NEVER READ OFF PAGE ONE: `GithubApi` publishes hundreds of actions where `Github`
@@ -256,11 +335,17 @@ async function listApps(client: Arcade): Promise<BrokerApp[]> {
    */
   type Tally = Omit<
     BrokerApp,
-    "classifiedCount" | "permissionCount" | "scopedActionCount"
+    "classifiedCount" | "connection" | "permissionCount" | "scopedActionCount"
   > & {
     classifiedCount: number;
     scopedActionCount: number;
     permissions: Set<string>;
+    /**
+     * Whether any action folded so far carries an authorization requirement — the ONE fact
+     * {@link connectionOf} turns into this app's flow, and a fold rather than a literal because the
+     * listing is per ACTION and the flow is per TOOLKIT.
+     */
+    authorizes: boolean;
   };
   const counts = new Map<string, Tally>();
   for await (const item of pagedItems({
@@ -283,6 +368,9 @@ async function listApps(client: Arcade): Promise<BrokerApp[]> {
     if (!name) continue;
     const classified = isClassified(record(item)?.metadata);
     const scopes = scopesOf(item);
+    // READ OFF THIS ACTION, never written down for the catalogue; see {@link requiresAuthorization}.
+    // Asked AFTER the name, so a refusal can say which app it is about.
+    const authorizes = requiresAuthorization(item, name);
     const standing =
       counts.get(name) ??
       ({
@@ -291,16 +379,22 @@ async function listApps(client: Arcade): Promise<BrokerApp[]> {
         // An absent description IS an empty one here: the field is a label with a blank default,
         // not an identity, so nothing is shadowed by the two reading alike.
         description: textOf(toolkit?.description) ?? "",
+        // NEITHER IS A STAND-IN FOR SOMETHING UNREAD: a tool's `toolkit` object carries `name`,
+        // `description` and `version` and nothing else — the SDK's `ToolDefinition.Toolkit` says
+        // so and the live listing agrees — so these two are Arcade publishing no logo and no
+        // category, which is what `BrokerApp.logo` is nullable for. A logo, where one exists, is
+        // filled in afterwards by `backfillBrokeredLogos` from outside the vendor's listing.
         logo: null,
         categories: [],
         actionCount: 0,
         classifiedCount: 0,
         scopedActionCount: 0,
         permissions: new Set<string>(),
-        connection: { kind: "consent" },
+        authorizes: false,
       } satisfies Tally);
     standing.actionCount += 1;
     if (classified) standing.classifiedCount += 1;
+    if (authorizes) standing.authorizes = true;
     if (scopes.length > 0) {
       standing.scopedActionCount += 1;
       // SORTED, THEN JOINED. The other order makes one permission into two the first time the
@@ -311,9 +405,13 @@ async function listApps(client: Arcade): Promise<BrokerApp[]> {
   }
   // `permissionCount` IS READ OFF THE FINISHED SET, never kept per page: a size taken mid-listing
   // is a count of the sets seen so far, which is a different number on every page but the last.
-  return [...counts.values()].map(({ permissions, ...app }) => ({
+  // `connection` IS READ OFF THE FINISHED FOLD for `permissionCount`'s reason: a kind decided
+  // mid-listing is a verdict about the actions seen so far, and the action that carries the
+  // authorization may be on the last page.
+  return [...counts.values()].map(({ permissions, authorizes, ...app }) => ({
     ...app,
     permissionCount: permissions.size,
+    connection: connectionOf(authorizes),
   }));
 }
 

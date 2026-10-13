@@ -271,7 +271,14 @@ describe("createArcadeClient", () => {
     );
     const apps = await createArcadeClient("never-dialled").broker.listApps();
     expect(apps.length).toBeGreaterThan(0);
+    // `no-auth` is in the list because `toolOf` publishes no `requirements` at all, which is Arcade
+    // saying this action needs authorizing by nobody — the kind is READ per app now rather than
+    // written once for the catalogue, and `arcade-connection-kind-engine.test.ts` is where each
+    // published shape is held to its answer. `fields` is the one this test is about and it is still
+    // unreachable: Arcade has no per-person field entry.
     for (const app of apps)
-      expect(["consent", "unsupported"]).toContain(app.connection.kind);
+      expect(["consent", "no-auth", "unsupported"]).toContain(
+        app.connection.kind,
+      );
   });
 });
