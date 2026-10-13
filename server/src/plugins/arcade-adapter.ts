@@ -384,6 +384,13 @@ async function authProviderInstances(
  * deleted while a connection outlives it. That is fail-closed: the row is left alone rather than
  * deleted on a guess about which vendor it belongs to.
  *
+ * EVERY ATTRIBUTABLE ROW IS RETURNED, DEAD ONES INCLUDED, AND LIVENESS IS THE CALLER'S QUESTION.
+ * A row carries its own `connection_status`, and {@link connectionIsLive} reads it — but here,
+ * because the two kinds of caller need opposite things from a row the vendor reports as finished:
+ * `isConnected` and `accountName` must not count it, and `revoke` must still delete it. Filtering it
+ * out at this level would answer both at once, and the one it answered wrongly would be the
+ * destructive one.
+ *
  * AN UNRESOLVED TOOLKIT (`null`) ANSWERS AS NO ROWS and does NOT fall back to the toolkit name: a
  * fallback would silently restore the defect under a different spelling, invisibly against every
  * fixture in the tree. Callers then answer `isConnected` false, `revoke` false (no delete spent),
@@ -418,6 +425,48 @@ async function connectionsFor(
     if (instance !== undefined && instances.has(instance)) rows.push(row);
   }
   return rows;
+}
+
+/**
+ * The one `connection_status` measured on a usable connection at the live API: `"active"`.
+ *
+ * AN ALLOWLIST OF THE LIVE SPELLING RATHER THAN A DENYLIST OF THE DEAD ONES, because the dead
+ * vocabulary cannot be enumerated from here — the SDK declares the field as a bare
+ * `connection_status?: string` with no union, and a denylist missing one spelling would go on
+ * reading that spelling as connected, which is the defect itself.
+ */
+const LIVE_CONNECTION_STATUS = "active";
+
+/**
+ * Whether a connection row is one somebody can actually USE, read off the row's OWN `connection_status`.
+ *
+ * THE ROW'S EXISTENCE IS NOT THE ANSWER, WHICH IS WHAT THIS IS FOR. A user-connection row carries
+ * `connection_status` beside its ids — it is in the key set {@link connectionsFor} quotes verbatim
+ * — and that field is the vendor saying whether the connection still works. Treating a row's mere
+ * presence as a yes answers `isConnected: true`, with a name beside it, for a connection Arcade is
+ * reporting as expired, revoked at the provider, pending or failed. Nothing then goes wrong until a
+ * tool call fails, far from the screen that said Connected, with no way back but guessing.
+ *
+ * SILENCE IS NOT A NO. An ABSENT or empty status reads as live, deliberately: the field is OPTIONAL
+ * on the wire (`connection_status?: string`), so a pessimistic reading would answer "not connected"
+ * for every real connection against any engine that omits it — `isConnected` false, `accountName`
+ * null and `revoke` false WITHOUT SPENDING A DELETE, which is precisely the live defect this seam
+ * already suffered once when it compared a provider TYPE to a provider INSTANCE. The rule is
+ * therefore: the vendor said something other than live → not live; the vendor said nothing → the
+ * existence of the row is all the evidence there is, and it stands.
+ *
+ * FOLDED AND TRIMMED, Amendment 16's client-side fold, for the reason every other comparison in
+ * this file is: a case the vendor changes must not change an answer about somebody's account.
+ *
+ * NOT A FILTER ON {@link connectionsFor}. `revoke` must still delete a dead row — it is a row at the
+ * vendor, and leaving it behind as unreachable debris while answering `false` ("there was nothing")
+ * is the failure mode `revoke`'s own contract forbids. So the listing stays whole and only the
+ * POSITIVE reads — `isConnected`, `accountName` — ask this question.
+ */
+function connectionIsLive(row: ConnectionRow): boolean {
+  const status = textOf(row.connection_status)?.trim().toLowerCase();
+  if (status === undefined || status === "") return true;
+  return status === LIVE_CONNECTION_STATUS;
 }
 
 /**
@@ -680,11 +729,16 @@ export function createArcadeClient(apiKey: string): {
     accountName: async ({ account, toolkit }) => {
       // Filtered by the row's own provider, as Composio's `accountsFor(..., toolkit, ...)` is: a
       // person connected to two apps must never be shown the OTHER app's name on this app's screen.
+      //
+      // AND BY THE ROW'S OWN `connection_status`, through {@link connectionIsLive}: this name is
+      // shown beside "Connected", so a name read off a row the vendor reports as expired or revoked
+      // says the connection is live in the one place somebody looks to check.
       for (const row of await connectionsFor(
         client,
         account.vendorUserId,
         toolkit,
       )) {
+        if (!connectionIsLive(row)) continue;
         const info = row.provider_user_info as
           | { name?: unknown; login?: unknown }
           | null
@@ -731,11 +785,22 @@ export function createArcadeClient(apiKey: string): {
       return { redirectUrl: url, authorizationId };
     },
     // 6.2: the connection-lifecycle trio.
+    // A LIVE ROW AND NOT MERELY A ROW. The seam's word is "currently attached to this app at the
+    // vendor", and a row Arcade reports as expired, revoked, pending or failed is not that; see
+    // {@link connectionIsLive}, which also says why a row with NO status still counts.
     isConnected: async ({ account, toolkit }) =>
-      (await connectionsFor(client, account.vendorUserId, toolkit)).length > 0,
+      (await connectionsFor(client, account.vendorUserId, toolkit)).some(
+        connectionIsLive,
+      ),
     // Answers what was REQUESTED: true when something was found and every delete was accepted,
     // false when there was nothing. Every delete is attempted, then ANY failure throws: a partial
     // ask must not read as `false` ("nothing there") nor as a clean `true`.
+    //
+    // ON EVERY ROW, LIVE OR NOT, WHICH IS WHY THIS DOES NOT ASK {@link connectionIsLive}. A dead row
+    // is still a row at the vendor: skipping it would leave it standing while this answered `false`
+    // ("there was nothing to withdraw"), and a reconnect would then be made beside debris nobody can
+    // see. Deleting a connection the vendor already considers finished costs one call and is the
+    // only reading under which Disconnect means what it says.
     revoke: async ({ account, toolkit }) => {
       const rows = await connectionsFor(client, account.vendorUserId, toolkit);
       if (rows.length === 0) return false;
