@@ -993,26 +993,73 @@ export function brokerSentence(error: unknown): string | null {
   return error instanceof BrokerRefusalError ? error.message : null;
 }
 
+/** What configuration says about which broker is active, INCLUDING why it says nothing. */
+export type ProviderDecision =
+  | { kind: "active"; provider: BrokerProvider }
+  /** No key is set: this deployment has no broker and never had one through configuration. */
+  | { kind: "unconfigured" }
+  /**
+   * Both keys are set and `OPENBOT_BROKER_PROVIDER` names neither, so configuration proposes two
+   * providers and chooses between them nowhere. A legal state — `docs/plugins/arcade.md` says so,
+   * and a migrating deployment passes through it — and the one an answer must never be invented
+   * for.
+   */
+  | { kind: "ambiguous"; configured: BrokerProvider[] }
+  /** `OPENBOT_BROKER_PROVIDER` names a provider whose key is unset: an operator's typo. */
+  | { kind: "misnamed"; named: BrokerProvider };
+
 /**
- * Which broker this deployment runs, from configuration alone (no database access).
+ * Which broker this deployment runs, from configuration alone (no database access), AND WHY WHEN
+ * NOTHING DOES.
  *
- * One key set selects that provider. Both set is legal and expected, since ending an account at
- * the old vendor needs its key, so `brokerProvider` decides and unset means `null`. A
- * `brokerProvider` naming a provider whose key is unset is refused (`null`), never selected.
+ * THE THREE CAUSES ARE NOT ONE CAUSE, which is why this answers a decision rather than
+ * `BrokerProvider | null`. "No key set" is a deployment with no broker and no brokered row of its
+ * own; "both keys, nothing named" is a migration in progress, with live rows at one vendor or the
+ * other and nothing in configuration saying which; "named but unkeyed" is a typo that must stop the
+ * server. A single `null` made all three the same value, and every caller that then wrote
+ * `?? "composio"` turned the second one — the only one that can hold Arcade rows — into "Composio
+ * is active", which filtered those rows out of existence and left the accounts behind them
+ * unrevokable.
+ *
+ * One key set selects that provider. Both set is legal and expected, since ending an account at the
+ * old vendor needs its key, so `brokerProvider` decides between them.
+ */
+export function providerDecision(c: {
+  composioApiKey?: string;
+  arcadeApiKey?: string;
+  brokerProvider?: BrokerProvider;
+}): ProviderDecision {
+  const configured: BrokerProvider[] = [];
+  if (c.composioApiKey !== undefined) configured.push("composio");
+  if (c.arcadeApiKey !== undefined) configured.push("arcade");
+  const named = c.brokerProvider;
+  if (named !== undefined) {
+    return configured.includes(named)
+      ? { kind: "active", provider: named }
+      : { kind: "misnamed", named };
+  }
+  if (configured.length === 1)
+    return { kind: "active", provider: configured[0] as BrokerProvider };
+  return configured.length === 0
+    ? { kind: "unconfigured" }
+    : { kind: "ambiguous", configured };
+}
+
+/**
+ * The active provider, or `null` for every deployment where configuration names none.
+ *
+ * KEPT FOR THE CALLERS THAT GENUINELY ASK A YES/NO QUESTION — "is there a broker to wire" — and
+ * nothing more. A caller that has to NAME a provider when this answers null is asking the question
+ * {@link providerDecision} answers, and must take the three causes apart instead of defaulting one
+ * of them to a vendor.
  */
 export function activeProvider(c: {
   composioApiKey?: string;
   arcadeApiKey?: string;
   brokerProvider?: BrokerProvider;
 }): BrokerProvider | null {
-  const composio = c.composioApiKey !== undefined;
-  const arcade = c.arcadeApiKey !== undefined;
-  const configured: BrokerProvider[] = [];
-  if (composio) configured.push("composio");
-  if (arcade) configured.push("arcade");
-  const named = c.brokerProvider;
-  if (named !== undefined) return configured.includes(named) ? named : null;
-  return configured.length === 1 ? configured[0] : null;
+  const decision = providerDecision(c);
+  return decision.kind === "active" ? decision.provider : null;
 }
 
 /**

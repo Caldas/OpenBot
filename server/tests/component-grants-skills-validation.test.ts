@@ -23,6 +23,7 @@ const canUseBot: BotAccessCheck = async () => true;
 
 function pluginAppWith(calls: { skills: unknown[] }) {
   const store = {
+    brokerProvider: "composio" as const,
     installSkill: async (input: unknown) => {
       calls.skills.push(input);
       return { ok: true };

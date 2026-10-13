@@ -39,10 +39,18 @@ one, so no existing deployment has to set anything.** The variable matters only 
 set. Setting both is legal and expected, because ending an account at the old vendor needs that
 vendor's key. With both set and the variable unset, neither is active.
 
-Two refusals protect this, and both are deliberate:
+**Connections already made are still read as their own provider's while nothing is active.** A
+deployment where configuration names no provider — both keys set with the variable unset, or a key
+withdrawn afterwards — takes the name from the `brokered_connections` rows it actually holds, so an
+Arcade deployment part-way through this does not have its Arcade connections read as Composio ones,
+shown as absent, and left unrevokable. No broker is live in that state, so nothing can be connected
+or revoked until a provider is named, and the server says so once at startup.
+
+Three refusals protect this, and all three are deliberate:
 
 - **A named provider whose key is not set stops the server at startup.** An operator sees: _OPENBOT_BROKER_PROVIDER=arcade names a provider whose ARCADE_API_KEY is not set. Set ARCADE_API_KEY, or change or unset OPENBOT_BROKER_PROVIDER._ It does not fall back to a deployment with no broker, because that would send somebody looking for a broken vendor instead of at their own environment.
 - **Activating a provider is refused while the other one still holds connections.** It is keyed on connection rows, not on keys. The message names the provider being activated, how many connections still belong to the other, and tells the operator to keep both keys set and end those connections through the other provider's sunset flow first. Switching by editing the environment would leave accounts nobody can revoke.
+- **Holding connections at BOTH providers while nothing is active stops the server at startup.** It is the refusal above seen from the other side: with no provider named there is nothing to read one vendor's rows as, and reading them as the other's is the failure this whole section exists to prevent. The message names both vendors and asks the operator to set `OPENBOT_BROKER_PROVIDER` and to end the other provider's connections through its own sunset flow.
 
 ## Setting up the Arcade project
 

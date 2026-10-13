@@ -212,7 +212,7 @@ import { createPasswordStore } from "./passwords/store";
 import { createOnboardingStore } from "./people/onboarding";
 import { createPeopleStore } from "./people/store";
 import { createAccountModeSwitch } from "./plugins/account-mode";
-import { activeProvider, assertActivatable } from "./plugins/broker";
+import { assertActivatable, providerDecision } from "./plugins/broker";
 import { BROKERED_PROFILE } from "./plugins/access";
 import { useRoutineTools } from "./plugins/builtin-routines";
 import { useArcadeClient } from "./plugins/arcade";
@@ -225,7 +225,10 @@ import {
   createSharedUseGate,
   createSharedUseStore,
 } from "./plugins/shared-use-store";
-import { selectProviderWiring } from "./plugins/provider-wiring";
+import {
+  selectProviderWiring,
+  storedProvider,
+} from "./plugins/provider-wiring";
 import { createPluginStore } from "./plugins/store";
 import {
   grantedSkills,
@@ -874,14 +877,39 @@ const signInService = computerGateway
  * or refile against it when a Bot's exposure changes.
  */
 /*
- * `activeProvider` answers `null` only when this deployment has no broker at all: no key is set,
- * so no broker reaches the store, no brokered row exists, and the value merely names which empty
- * slice an unreachable query would read. That is why the one `??` in the system is HERE and only
- * here — the single place where "which provider" has no answer, visible at the deployment boundary
- * instead of asserted forty times over inside a constructor. The shared-use store and the plugin
- * store below are both given this one value, so the gate and the approvals it reads agree.
+ * WHICH SLICE of `brokered_connections` this deployment reads, decided ONCE, at the one boundary
+ * that can see both the configuration and the rows.
+ *
+ * THERE IS NO `?? "composio"` HERE ANY MORE, AND THAT WAS A BUG RATHER THAN A SHORTHAND.
+ * Configuration names no provider for three different reasons, and the one that matters is "both
+ * keys set, OPENBOT_BROKER_PROVIDER unset" — legal, documented, and exactly what a deployment
+ * migrating off Composio sits in while it ends its old accounts. Defaulting it to `composio` gave
+ * the plugin store and the shared-use store a filter that excludes every Arcade row this deployment
+ * holds, so live Arcade connections read as absent and the accounts behind them could not be
+ * revoked. `storedProvider` takes the three causes apart and, where configuration is silent, lets
+ * the rows name themselves. The shared-use store and the plugin store are both given this one
+ * value, so the gate and the approvals it reads agree.
  */
-const brokerProvider = activeProvider(config) ?? "composio";
+const providerConfiguration = providerDecision(config);
+const brokerProvider = storedProvider(
+  providerConfiguration,
+  (
+    await database
+      .selectDistinct({ provider: brokeredConnections.provider })
+      .from(brokeredConnections)
+  ).map((row) => row.provider),
+);
+if (providerConfiguration.kind === "ambiguous") {
+  /*
+   * Said out loud, once, at startup: this deployment has two keys and no answer, so nothing is
+   * active and nothing can be connected or revoked until one is named. The rows it already holds
+   * are read as their own provider's (above), which is why this is a warning and not a refusal —
+   * the screens stay honest, the vendor calls stay impossible.
+   */
+  console.warn(
+    `${providerConfiguration.configured.map((provider) => BROKERED_PROFILE[provider].envVar).join(" and ")} are both set and OPENBOT_BROKER_PROVIDER names neither, so no broker is active: connected apps can be neither connected nor revoked until it is set. Existing connections are read as ${BROKERED_PROFILE[brokerProvider].vendor}'s.`,
+  );
+}
 const sharedUseStore = createSharedUseStore(database, brokerProvider);
 
 const pluginStore = createPluginStore({

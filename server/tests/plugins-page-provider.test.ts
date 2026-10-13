@@ -42,11 +42,23 @@ const UP_TO_BROKER = [
   undefined,
 ] as const;
 
-async function pageFor(composio?: {
-  broker: unknown;
-  provider: BrokerProvider;
-}) {
+async function pageFor(
+  composio?: {
+    broker: unknown;
+    provider: BrokerProvider;
+  },
+  /**
+   * Which provider the STORE was built for, which is where the page now takes the name from.
+   *
+   * The two are the same value on any deployment the wiring builds — but they are not the same
+   * question, and a deployment with both keys set and `OPENBOT_BROKER_PROVIDER` unset has a store
+   * and no broker at all. `provider-undecided.test.ts` is that case; here it defaults to the
+   * Composio deployment these cases are written about.
+   */
+  rowsBelongTo: BrokerProvider = "composio",
+) {
   const store = {
+    brokerProvider: rowsBelongTo,
     listServers: async () => [],
     listSkills: async () => [],
   } as unknown as PluginStore;
@@ -69,10 +81,13 @@ async function pageFor(composio?: {
 
 describe("the Plugins page names the active provider", () => {
   test("an Arcade deployment serves arcade", async () => {
-    const page = await pageFor({
-      broker: { key: VENDOR_KEY },
-      provider: "arcade",
-    });
+    const page = await pageFor(
+      {
+        broker: { key: VENDOR_KEY },
+        provider: "arcade",
+      },
+      "arcade",
+    );
     expect(page.provider).toBe("arcade");
   });
 
@@ -92,10 +107,13 @@ describe("the Plugins page names the active provider", () => {
   });
 
   test("the name travels, the key and anything derived from it do not", async () => {
-    const page = await pageFor({
-      broker: { key: VENDOR_KEY, grantIsLocal: true },
-      provider: "arcade",
-    });
+    const page = await pageFor(
+      {
+        broker: { key: VENDOR_KEY, grantIsLocal: true },
+        provider: "arcade",
+      },
+      "arcade",
+    );
     expect(Object.keys(page).sort()).toEqual(
       [
         "botsMayCallBack",
@@ -148,10 +166,13 @@ describe("the Plugins page declares whether the broker authorizes per action", (
    * written from, and the flag says false, because `/servers/:id/authorize` would refuse it 503.
    */
   test("a broker named arcade with no flow serves arcade and false", async () => {
-    const page = await pageFor({
-      broker: { key: VENDOR_KEY, authorizations: null },
-      provider: "arcade",
-    });
+    const page = await pageFor(
+      {
+        broker: { key: VENDOR_KEY, authorizations: null },
+        provider: "arcade",
+      },
+      "arcade",
+    );
     expect(page.provider).toBe("arcade");
     expect(page.authorizesPerAction).toBe(false);
   });
