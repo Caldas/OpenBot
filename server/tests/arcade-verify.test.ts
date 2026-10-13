@@ -148,6 +148,14 @@ function build(
     brokerBag?: { broker: ConnectedAppBroker; provider: string } | undefined;
     /** A handle whose behaviour one case alters; everything else runs on the suite's own. */
     database?: typeof database;
+    /**
+     * Makes the ONE store read that happens before the completion throw. Not a broken `database`
+     * handle, because that read is a plain `select` the rest of the deployment's boot shares — the
+     * case is about this route's own call, so this replaces exactly that method.
+     */
+    attemptReadThrows?: boolean;
+    /** Makes the guard's ROLE read throw, which is a store read outside the handler's own code. */
+    roleReadThrows?: boolean;
   } = {},
 ) {
   const handle = options.database ?? database;
@@ -175,9 +183,21 @@ function build(
           : { user: { id: who, email: `${who}@example.test`, name: "Person" } },
     },
   } as never;
-  args[2] = { rolesForUser: async () => options.roles ?? ["user"] } as never;
+  args[2] = {
+    rolesForUser: async () => {
+      if (options.roleReadThrows) throw new Error("injected role read failure");
+      return options.roles ?? ["user"];
+    },
+  } as never;
   args[12] = auditStore;
-  args[14] = pluginStore;
+  args[14] = options.attemptReadThrows
+    ? {
+        ...pluginStore,
+        authorizationAttemptFor: async () => {
+          throw new Error("injected attempt read failure");
+        },
+      }
+    : pluginStore;
   args[29] =
     "brokerBag" in options ? options.brokerBag : { broker, provider: "arcade" };
   return createApp(...args);
@@ -499,6 +519,49 @@ describe("a return leg with a session whose role was removed", () => {
     expect(response.status).toBe(403);
     expect(response.headers.get("location")).toBeNull();
     expect(await response.json()).toHaveProperty("error");
+    expect(confirmCalls).toEqual([]);
+    await expectNothingWritten();
+  });
+});
+
+/**
+ * THE CRITERION HELD WHERE IT WAS NOT HELD: a throw BEFORE the completion.
+ *
+ * The case further down pins a throw INSIDE the completion transaction, and that is the only place
+ * anything pinned one — which is how the two awaited reads that happen EARLIER came to sit outside
+ * the blanket `try`. A throw from either ended the request as Hono's default bodyless 500, with no
+ * `Location` at all, for somebody who had just finished a consent at another company. There is no
+ * `app.onError` on this app to turn that into anything else.
+ *
+ * `not-recorded` IS THE CODE FOR BOTH, because it is what the criterion requires and because it is
+ * true: nothing was recorded. Neither case adds an exit, so the closed set above is unchanged.
+ */
+describe("a store that throws before anything could be written", () => {
+  test("the attempt read throwing still answers a Location", async () => {
+    await giveAttempt({ authId: MINTED, ageMinutes: 1 });
+    await expectRefusal(
+      await verify(ACTOR, "?flow_id=flow-abc", { attemptReadThrows: true }),
+      "not-recorded",
+    );
+    // The vendor was never asked, and the row is left exactly as it was.
+    expect(confirmCalls).toEqual([]);
+    expect(statusCalls).toEqual([]);
+    const row = await attemptRow();
+    expect(row?.completedAt).toBeNull();
+    expect(row?.outcome).toBeNull();
+    await expectNothingWritten();
+  });
+
+  /**
+   * THE GUARD'S OWN READS ARE INSIDE THE `try` TOO, and this does not disturb the 403 above: that
+   * branch RETURNS a response, and a `catch` sees throws and not returns.
+   */
+  test("the guard's role read throwing still answers a Location", async () => {
+    await giveAttempt({ authId: MINTED, ageMinutes: 1 });
+    await expectRefusal(
+      await verify(ACTOR, "?flow_id=flow-abc", { roleReadThrows: true }),
+      "not-recorded",
+    );
     expect(confirmCalls).toEqual([]);
     await expectNothingWritten();
   });

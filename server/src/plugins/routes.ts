@@ -2747,141 +2747,156 @@ export function createPluginRoutes(
      */
     const flowId = (context.req.query("flow_id") ?? "").trim();
 
-    let signedIn = false;
-    const refusal = await requireUser(context, async () => {
-      signedIn = true;
-    });
-    if (!signedIn) {
-      /*
-       * ONLY A MISSING SESSION GOES TO SIGN-IN. The guard also refuses 403 for a session with no
-       * role, and sending that person to sign-in is a dead end: the sign-in screen's own load hits
-       * the same guard, gets the same 403, and they sign in as themselves again with nothing
-       * changed and never told their access was removed.
-       */
-      if (refusal instanceof Response && refusal.status === 401) {
-        return context.redirect(signInUrlFor(connect?.appUrl, flowId), 303);
-      }
-      return context.json(
-        {
-          error:
-            "This deployment no longer recognises you, so nothing was recorded. Ask an administrator to restore your access, then start the authorization again from the app's page.",
-        },
-        403,
-      );
-    }
-
-    /*
-     * THE CAPABILITY GATE, AND IT IS A PRESENCE TEST ON A VALUE THE BROKER DECLARED. Never a
-     * `provider === "arcade"` comparison: see {@link ConnectedAppBroker.authorizations}, and
-     * `store.ts`'s gate comment, which records a defect where a gate and its exemption keyed on
-     * different things and the exemption failed OPEN. A deployment whose broker runs no correlated
-     * authorization flow has no return leg for this route to verify.
-     */
-    if (!composio) return refusedWith("no-broker");
-    const flow = composio.broker.authorizations;
-    if (!flow) return refusedWith("not-supported");
-
-    /*
-     * A HANDLE THIS DEPLOYMENT CANNOT USE IS REFUSED WITHOUT ASKING THE VENDOR ANYTHING. Empty,
-     * missing or whitespace-only are one fact — the browser arrived without the one thing the
-     * return leg carries — and spending a vendor call on it would be an unauthenticated-shaped
-     * request reaching another company's API.
-     */
-    if (!flowId) return refusedWith("missing-handle");
-
-    /*
-     * THE ATTEMPT COMES FROM THE SIGNED-IN ACTOR AND NEVER FROM THE HANDLE. The vendor's return-leg
-     * id and the id its mint answered with are different id spaces with no endpoint between them,
-     * and nothing here may try to bridge them; trying identities until one is accepted would be an
-     * oracle reporting which of this deployment's identities have flows outstanding. The session
-     * names exactly one candidate, which is what makes the correlation exact rather than probable.
-     *
-     * {@link PluginStore.authorizationAttemptFor} already excludes a completed attempt and one past
-     * the fifteen-minute TTL, so all three absences arrive here as `null` and are refused in one
-     * sentence. A NULL `auth_id` is the fourth: its mint never completed, so there is nothing for
-     * the binding below to be checked against and the attempt can only ever expire.
-     */
-    const actorId = context.var.actor.id;
-    const attempt = await store.authorizationAttemptFor(actorId);
-    if (!attempt || attempt.authId === null) return refusedWith("no-attempt");
-    const authId = attempt.authId;
-
-    /*
-     * THE BINDING. `handle` IS AN OPAQUE STRING THE SEAM DOES NOT INTERPRET — the vendor's word for
-     * it stops at the adapter, and nothing here parses it, compares it to a scheme or reads a
-     * provider out of it.
-     *
-     * THE MISMATCH BRANCH IS ASSUMPTION-BACKED AND IS MOCKED-ONLY UNTIL A LIVE PROBE RUNS. The SDK
-     * declares no error shape for a handle belonging to somebody else; the adapter detects one by
-     * normalizing the thrown error and reading `user_mismatch`, and RETHROWS anything else. If the
-     * vendor's real shape differs, `confirmReturn` does not quietly answer `{ mismatch: true }` —
-     * it throws, and the branch below surfaces an outage instead of a clean refusal. That is UX
-     * degradation and not a hole: nothing is written and the attempt row is left alone either way,
-     * and the `auth_id` comparison underneath independently covers a `confirm` that SUCCEEDS
-     * against the wrong identity. Do not read a passing mocked test as proof this path works.
-     */
-    let confirmed: Awaited<ReturnType<typeof flow.confirmReturn>>;
-    try {
-      confirmed = await flow.confirmReturn({
-        handle: flowId,
-        vendorUserId: attempt.vendorUserId,
-      });
-    } catch {
-      /*
-       * NOTHING FROM THE VENDOR'S ANSWER TRAVELS WITH THIS — not its sentence, not its body, not
-       * the error. A reply on this leg can carry an authorization url, which is a bearer capability,
-       * and an outage is not worth a person's consent being quotable out of an error body.
-       */
-      return refusedWith("vendor-unavailable");
-    }
-
-    /*
-     * TWO REFUSALS, ONE SENTENCE, AND THE ATTEMPT ROW IS LEFT UNTOUCHED BY BOTH. A handle the vendor
-     * says belongs to somebody else, and a confirmation naming a DIFFERENT authorization than the
-     * one this deployment minted, are both "this return leg is not for the attempt you are holding".
-     *
-     * THE `auth_id` COMPARISON IS NOT OPTIONAL AND IT IS NOT HOPEFUL: the confirmation's id was
-     * measured IDENTICAL to the mint's through a completed consent, so this is an exact equality
-     * over one id space. Identity alone is not correlation — an expired read attempt, a fresh send
-     * attempt under the same identity, and then the read's callback arriving late matches on
-     * identity at every step, and a check stopping there would attribute a read consent to a send
-     * request. Local expiry does not cancel a vendor flow, so late callbacks are ordinary.
-     *
-     * NOTHING IS WRITTEN AND NOTHING IS CLOSED. A late callback must never consume or ALTER the
-     * replacement it arrived behind, so the row is not deleted, not completed and not marked.
-     */
-    if ("mismatch" in confirmed || confirmed.authorizationId !== authId) {
-      return refusedWith("not-your-authorization");
-    }
-
-    /*
-     * THE BOUNDED WAIT. `pending` is polled a few times over a few seconds and never with the SDK's
-     * unbounded `waitForCompletion`: a browser is held open on this request, and a vendor that has
-     * stopped answering must not hold it open forever. See {@link settledStatus}.
-     *
-     * NOTHING FROM THAT ANSWER TRAVELS ANYWHERE (D31). The vendor's own status reply carries a LIVE
-     * PROVIDER ACCESS TOKEN and the person's full profile; the seam narrows it to three fields
-     * inside the adapter, and the three are read here into a decision, a comparison and the scope
-     * list the completion writes. Not one of them is logged, attached as a `cause` or put in an
-     * error body, and the status object itself reaches none of those either. A status response
-     * LOOKS LIKE METADATA, which is how the throwaway harness that proved this flow came to write
-     * the token to a file on its first run.
-     */
-    let settled: Awaited<ReturnType<typeof flow.status>>;
-    try {
-      settled = await settledStatus(flow, authId);
-    } catch {
-      return refusedWith("vendor-unavailable");
-    }
-
     /*
      * EVERYTHING FROM HERE IS IN ONE `try`, FOR THE REASON `/oauth/callback` BELOW GIVES FOR ITS
-     * OWN: the criterion is that no request to this endpoint ends without a `Location`, and a store
-     * call that throws would otherwise put somebody who has just consented at another company on a
-     * bodyless 500 on an origin that serves no pages. The completion transaction is all-or-nothing,
-     * so a throw out of it has written neither the connection row nor its audit entry.
+     * OWN: so it is the whole body rather than each call. A blanket `catch` is a promise about the
+     * route; a per-call one is a promise about the calls somebody remembered. The criterion is
+     * that no request to this endpoint ends without a `Location`, and a call that throws would
+     * otherwise put somebody who has just consented at another company on a bodyless 500 — there
+     * is no `app.onError` on this app to turn that into anything else, and this is an origin that
+     * serves no pages.
+     *
+     * IT OPENS HERE AND NOT AT THE COMPLETION, which is where it used to open and where it was a
+     * promise about the calls somebody remembered. Two awaited reads happen first and both reach a
+     * store: `requireUser` reads the session and then this actor's roles, and
+     * `authorizationAttemptFor` is the one query on the happy path. A database blip or an
+     * exhausted pool during the attempt read is the ordinary way to reach either.
+     *
+     * THE STATED EXCEPTION IS UNTOUCHED BY THIS. The 403 for a session with no role RETURNS, and a
+     * `catch` sees throws and not returns, so it keeps its JSON body.
+     *
+     * The inner `try`s below take the vendor's throws first, so no refusal code changes here. The
+     * completion transaction is all-or-nothing, so a throw out of it has written neither the
+     * connection row nor its audit entry.
      */
     try {
+      let signedIn = false;
+      const refusal = await requireUser(context, async () => {
+        signedIn = true;
+      });
+      if (!signedIn) {
+        /*
+         * ONLY A MISSING SESSION GOES TO SIGN-IN. The guard also refuses 403 for a session with no
+         * role, and sending that person to sign-in is a dead end: the sign-in screen's own load hits
+         * the same guard, gets the same 403, and they sign in as themselves again with nothing
+         * changed and never told their access was removed.
+         */
+        if (refusal instanceof Response && refusal.status === 401) {
+          return context.redirect(signInUrlFor(connect?.appUrl, flowId), 303);
+        }
+        return context.json(
+          {
+            error:
+              "This deployment no longer recognises you, so nothing was recorded. Ask an administrator to restore your access, then start the authorization again from the app's page.",
+          },
+          403,
+        );
+      }
+
+      /*
+       * THE CAPABILITY GATE, AND IT IS A PRESENCE TEST ON A VALUE THE BROKER DECLARED. Never a
+       * `provider === "arcade"` comparison: see {@link ConnectedAppBroker.authorizations}, and
+       * `store.ts`'s gate comment, which records a defect where a gate and its exemption keyed on
+       * different things and the exemption failed OPEN. A deployment whose broker runs no correlated
+       * authorization flow has no return leg for this route to verify.
+       */
+      if (!composio) return refusedWith("no-broker");
+      const flow = composio.broker.authorizations;
+      if (!flow) return refusedWith("not-supported");
+
+      /*
+       * A HANDLE THIS DEPLOYMENT CANNOT USE IS REFUSED WITHOUT ASKING THE VENDOR ANYTHING. Empty,
+       * missing or whitespace-only are one fact — the browser arrived without the one thing the
+       * return leg carries — and spending a vendor call on it would be an unauthenticated-shaped
+       * request reaching another company's API.
+       */
+      if (!flowId) return refusedWith("missing-handle");
+
+      /*
+       * THE ATTEMPT COMES FROM THE SIGNED-IN ACTOR AND NEVER FROM THE HANDLE. The vendor's return-leg
+       * id and the id its mint answered with are different id spaces with no endpoint between them,
+       * and nothing here may try to bridge them; trying identities until one is accepted would be an
+       * oracle reporting which of this deployment's identities have flows outstanding. The session
+       * names exactly one candidate, which is what makes the correlation exact rather than probable.
+       *
+       * {@link PluginStore.authorizationAttemptFor} already excludes a completed attempt and one past
+       * the fifteen-minute TTL, so all three absences arrive here as `null` and are refused in one
+       * sentence. A NULL `auth_id` is the fourth: its mint never completed, so there is nothing for
+       * the binding below to be checked against and the attempt can only ever expire.
+       */
+      const actorId = context.var.actor.id;
+      const attempt = await store.authorizationAttemptFor(actorId);
+      if (!attempt || attempt.authId === null) return refusedWith("no-attempt");
+      const authId = attempt.authId;
+
+      /*
+       * THE BINDING. `handle` IS AN OPAQUE STRING THE SEAM DOES NOT INTERPRET — the vendor's word for
+       * it stops at the adapter, and nothing here parses it, compares it to a scheme or reads a
+       * provider out of it.
+       *
+       * THE MISMATCH BRANCH IS ASSUMPTION-BACKED AND IS MOCKED-ONLY UNTIL A LIVE PROBE RUNS. The SDK
+       * declares no error shape for a handle belonging to somebody else; the adapter detects one by
+       * normalizing the thrown error and reading `user_mismatch`, and RETHROWS anything else. If the
+       * vendor's real shape differs, `confirmReturn` does not quietly answer `{ mismatch: true }` —
+       * it throws, and the branch below surfaces an outage instead of a clean refusal. That is UX
+       * degradation and not a hole: nothing is written and the attempt row is left alone either way,
+       * and the `auth_id` comparison underneath independently covers a `confirm` that SUCCEEDS
+       * against the wrong identity. Do not read a passing mocked test as proof this path works.
+       */
+      let confirmed: Awaited<ReturnType<typeof flow.confirmReturn>>;
+      try {
+        confirmed = await flow.confirmReturn({
+          handle: flowId,
+          vendorUserId: attempt.vendorUserId,
+        });
+      } catch {
+        /*
+         * NOTHING FROM THE VENDOR'S ANSWER TRAVELS WITH THIS — not its sentence, not its body, not
+         * the error. A reply on this leg can carry an authorization url, which is a bearer capability,
+         * and an outage is not worth a person's consent being quotable out of an error body.
+         */
+        return refusedWith("vendor-unavailable");
+      }
+
+      /*
+       * TWO REFUSALS, ONE SENTENCE, AND THE ATTEMPT ROW IS LEFT UNTOUCHED BY BOTH. A handle the vendor
+       * says belongs to somebody else, and a confirmation naming a DIFFERENT authorization than the
+       * one this deployment minted, are both "this return leg is not for the attempt you are holding".
+       *
+       * THE `auth_id` COMPARISON IS NOT OPTIONAL AND IT IS NOT HOPEFUL: the confirmation's id was
+       * measured IDENTICAL to the mint's through a completed consent, so this is an exact equality
+       * over one id space. Identity alone is not correlation — an expired read attempt, a fresh send
+       * attempt under the same identity, and then the read's callback arriving late matches on
+       * identity at every step, and a check stopping there would attribute a read consent to a send
+       * request. Local expiry does not cancel a vendor flow, so late callbacks are ordinary.
+       *
+       * NOTHING IS WRITTEN AND NOTHING IS CLOSED. A late callback must never consume or ALTER the
+       * replacement it arrived behind, so the row is not deleted, not completed and not marked.
+       */
+      if ("mismatch" in confirmed || confirmed.authorizationId !== authId) {
+        return refusedWith("not-your-authorization");
+      }
+
+      /*
+       * THE BOUNDED WAIT. `pending` is polled a few times over a few seconds and never with the SDK's
+       * unbounded `waitForCompletion`: a browser is held open on this request, and a vendor that has
+       * stopped answering must not hold it open forever. See {@link settledStatus}.
+       *
+       * NOTHING FROM THAT ANSWER TRAVELS ANYWHERE (D31). The vendor's own status reply carries a LIVE
+       * PROVIDER ACCESS TOKEN and the person's full profile; the seam narrows it to three fields
+       * inside the adapter, and the three are read here into a decision, a comparison and the scope
+       * list the completion writes. Not one of them is logged, attached as a `cause` or put in an
+       * error body, and the status object itself reaches none of those either. A status response
+       * LOOKS LIKE METADATA, which is how the throwaway harness that proved this flow came to write
+       * the token to a file on its first run.
+       */
+      let settled: Awaited<ReturnType<typeof flow.status>>;
+      try {
+        settled = await settledStatus(flow, authId);
+      } catch {
+        return refusedWith("vendor-unavailable");
+      }
+
       /*
        * WHAT EACH OUTCOME DOES TO THE ATTEMPT ROW, AND THE TIMEOUT IS THE ONE THAT LEAVES IT ALONE.
        * `failed` and an identity that is not the attempt's are verdicts, so the row is consumed and
@@ -2991,9 +3006,9 @@ export function createPluginRoutes(
        * AND BOTH HOLDERS LAND ON THE SAME SCREEN, which is the only one that reads `?action=`. An
        * account the deployment holds used to be sent to `/admin/plugins/:key`, but that route has no
        * `validateSearch` for `action`, no landing notice and no grant list, so the whole Shared-app
-       * flow completed a consent at the vendor and landed somewhere that said nothing about it. The settings page draws the Shared
-       * app's grant list and the landing notice for either holder, so this is where the action
-       * somebody just authorized is actually named and marked.
+       * flow completed a consent at the vendor and landed somewhere that said nothing about it. The
+       * settings page draws the Shared app's grant list and the landing notice for either holder,
+       * so this is where the action somebody just authorized is actually named and marked.
        *
        * `connectedAccountsUrlFor` with `{ serverId }` answers a query-less path, so appending
        * `?action=` here cannot produce a second `?`.
