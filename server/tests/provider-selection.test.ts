@@ -201,17 +201,35 @@ describe("selectProviderWiring", () => {
     expect(f.calls).toEqual(["composio:1"]);
   });
 
-  test("both keys with nothing named installs neither and builds neither", () => {
+  test("both keys with nothing named is refused, not degraded to no broker", () => {
     const f = factories();
-    const wiring = selectProviderWiring(
-      { composioApiKey: "c", arcadeApiKey: "a" },
-      f.create,
+    expect(() =>
+      selectProviderWiring(
+        { composioApiKey: "c", arcadeApiKey: "a" },
+        f.create,
+      ),
+    ).toThrow(
+      /COMPOSIO_API_KEY.*ARCADE_API_KEY.*OPENBOT_BROKER_PROVIDER|OPENBOT_BROKER_PROVIDER.*COMPOSIO_API_KEY.*ARCADE_API_KEY/s,
     );
-    expect(wiring.provider).toBeNull();
-    expect(wiring.install.composio).toBeNull();
-    expect(wiring.install.arcade).toBeNull();
-    expect(wiring.broker).toBeNull();
     expect(f.calls).toEqual([]);
+  });
+
+  test("the refusal for two keys names neither key's value", () => {
+    const f = factories();
+    let caught: unknown;
+    try {
+      selectProviderWiring(
+        { composioApiKey: "composio-secret", arcadeApiKey: "arcade-secret" },
+        f.create,
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    const sentence = (caught as Error).message;
+    expect(sentence).not.toContain("composio-secret");
+    expect(sentence).not.toContain("arcade-secret");
+    expect(sentence).toContain("OPENBOT_BROKER_PROVIDER");
   });
 
   test("both keys with a provider named installs only the named one", () => {

@@ -994,6 +994,19 @@ export function brokerSentence(error: unknown): string | null {
 }
 
 /**
+ * A KEY OF NOTHING IS NO KEY.
+ *
+ * `ARCADE_API_KEY=` with nothing after it, or a value that is all whitespace, is an operator typo
+ * and not a configured credential. Exported because {@link activeProvider} and
+ * `./provider-wiring`'s ambiguity refusal must agree on it exactly: wiring decides that both keys
+ * are set and the deployment cannot say which vendor is live, and if it counted a blank key as set
+ * while this function did not, it would tell an operator holding two EMPTY keys that both are
+ * configured. One definition, so the two cannot drift apart.
+ */
+export const credential = (key: string | undefined): boolean =>
+  key !== undefined && key.trim() !== "";
+
+/**
  * Which broker this deployment runs, from configuration alone (no database access).
  *
  * One key set selects that provider. Both set is legal and expected, since ending an account at
@@ -1016,8 +1029,6 @@ export function activeProvider(c: {
   arcadeApiKey?: string;
   brokerProvider?: BrokerProvider;
 }): BrokerProvider | null {
-  const credential = (key: string | undefined): boolean =>
-    key !== undefined && key.trim() !== "";
   const configured: BrokerProvider[] = [];
   if (credential(c.composioApiKey)) configured.push("composio");
   if (credential(c.arcadeApiKey)) configured.push("arcade");

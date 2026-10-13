@@ -1,6 +1,6 @@
 import type { ArcadeActions } from "./arcade";
 import type { ComposioActions } from "./composio";
-import { activeProvider, type ConnectedAppBroker } from "./broker";
+import { activeProvider, credential, type ConnectedAppBroker } from "./broker";
 import type { BrokerProvider } from "./access";
 
 /**
@@ -24,11 +24,29 @@ export type ProviderWiring = {
 /**
  * Chooses ONE provider from configuration and builds only that provider's client.
  *
- * `activeProvider` answers `null` in three situations: no keys, both keys with nothing named, and
- * a named provider whose key is unset or blank. The first two are legal states. The third is an
- * operator typo, and degrading it to a deployment with no broker would send them looking for a broken
- * vendor instead of at their own environment, so it is refused here, naming the variables and
- * never a value.
+ * `activeProvider` answers `null` in three situations, and only ONE of them is a deployment this
+ * function may wire to nothing: no keys at all. That one is unambiguous — nobody configured a
+ * broker, so having none is the answer the configuration asked for, and every brokered surface
+ * already says the connector is not configured here.
+ *
+ * THE OTHER TWO ARE AMBIGUOUS CONFIGURATION, AND AMBIGUITY IS REFUSED RATHER THAN DEGRADED. A
+ * named provider whose key is unset OR BLANK is an operator typo. Both keys set with nothing named
+ * is an operator half-way through a sunset who has not said which vendor is live — and it is not a
+ * state anybody wants on purpose, because the deployment comes up holding two vendor keys and
+ * brokering nothing, so every brokered feature is dead. Returning null wiring for either would be
+ * a failure nobody is told about at boot: the symptom surfaces much later and far away, as
+ * features that simply do not work, and sends an operator looking for a broken vendor instead of
+ * at their own environment. Both are therefore refused here, naming the variables and never a
+ * value.
+ *
+ * BOTH-KEYS IS COUNTED WITH `credential`, THE SAME PREDICATE `activeProvider` USES, not with
+ * `!== undefined`. A deployment holding two BLANK keys has configured no vendor at all, and must
+ * be told that rather than that both of its vendors are set.
+ *
+ * NO BRANCH BELOW REACHES NULL WIRING BY FALLING THROUGH. The one null wiring is returned from the
+ * branch that means it, and a selected provider whose key is somehow absent throws rather than
+ * quietly becoming the same thing — see the invariant below.
+
  */
 export function selectProviderWiring(
   c: {
@@ -42,32 +60,64 @@ export function selectProviderWiring(
   },
 ): ProviderWiring {
   const provider = activeProvider(c);
-  if (provider === null && c.brokerProvider !== undefined) {
-    const keyName =
-      c.brokerProvider === "arcade" ? "ARCADE_API_KEY" : "COMPOSIO_API_KEY";
-    throw new Error(
-      `OPENBOT_BROKER_PROVIDER=${c.brokerProvider} names a provider whose ${keyName} is not set to a key. Set ${keyName} to this deployment's key, or change or unset OPENBOT_BROKER_PROVIDER.`,
-    );
+  if (provider === null) {
+    if (c.brokerProvider !== undefined) {
+      const keyName =
+        c.brokerProvider === "arcade" ? "ARCADE_API_KEY" : "COMPOSIO_API_KEY";
+      throw new Error(
+        `OPENBOT_BROKER_PROVIDER=${c.brokerProvider} names a provider whose ${keyName} is not set to a key. Set ${keyName} to this deployment's key, or change or unset OPENBOT_BROKER_PROVIDER.`,
+      );
+    }
+    if (credential(c.composioApiKey) && credential(c.arcadeApiKey)) {
+      throw new Error(
+        "COMPOSIO_API_KEY and ARCADE_API_KEY are both set and OPENBOT_BROKER_PROVIDER is unset, so no provider is active and nothing brokered would work. Set OPENBOT_BROKER_PROVIDER to composio or arcade to say which vendor is live, or unset the key of the vendor this deployment is not using.",
+      );
+    }
+    // Neither key set: a deployment that asked for no broker, and gets exactly that.
+    return {
+      provider: null,
+      broker: null,
+      install: { composio: null, arcade: null },
+    };
+
   }
-  if (provider === "arcade" && c.arcadeApiKey !== undefined) {
-    const client = create.arcade(c.arcadeApiKey);
+  if (provider === "arcade") {
+    const client = create.arcade(
+      requiredKey(provider, c.arcadeApiKey, "ARCADE_API_KEY"),
+    );
     return {
       provider,
       broker: client.broker,
       install: { composio: null, arcade: client.actions },
     };
   }
-  if (provider === "composio" && c.composioApiKey !== undefined) {
-    const client = create.composio(c.composioApiKey);
-    return {
-      provider,
-      broker: client.broker,
-      install: { composio: client.actions, arcade: null },
-    };
-  }
+  const client = create.composio(
+    requiredKey(provider, c.composioApiKey, "COMPOSIO_API_KEY"),
+  );
   return {
-    provider: null,
-    broker: null,
-    install: { composio: null, arcade: null },
+    provider,
+    broker: client.broker,
+    install: { composio: client.actions, arcade: null },
   };
+}
+
+/**
+ * The key a selected provider must have, demanded rather than tested.
+ *
+ * {@link activeProvider} selects a provider only from a key it has seen, so this cannot fire today.
+ * It is written as a demand because of what the alternative WAS: the two branches above each
+ * carried `&& c.<vendor>ApiKey !== undefined`, which made a selected provider with no key fall
+ * through to null wiring — the broker silently unwired, by the very code whose job is to wire it.
+ * A narrowing that doubles as a silent exit is the shape this finding is about, so the narrowing is
+ * kept and the exit is removed: if the two ever disagree, the deployment says so at boot.
+ */
+function requiredKey(
+  provider: BrokerProvider,
+  apiKey: string | undefined,
+  keyName: string,
+): string {
+  if (apiKey !== undefined) return apiKey;
+  throw new Error(
+    `${provider} was selected as the broker but ${keyName} is not set. This is a bug in provider selection, not a configuration error; no broker was wired.`,
+  );
 }
