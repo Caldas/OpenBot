@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { useArcadeClient } from "../src/plugins/arcade";
-import { listTools } from "../src/plugins/arcade";
+import { listTools, useArcadeClient } from "../src/plugins/arcade";
 import { createArcadeClient } from "../src/plugins/arcade-adapter";
 import type { AccountRef } from "../src/plugins/shared-accounts";
 
@@ -39,10 +38,26 @@ type EngineOptions = {
    * the live `"active"` the live API answers with.
    */
   connectionStatuses?: (string | null)[];
+  /**
+   * ANSWER EVERY CONNECTION PAGE FULL, FOREVER: no short page and no `total_count`, so nothing in
+   * the answer ever says the listing is over. This is the engine a runaway guard exists for.
+   */
+  connectionsNeverEnd?: boolean;
   /** The toolkit listing claims this many actions... */
   toolsClaimed?: number;
   /** ...and serves only this many, dropping `total_count` from the short final page. */
   toolsServed?: number;
+  /**
+   * The `total_count` the toolkit listing reports on every page AFTER the first, when that differs
+   * from the first page's claim — a vendor revising its count downward mid-listing.
+   */
+  toolsLaterTotal?: number;
+  /**
+   * How many auth-provider configurations the project holds. Only the LAST of them is the `google`
+   * instance the connection rows are held under; the rest are filler of another type. Left unset,
+   * the engine answers the single-config listing the other tests here want.
+   */
+  authProviders?: number;
 };
 
 type Engine = {
@@ -75,6 +90,20 @@ const toolRow = (toolkit: string, n: number) => ({
   },
 });
 
+/**
+ * The project's auth-provider configurations, with the ONE that matters LAST.
+ *
+ * `id` is the provider INSTANCE and `provider_id` the TYPE, as the live project spells them. The
+ * filler carries type `github`, so a reader that stops before the end of this listing finds no
+ * `google` instance at all and answers "not connected" for a person who is.
+ */
+const authProviderRows = (count: number) =>
+  Array.from({ length: count }, (_, n) =>
+    n === count - 1
+      ? { id: "google-openbot", provider_id: "google", type: "oauth2" }
+      : { id: `filler-${n}`, provider_id: "github", type: "oauth2" },
+  );
+
 function statusOf(options: EngineOptions, n: number): string | null {
   const listed = options.connectionStatuses?.[n];
   return listed === undefined ? "active" : listed;
@@ -99,6 +128,16 @@ function startEngine(options: EngineOptions): Engine {
         return new Response(null, { status: 204 });
       }
       if (url.pathname === "/v1/admin/user_connections") {
+        if (options.connectionsNeverEnd) {
+          return Response.json({
+            items: Array.from({ length: limit }, (_, n) =>
+              connectionRow(offset + n),
+            ),
+            offset,
+            limit,
+            page_count: limit,
+          });
+        }
         const page = rows.slice(offset, Math.min(offset + limit, served));
         const body: Record<string, unknown> = {
           items: page,
@@ -110,14 +149,28 @@ function startEngine(options: EngineOptions): Engine {
         return Response.json(body);
       }
       if (url.pathname === "/v1/admin/auth_providers") {
+        if (options.authProviders === undefined) {
+          return Response.json({
+            items: [
+              { id: "google-openbot", provider_id: "google", type: "oauth2" },
+            ],
+            offset: 0,
+            limit,
+            page_count: 1,
+            total_count: 1,
+          });
+        }
+        // PAGED, AND WITH NO `total_count`: a short page is the only thing that ends this listing,
+        // so a reader that does not advance its own offset never reaches the last configuration.
+        const page = authProviderRows(options.authProviders).slice(
+          offset,
+          offset + limit,
+        );
         return Response.json({
-          items: [
-            { id: "google-openbot", provider_id: "google", type: "oauth2" },
-          ],
-          offset: 0,
+          items: page,
+          offset,
           limit,
-          page_count: 1,
-          total_count: 1,
+          page_count: page.length,
         });
       }
       if (url.pathname === "/v1/tools") {
@@ -135,8 +188,12 @@ function startEngine(options: EngineOptions): Engine {
           page_count: page.length,
         };
         // The short final page DROPS the field — which is what defeats a cross-check that keeps
-        // the LAST page's total rather than the highest one reported.
-        if (page.length === limit) body.total_count = claimed;
+        // the LAST page's total rather than the highest one reported. A later page may also REVISE
+        // the count downward, which defeats the same cross-check without dropping anything.
+        if (page.length === limit) {
+          body.total_count =
+            offset === 0 ? claimed : (options.toolsLaterTotal ?? claimed);
+        }
         return Response.json(body);
       }
       return new Response("not found", { status: 404 });
@@ -207,6 +264,84 @@ describe("the connection listing is read to its end, not to the SDK's", () => {
     expect(await broker.accountName({ account, toolkit: "Gmail" })).toBe(
       "person 0",
     );
+  });
+});
+
+/**
+ * A LISTING THAT NEVER SAYS IT IS OVER IS NOT A COMPLETE ONE, AND THE RUNAWAY GUARD IS WHAT SAYS SO.
+ *
+ * Every other test here reaches a short page eventually, so the `maxPages` bound and the sentence
+ * behind it were never once reached: deleting the `unending` throw outright left the whole arcade
+ * suite green. What the throw prevents is the worst reading of all — a listing cut off at the bound
+ * presenting as the whole of itself, which is `isConnected` answering off an arbitrary 10,000-row
+ * prefix and `revoke` reporting success having deleted a prefix of somebody's connections.
+ *
+ * Only a real engine can pose the question: the SDK's own pagination stops at page one here (no
+ * `total_count`), and a hand-written generator ends when its fixture array does.
+ */
+describe("a listing that never ends is refused rather than cut off at the bound", () => {
+  test("isConnected refuses a connection listing that answers full pages forever", async () => {
+    const e = engine({
+      connections: 0,
+      connectionTotal: false,
+      connectionsNeverEnd: true,
+    });
+    const { broker } = createArcadeClient("never-dialled");
+
+    await expect(
+      broker.isConnected({ account, toolkit: "Gmail" }),
+    ).rejects.toThrow(/connection list never ended after 100 pages/);
+    // The bound is a bound: it asked 100 times and stopped.
+    expect(
+      e.requests.filter((r) => r.startsWith("/v1/admin/user_connections?"))
+        .length,
+    ).toBe(100);
+  });
+
+  test("revoke spends no delete on a listing that never ended", async () => {
+    const e = engine({
+      connections: 0,
+      connectionTotal: false,
+      connectionsNeverEnd: true,
+    });
+    const { broker } = createArcadeClient("never-dialled");
+
+    await expect(broker.revoke({ account, toolkit: "Gmail" })).rejects.toThrow(
+      /connection list never ended after 100 pages/,
+    );
+    expect(deletes(e).length).toBe(0);
+  });
+});
+
+/**
+ * THE AUTH-PROVIDER LISTING IS PAGED TOO, AND ONLY A REAL ENGINE ASKS IT TO BE.
+ *
+ * This is the one listing whose paging parameters travel INSIDE a `query` wrapper
+ * (`list({ query: { limit, offset } })`), and the one no test ever gave a second page: every
+ * fixture and every engine here answered a single configuration. So freezing its offset at zero —
+ * or sending no paging parameters at all — changed nothing any test could see, while on a project
+ * holding more than 100 configurations it means every person connected under an instance past the
+ * first page reads as not connected at all.
+ */
+describe("the auth-provider listing is read past its first page", () => {
+  test("a connection held under an instance on the second page is still found", async () => {
+    const e = engine({
+      connections: 1,
+      connectionTotal: false,
+      // 150 configurations: a full page, then a short one carrying the `google` instance.
+      authProviders: 150,
+    });
+    const { broker } = createArcadeClient("never-dialled");
+
+    expect(await broker.isConnected({ account, toolkit: "Gmail" })).toBe(true);
+    // Two pages were asked for, and the second one by offset — the SDK really does put the
+    // wrapper's fields on the query string.
+    expect(
+      e.requests.filter((r) => r.startsWith("/v1/admin/auth_providers")),
+    ).toEqual([
+      "/v1/admin/auth_providers?limit=100&offset=0",
+      "/v1/admin/auth_providers?limit=100&offset=100",
+    ]);
   });
 });
 
@@ -313,6 +448,24 @@ describe("the action listing's total_count cross-check survives a short final pa
       connectionTotal: true,
       toolsClaimed: 300,
       toolsServed: 250,
+    });
+    const { broker } = createArcadeClient("never-dialled");
+
+    await expect(broker.listApps()).rejects.toThrow(
+      /listed 250 of 300 actions, so its app catalogue is incomplete/,
+    );
+  });
+
+  test("a later page revising the count DOWN does not erase the first page's claim", async () => {
+    // Page one claims 300, page two revises it to 250, and 250 is all the engine serves. Keeping
+    // the LAST total any page reported — rather than the highest — makes the truncation agree with
+    // itself and the listing commits as a complete one.
+    engine({
+      connections: 0,
+      connectionTotal: true,
+      toolsClaimed: 300,
+      toolsServed: 250,
+      toolsLaterTotal: 250,
     });
     const { broker } = createArcadeClient("never-dialled");
 
