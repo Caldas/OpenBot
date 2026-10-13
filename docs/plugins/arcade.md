@@ -41,7 +41,7 @@ vendor's key. With both set and the variable unset, neither is active.
 
 Two refusals protect this, and both are deliberate:
 
-- **A named provider whose key is not set stops the server at startup.** An operator sees: _OPENBOT_BROKER_PROVIDER=arcade names a provider whose ARCADE_API_KEY is not set. Set ARCADE_API_KEY, or change or unset OPENBOT_BROKER_PROVIDER._ It does not fall back to a deployment with no broker, because that would send somebody looking for a broken vendor instead of at their own environment.
+- **A named provider whose key is not set stops the server at startup.** An operator sees: _OPENBOT_BROKER_PROVIDER=arcade names a provider whose ARCADE_API_KEY is not set to a key. Set ARCADE_API_KEY to this deployment's key, or change or unset OPENBOT_BROKER_PROVIDER._ It does not fall back to a deployment with no broker, because that would send somebody looking for a broken vendor instead of at their own environment. A key that is empty or all whitespace — `ARCADE_API_KEY=` with nothing after it — is no key: that provider counts as unconfigured, and no client is ever built on an empty credential.
 - **Activating a provider is refused while the other one still holds connections.** It is keyed on connection rows, not on keys. The message names the provider being activated, how many connections still belong to the other, and tells the operator to keep both keys set and end those connections through the other provider's sunset flow first. Switching by editing the environment would leave accounts nobody can revoke.
 
 ## Setting up the Arcade project

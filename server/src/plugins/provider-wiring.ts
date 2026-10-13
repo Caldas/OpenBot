@@ -25,8 +25,8 @@ export type ProviderWiring = {
  * Chooses ONE provider from configuration and builds only that provider's client.
  *
  * `activeProvider` answers `null` in three situations: no keys, both keys with nothing named, and
- * a named provider whose key is unset. The first two are legal states. The third is an operator
- * typo, and degrading it to a deployment with no broker would send them looking for a broken
+ * a named provider whose key is unset or blank. The first two are legal states. The third is an
+ * operator typo, and degrading it to a deployment with no broker would send them looking for a broken
  * vendor instead of at their own environment, so it is refused here, naming the variables and
  * never a value.
  */
@@ -46,7 +46,7 @@ export function selectProviderWiring(
     const keyName =
       c.brokerProvider === "arcade" ? "ARCADE_API_KEY" : "COMPOSIO_API_KEY";
     throw new Error(
-      `OPENBOT_BROKER_PROVIDER=${c.brokerProvider} names a provider whose ${keyName} is not set. Set ${keyName}, or change or unset OPENBOT_BROKER_PROVIDER.`,
+      `OPENBOT_BROKER_PROVIDER=${c.brokerProvider} names a provider whose ${keyName} is not set to a key. Set ${keyName} to this deployment's key, or change or unset OPENBOT_BROKER_PROVIDER.`,
     );
   }
   if (provider === "arcade" && c.arcadeApiKey !== undefined) {
