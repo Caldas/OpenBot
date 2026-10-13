@@ -407,6 +407,13 @@
       "when": 1791908858814,
       "tag": "0057_arcade_provider",
       "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1791924168752,
+      "tag": "0058_pending_authorization_checks",
+      "breakpoints": true
     }
   ]
 }
