@@ -550,3 +550,108 @@ describe("arcade adapter connection lifecycle", () => {
     expect(read).toHaveLength(1);
   });
 });
+
+/**
+ * The same row, carrying the vendor's OWN answer to "is this connection still usable".
+ *
+ * Separate from {@link row} rather than a fourth parameter on it, because the point is that the
+ * field is OPTIONAL on the wire: every fixture above omits it on purpose, and omission must keep
+ * meaning "the vendor said nothing". A `null` status omits the key entirely, which is the shape an
+ * engine that does not send the field answers with.
+ */
+const statusRow = (
+  n: number,
+  instance: string,
+  status: string | null,
+  info?: unknown,
+) => ({
+  ...row(n, instance, info),
+  ...(status === null ? {} : { connection_status: status }),
+});
+
+/**
+ * THE ROW'S EXISTENCE IS NOT THE ANSWER, AND THE THREE MEMBERS DO NOT AGREE ABOUT WHAT IS.
+ *
+ * `connection_status` is Arcade saying whether a connection still works. The positive reads —
+ * `isConnected`, `accountName` — must SKIP a row it reports as expired, revoked, pending or failed,
+ * because a screen saying "Connected, as Grace" off such a row is wrong in the one place somebody
+ * looks to check, and nothing contradicts it until a tool call fails far away from here.
+ *
+ * `revoke` must STILL DELETE that row, which is the half a fixture set of live-only rows cannot
+ * tell apart from the other. A dead row is a row the VENDOR still holds; skipping it would have
+ * `revoke` answer `false` — "there was nothing to withdraw" — while `store.ts`'s disconnect path
+ * deletes the local `brokered_connections` row on that answer regardless, leaving a grant at the
+ * vendor that nothing this deployment holds any longer names. That is the exact signature of the
+ * live defect this seam has already shipped once.
+ *
+ * Every fixture here is under `cpk-poc`/`google-openbot`, INSTANCE ids this project's
+ * configuration names, so nothing below can pass or fail for the instance-vs-type reason the rest
+ * of this file is about: the only variable is the status.
+ */
+describe("a connection the vendor reports as dead", () => {
+  beforeEach(() => {
+    providers(TOOLKIT_TYPES);
+    configs();
+  });
+
+  test("is skipped by isConnected and accountName, and is STILL DELETED by revoke", async () => {
+    listing([statusRow(1, "cpk-poc", "expired", { name: "Ada" })]);
+    const deleted: unknown[] = [];
+    stub("delete", (id) => {
+      deleted.push(id);
+      return Promise.resolve();
+    });
+    const { broker } = createArcadeClient("never-dialled");
+    const toolkit = "Github";
+    expect(await broker.isConnected({ account, toolkit })).toBe(false);
+    expect(await broker.accountName({ account, toolkit })).toBeNull();
+    // Not `false`-with-no-delete: the row is the vendor's, and Disconnect must spend the call.
+    expect(await broker.revoke({ account, toolkit })).toBe(true);
+    expect(deleted).toEqual(["ac_1"]);
+  });
+
+  test("beside a live row, the LIVE one answers and revoke deletes both", async () => {
+    listing([
+      statusRow(1, "cpk-poc", "expired", { name: "Ada" }),
+      statusRow(2, "cpk-poc", "active", { name: "Grace" }),
+    ]);
+    const deleted: unknown[] = [];
+    stub("delete", (id) => {
+      deleted.push(id);
+      return Promise.resolve();
+    });
+    const { broker } = createArcadeClient("never-dialled");
+    const toolkit = "Github";
+    expect(await broker.isConnected({ account, toolkit })).toBe(true);
+    // The dead row is FIRST, so a member that stopped at the first row would say "Ada".
+    expect(await broker.accountName({ account, toolkit })).toBe("Grace");
+    expect(await broker.revoke({ account, toolkit })).toBe(true);
+    expect([...deleted].sort()).toEqual(["ac_1", "ac_2"]);
+  });
+
+  test("a status the vendor did not send, or sent blank, is SILENCE and still reads as live", async () => {
+    listing([
+      statusRow(1, "cpk-poc", null, { name: "Ada" }),
+      statusRow(2, "google-openbot", "", { name: "Grace" }),
+    ]);
+    const { broker } = createArcadeClient("never-dialled");
+    expect(await broker.isConnected({ account, toolkit: "Github" })).toBe(true);
+    expect(await broker.accountName({ account, toolkit: "Github" })).toBe(
+      "Ada",
+    );
+    expect(await broker.isConnected({ account, toolkit: "Gmail" })).toBe(true);
+    expect(await broker.accountName({ account, toolkit: "Gmail" })).toBe(
+      "Grace",
+    );
+  });
+
+  test("the status is folded and trimmed, so ` ACTIVE ` is live and `Expired` is not", async () => {
+    listing([statusRow(1, "cpk-poc", " ACTIVE ", { name: "Ada" })]);
+    const { broker } = createArcadeClient("never-dialled");
+    expect(await broker.isConnected({ account, toolkit: "Github" })).toBe(true);
+    listing([statusRow(2, "cpk-poc", "Expired", { name: "Ada" })]);
+    expect(await broker.isConnected({ account, toolkit: "Github" })).toBe(
+      false,
+    );
+  });
+});
