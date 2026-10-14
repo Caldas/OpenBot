@@ -3981,32 +3981,74 @@ export function createPluginStore(options: PluginStoreOptions) {
         .limit(1);
 
       if (configured !== "standing" && connections.length === 0) {
-        /*
-         * MODE PICKED FOR THE PERSON ONLY WHERE THIS REWRITE IS WHAT GIVES THE APP AN ACCOUNT AT
-         * ALL, AND NEVER WHERE ONE WAS ALREADY CHOSEN. A row enabled `no-auth` has `accountMode`
-         * null — there was nothing to hold a mode about, see the insert above — and if this same
-         * re-add is what turns it into a key or consent app, it needs the ordinary default an
-         * insert would have given it, or every later read that asks "personal or shared" finds
-         * null and has no answer. An administrator who already chose Shared keeps that choice.
-         */
-        const [current] = await database
-          .select({ accountMode: mcpServers.accountMode })
-          .from(mcpServers)
-          .where(eq(mcpServers.id, answering))
-          .limit(1);
-        const bumpAccountMode =
-          schemeKind(recorded) === "none" &&
-          schemeKind(scheme) !== "none" &&
-          (current?.accountMode ?? null) === null;
-
         await database
           .update(mcpServers)
-          .set({
-            authScheme: scheme,
-            updatedAt: new Date(),
-            ...(bumpAccountMode ? { accountMode: "personal" as const } : {}),
-          })
+          .set({ authScheme: scheme, updatedAt: new Date() })
           .where(eq(mcpServers.id, answering));
+      }
+
+      /*
+       * AN APP WITH AN ACCOUNT LEAVES THIS METHOD SAYING WHOSE, ALWAYS — AND THAT IS A SEPARATE
+       * STATEMENT FROM THE SCHEME ABOVE FOR A REASON.
+       *
+       * CRITERION. After `addBrokeredApp` returns, the row that answers for the app either records
+       * a mode or is an app with no account to hold one about ({@link schemeKind} `none`). There is
+       * no third state, and in particular no enabled key-or-consent app with a null here.
+       *
+       * REASON. The null is not a cosmetic gap: {@link accountFor} refuses a call against such a
+       * row as `ambiguous` — "does not say whether it is reached through each person's account or a
+       * shared one, so it was not called" — so an app in that state is enabled, listed, connectable
+       * and dead. THREE THINGS HAD TO BE TRUE AT ONCE FOR IT TO HAPPEN AND ALL THREE WERE. The
+       * INSERT above settles the column, but this method's second branch is the upsert's CONFLICT
+       * arm, which writes the url and the provenance — it CONVERTS a row that was not brokered
+       * into one that is — and never wrote this column at all. The guard that stood here then asked
+       * `schemeKind(recorded) === "none"`, which is the question "was this a no-auth app a moment
+       * ago"; `recorded` is {@link brokeredAppScheme}, and a row that was not brokered a moment ago
+       * answers `null`, which is `unreadable` rather than `none`. And the whole block was gated on
+       * `configured !== "standing"`, so the one obvious remedy — press Add again — reaches it only
+       * on the single press that created the config and never afterwards. An administrator
+       * converting a hand-added or restored row got an app that refused every call, and nothing
+       * they could press repaired it: the Plugins page offers "Make shared" for a null mode (it
+       * reads any non-`shared` value as Personal) and no way to say Personal at all.
+       *
+       * SO THE QUESTION ASKED HERE IS THE ONE THE REFUSAL ASKS, and nothing else: does the row
+       * answering for this app have an account to hold, and does it fail to say whose. The scheme
+       * is re-read rather than taken from `scheme` because the branch above may or may not have
+       * written it, and what matters is what now STANDS on the answering row — including the
+       * `unreadable` null a converted row carries, which {@link accountFor} treats as having an
+       * account and which is therefore exactly as dead without a mode as a recorded `OAUTH2`.
+       *
+       * `personal` IS THE FILL, which is the insert's own default and the conservative one: it
+       * reaches each asking person's own account. `shared` would hand everybody one account nobody
+       * chose to share.
+       *
+       * AND NEVER OVER A MODE THAT IS THERE. The `IS NULL` lives in the WHERE rather than in a
+       * read-then-write, so an administrator's Shared choice cannot be lost to this statement, nor
+       * to a switch racing it.
+       *
+       * ON THE ANSWERING ROW, WHICH IS WHY THE CONFLICT ARM STILL DOES NOT WRITE THE COLUMN. Every
+       * reader of a brokered app's mode — {@link brokeredAppRowsAt} and so `serverAddress`, the
+       * listing, the call gate — resolves it off the row that answers for the url, which is not
+       * always the row the upsert keyed on. A fill in the conflict arm would settle the minted row
+       * and leave the one that is actually read still null.
+       *
+       * ROWS ALREADY STUCK IN THE NULL STATE ARE NOT REACHED FROM HERE AT ALL, because an enabled
+       * app cannot be re-added without first being removed. They are repaired by
+       * `0059_settle_brokered_account_mode`, which is the same decision written once against the
+       * table; see `tests/brokered-account-mode-backfill.integration.test.ts`.
+       */
+      const [settled] = await database
+        .select({ authScheme: mcpServers.authScheme })
+        .from(mcpServers)
+        .where(eq(mcpServers.id, answering))
+        .limit(1);
+      if (schemeKind(settled?.authScheme ?? null) !== "none") {
+        await database
+          .update(mcpServers)
+          .set({ accountMode: "personal", updatedAt: new Date() })
+          .where(
+            and(eq(mcpServers.id, answering), isNull(mcpServers.accountMode)),
+          );
       }
 
       await recordAuditEvent(auditStore, {
