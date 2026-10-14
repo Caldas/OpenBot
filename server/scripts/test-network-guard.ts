@@ -16,16 +16,38 @@
  * — the file reads as if it stubs — which is why the floor is here, in a preload that runs before
  * any test file is imported and therefore before any vendor client can capture a transport.
  *
- * WHAT IS REFUSED: an HTTP request to anything that is not loopback. Loopback is allowed because
- * the suite's own servers are loopback — `Bun.serve`, the route tests' ephemeral ports — and a test
- * talking to a server it started is not talking to anyone.
+ * WHAT IS REFUSED: a connection to anything that is not loopback, through every way this runtime
+ * (Bun 1.4) offers a test file of opening one. Patching `globalThis.fetch` and `http.request` alone
+ * is not that: an earlier version of this file did only that, and `https.get`, `Bun.fetch`, the
+ * named imports `import { get } from "node:https"`, the built-in `undici`, `net`, `tls`,
+ * `Bun.connect`, `WebSocket` and `dgram` all still reached example.com. Each one is closed below,
+ * at the lowest layer JavaScript can reach for it:
  *
- * WHAT IS NOT GUARDED, AND WHY: raw `node:net`/`node:tls` sockets, which are how the Postgres
- * driver reaches the test database. That host is deployment configuration (`TEST_DATABASE_URL`) and
- * is not necessarily loopback, so a guard there would refuse the database rather than a vendor. No
- * vendor SDK in this repository speaks a non-HTTP protocol: both brokered vendors, every model
- * provider and every OAuth exchange go through `fetch`, and `node:http`/`node:https` are guarded
- * alongside it so that a dependency which reaches for the older transport is caught too.
+ *  - `Bun.fetch` is a read-only, non-configurable property and cannot be replaced, and the built-in
+ *    `undici` captured the native fetch before this file ran. Both honour the proxy environment, so
+ *    the process's HTTP(S) proxy is pointed at a refusing listener on loopback (`NO_PROXY` keeps the
+ *    suite's own loopback servers direct). Every native fetch to a far host is handed to that
+ *    listener, which records it and answers 403 without ever opening a socket onward.
+ *  - `globalThis.fetch` is still replaced too, so the common path rejects with the explanation
+ *    below instead of resolving a 403.
+ *  - `node:http`/`node:https` do NOT read the proxy environment, so `request`, `get` and
+ *    `ClientRequest` are replaced on both, and `syncBuiltinESMExports()` pushes the replacements into
+ *    the named-import bindings, which Bun otherwise snapshots when the built-in first loads.
+ *  - `node:net`/`node:tls` are guarded on `net.Socket.prototype.connect`, which `net.connect`,
+ *    `net.createConnection` and `tls.connect` all reach; `Bun.connect`, `node:http2`'s `connect`,
+ *    `WebSocket` (global, `ws`, `undici`, `node:http`) and UDP (`dgram`, `Bun.udpSocket`) likewise.
+ *
+ * Raw sockets are allowed to one more place than loopback: the hosts of `TEST_DATABASE_URL` and
+ * `DATABASE_URL`, because that is how the Postgres driver reaches the test database and that host is
+ * deployment configuration, not necessarily loopback.
+ *
+ * WHAT IS NOT GUARDED, AND WHY — none of these is how any code in this repository talks to a vendor:
+ * `Bun.SQL` (native; it IS the database path, and its connection never surfaces to JavaScript);
+ * `Bun.S3Client`/`Bun.redis` (native clients this repository does not use); a `fetch` given an
+ * explicit `proxy` or `unix` option, or a test that rewrites the proxy variables itself; a child
+ * process (`Bun.spawn`, `child_process` running `curl`); a `Worker`, whose global scope does not
+ * run this preload; and DNS lookups, which resolve a name but connect to nothing.
+ * `server/tests/test-network-guard.test.ts` plants a call through every guarded entry point.
  *
  * HOW A SUITE THAT IS MEANT TO DIAL OPTS OUT: any `OPENBOT_LIVE_*` variable with a non-empty value.
  * The three live suites already set one — `OPENBOT_LIVE_COMPOSIO`, `OPENBOT_LIVE_ARCADE` and
@@ -34,8 +56,12 @@
  * otherwise.
  */
 
+import dgram from "node:dgram";
 import http from "node:http";
+import http2 from "node:http2";
 import https from "node:https";
+import { syncBuiltinESMExports } from "node:module";
+import net from "node:net";
 
 const liveRun = Object.entries(process.env).some(
   ([name, value]) => name.startsWith("OPENBOT_LIVE_") && (value ?? "").trim(),
@@ -51,7 +77,26 @@ function isLoopback(host: string): boolean {
     bare === "::" ||
     bare === "" ||
     bare.endsWith(".localhost") ||
-    /^127\./.test(bare)
+    /^127\./.test(bare) ||
+    /^::ffff:127\./.test(bare)
+  );
+}
+
+/** The configured database hosts, read when asked, since a test may point either variable elsewhere. */
+function isDatabaseHost(host: string): boolean {
+  const bare = host.replace(/^\[|\]$/g, "").toLowerCase();
+  return [process.env.TEST_DATABASE_URL, process.env.DATABASE_URL].some(
+    (configured) => {
+      if (!configured) return false;
+      try {
+        return (
+          new URL(configured).hostname.replace(/^\[|\]$/g, "").toLowerCase() ===
+          bare
+        );
+      } catch {
+        return false;
+      }
+    },
   );
 }
 
@@ -60,9 +105,9 @@ function isLoopback(host: string): boolean {
  *
  * A refusal does not always reach the caller as itself: `@composio/client` retries a rejected
  * transport and then reports "Connection error.", which is the same sentence a real outage would
- * produce. So the fact that the guard — rather than the network — stopped a call is recorded here
- * at the point of refusal, where it is unambiguous. `server/tests/test-network-guard.test.ts` reads
- * it; nothing in `server/src` may.
+ * produce, and a native `Bun.fetch` sees the refusing proxy's 403. So the fact that the guard —
+ * rather than the network — stopped a call is recorded here at the point of refusal, where it is
+ * unambiguous. `server/tests/test-network-guard.test.ts` reads it; nothing in `server/src` may.
  */
 declare global {
   var openbotTestNetworkRefusals: string[] | undefined;
@@ -70,19 +115,97 @@ declare global {
 
 globalThis.openbotTestNetworkRefusals = [];
 
+const explanation =
+  "Tests do not use the network: stub the transport this call goes through (and stub it BEFORE " +
+  "constructing any client, which binds `fetch` once), or, for a deliberate vendor suite, set an " +
+  "OPENBOT_LIVE_* variable as `bun run test:live-*` does. Guard: server/scripts/test-network-guard.ts.";
+
 function refuse(target: string): Error {
   globalThis.openbotTestNetworkRefusals?.push(target);
-  return new Error(
-    `A test tried to reach ${target}. Tests do not use the network: stub the transport this call ` +
-      "goes through (and stub it BEFORE constructing any client, which binds `fetch` once), or, " +
-      "for a deliberate vendor suite, set an OPENBOT_LIVE_* variable as `bun run test:live-*` " +
-      "does. Guard: server/scripts/test-network-guard.ts.",
-  );
+  return new Error(`A test tried to reach ${target}. ${explanation}`);
+}
+
+/** The host a Node `request`/`get`/`ClientRequest` call is aimed at, from any of its overloads. */
+function nodeRequestHost(args: unknown[]): string {
+  let host = "";
+  const [first, second] = args;
+  if (typeof first === "string") host = new URL(first).hostname;
+  else if (first instanceof URL) host = first.hostname;
+  for (const options of [first, second]) {
+    if (options && typeof options === "object" && !(options instanceof URL)) {
+      const { hostname, host: hostWithPort } = options as {
+        hostname?: string | null;
+        host?: string | null;
+      };
+      const named = hostname ?? hostWithPort;
+      if (named) host = String(named).replace(/:\d+$/, "");
+    }
+  }
+  return host;
+}
+
+/** The host a `net.Socket#connect` is aimed at; `null` for a Unix socket path, which is local. */
+function socketConnectHost(args: unknown[]): string | null {
+  const [first, second] = args;
+  if (Array.isArray(first)) return socketConnectHost(first);
+  if (first && typeof first === "object") {
+    const options = first as { path?: string; host?: string };
+    if (options.path) return null;
+    return options.host ?? "localhost";
+  }
+  if (typeof first === "string" && !/^\d+$/.test(first)) return null;
+  return typeof second === "string" ? second : "localhost";
+}
+
+function guardSocketHost(host: string | null, label: string): void {
+  if (host === null || isLoopback(host) || isDatabaseHost(host)) return;
+  throw refuse(`${label} ${host}`);
+}
+
+type Callable = (...args: unknown[]) => unknown;
+type Constructable = new (...args: unknown[]) => object;
+
+function replace(owner: object, key: string, value: unknown): void {
+  (owner as Record<string, unknown>)[key] = value;
 }
 
 if (!liveRun) {
-  const passThrough = globalThis.fetch;
+  /*
+   * The refusing proxy, for every native fetch this file cannot wrap. `Bun.listen` binds
+   * synchronously, so the port is known before the variables naming it are set, and the listener
+   * is unreferenced so it never holds a finished run open.
+   */
+  const refusingProxy = Bun.listen({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: {
+      data(socket, chunk) {
+        const [method = "", target = ""] = chunk
+          .toString("latin1")
+          .split("\r\n", 1)[0]
+          .split(" ");
+        refuse(
+          method === "CONNECT"
+            ? `https://${target.replace(/:443$/, "")}`
+            : target.replace(/\?.*$/, ""),
+        );
+        const body = `Refused by the test network guard. ${explanation}`;
+        socket.end(
+          "HTTP/1.1 403 Forbidden\r\nConnection: close\r\n" +
+            "X-Openbot-Test-Network-Guard: refused\r\nContent-Type: text/plain\r\n" +
+            `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`,
+        );
+      },
+    },
+  });
+  refusingProxy.unref();
+  const proxy = `http://127.0.0.1:${refusingProxy.port}`;
+  const direct = "localhost,127.0.0.1,::1,[::1],0.0.0.0,.localhost";
+  for (const name of ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"])
+    process.env[name] = proxy;
+  for (const name of ["NO_PROXY", "no_proxy"]) process.env[name] = direct;
 
+  const passThrough = globalThis.fetch;
   globalThis.fetch = ((input: unknown, init?: RequestInit) => {
     const raw =
       typeof input === "string"
@@ -96,7 +219,7 @@ if (!liveRun) {
     } catch {
       // A relative or unparseable target reaches no host; the runtime's own error is the right one.
     }
-    if (url && (url.protocol === "http:" || url.protocol === "https:")) {
+    if (url && /^(https?|wss?):$/.test(url.protocol)) {
       if (!isLoopback(url.hostname)) {
         return Promise.reject(refuse(url.origin + url.pathname));
       }
@@ -105,30 +228,144 @@ if (!liveRun) {
   }) as typeof globalThis.fetch;
 
   /*
-   * `request` is forwarded through an `unknown[]` signature rather than one of its four overloads:
-   * nothing here reads an argument it did not already read off the first one, and restating the
-   * overloads would be a declaration to maintain against Node's.
+   * `request`, `get` and `ClientRequest` are forwarded through an `unknown[]` signature rather than
+   * one of their overloads: nothing here reads an argument it did not already read off the first
+   * two, and restating the overloads would be a declaration to maintain against Node's. `get` is
+   * replaced on its own because the built-in calls its internal `request`, not this property.
    */
-  type NodeRequest = (...args: unknown[]) => unknown;
   for (const module of [http, https] as const) {
-    const passThroughRequest = module.request as unknown as NodeRequest;
-    (module as unknown as { request: NodeRequest }).request = (
-      ...args: unknown[]
-    ) => {
-      const first = args[0];
-      const target =
-        typeof first === "string"
-          ? new URL(first).hostname
-          : first instanceof URL
-            ? first.hostname
-            : ((first as { hostname?: string; host?: string } | null)
-                ?.hostname ??
-              (first as { host?: string } | null)?.host ??
-              "");
-      if (!isLoopback(String(target).replace(/:\d+$/, ""))) {
-        throw refuse(String(target));
-      }
-      return passThroughRequest(...args);
-    };
+    for (const key of ["request", "get"] as const) {
+      const original = module[key] as unknown as Callable;
+      replace(module, key, (...args: unknown[]) => {
+        const host = nodeRequestHost(args);
+        if (!isLoopback(host)) throw refuse(host);
+        return original(...args);
+      });
+    }
   }
+  const OriginalClientRequest = http.ClientRequest as unknown as Constructable;
+  replace(
+    http,
+    "ClientRequest",
+    class GuardedClientRequest extends OriginalClientRequest {
+      constructor(...args: unknown[]) {
+        const host = nodeRequestHost(args);
+        if (!isLoopback(host)) throw refuse(host);
+        super(...args);
+      }
+    },
+  );
+
+  const originalSocketConnect = net.Socket.prototype.connect as Callable;
+  replace(
+    net.Socket.prototype,
+    "connect",
+    function (this: net.Socket, ...args: unknown[]) {
+      guardSocketHost(socketConnectHost(args), "socket");
+      return originalSocketConnect.apply(this, args);
+    },
+  );
+
+  const originalBunConnect = Bun.connect as unknown as Callable;
+  // `Bun.connect` answers with a promise, so a refusal is a rejection rather than a throw.
+  replace(Bun, "connect", (options: { hostname?: string; unix?: string }) => {
+    try {
+      guardSocketHost(
+        options?.unix ? null : (options?.hostname ?? ""),
+        "socket",
+      );
+    } catch (refusal) {
+      return Promise.reject(refusal);
+    }
+    return originalBunConnect(options);
+  });
+
+  const originalHttp2Connect = http2.connect as unknown as Callable;
+  replace(http2, "connect", (authority: unknown, ...rest: unknown[]) => {
+    const host =
+      authority instanceof URL
+        ? authority.hostname
+        : typeof authority === "string"
+          ? new URL(authority).hostname
+          : ((authority as { hostname?: string; host?: string } | null)
+              ?.hostname ??
+            (authority as { host?: string } | null)?.host ??
+            "");
+    if (!isLoopback(host)) throw refuse(`http2 ${host}`);
+    return originalHttp2Connect(authority, ...rest);
+  });
+
+  const OriginalWebSocket = globalThis.WebSocket as unknown as Constructable;
+  class GuardedWebSocket extends OriginalWebSocket {
+    constructor(...args: unknown[]) {
+      const url = new URL(String(args[0]));
+      if (!isLoopback(url.hostname)) throw refuse(url.origin + url.pathname);
+      super(...args);
+    }
+  }
+  replace(globalThis, "WebSocket", GuardedWebSocket);
+  replace(http, "WebSocket", GuardedWebSocket);
+  for (const builtin of ["ws", "undici"]) {
+    const module = require(builtin) as Record<string, unknown>;
+    if (module.WebSocket) replace(module, "WebSocket", GuardedWebSocket);
+  }
+
+  const originalDgramSend = dgram.Socket.prototype.send as Callable;
+  replace(
+    dgram.Socket.prototype,
+    "send",
+    function (this: dgram.Socket, ...args: unknown[]) {
+      // send(msg, port, address?, cb?) or send(msg, offset, length, port, address?, cb?)
+      const address =
+        typeof args[2] === "number" && typeof args[3] === "number"
+          ? args[4]
+          : args[2];
+      if (typeof address === "string") guardSocketHost(address, "udp");
+      return originalDgramSend.apply(this, args);
+    },
+  );
+  const originalDgramConnect = dgram.Socket.prototype.connect as Callable;
+  replace(
+    dgram.Socket.prototype,
+    "connect",
+    function (this: dgram.Socket, ...args: unknown[]) {
+      guardSocketHost(
+        typeof args[1] === "string" ? args[1] : "localhost",
+        "udp",
+      );
+      return originalDgramConnect.apply(this, args);
+    },
+  );
+
+  const originalUdpSocket = Bun.udpSocket as unknown as Callable;
+  replace(
+    Bun,
+    "udpSocket",
+    async (options: { connect?: { hostname?: string } }) => {
+      if (options?.connect)
+        guardSocketHost(options.connect.hostname ?? "", "udp");
+      const socket = (await originalUdpSocket(options)) as {
+        send: Callable;
+        sendMany: Callable;
+      };
+      const send = socket.send.bind(socket);
+      socket.send = (...args: unknown[]) => {
+        if (typeof args[2] === "string") guardSocketHost(args[2], "udp");
+        return send(...args);
+      };
+      const sendMany = socket.sendMany.bind(socket);
+      socket.sendMany = (packets: unknown) => {
+        if (!options?.connect && Array.isArray(packets)) {
+          for (let i = 2; i < packets.length; i += 3)
+            guardSocketHost(String(packets[i]), "udp");
+        }
+        return sendMany(packets);
+      };
+      return socket;
+    },
+  );
+
+  // Bun snapshots a built-in's named exports when it first loads; this re-reads every replacement
+  // above into them, so `import { get } from "node:https"` in a test file is the guarded one.
+  syncBuiltinESMExports();
 }
