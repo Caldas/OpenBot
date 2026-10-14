@@ -1989,7 +1989,32 @@ export function mountConnectionRoutes({
          * NOTHING FROM THE VENDOR'S ANSWER TRAVELS WITH THIS — not its sentence, not its body, not
          * the error. A reply on this leg can carry an authorization url, which is a bearer capability,
          * and an outage is not worth a person's consent being quotable out of an error body.
+         *
+         * LOGGED, THOUGH, WHICH IT WAS NOT. This refusal and the status one below are the two ways a
+         * return leg ends with the vendor unreachable, and they reach the person as the SAME
+         * sentence — so without a line an operator cannot tell which call failed, and the two are
+         * not equally serious: this one ran BEFORE anything was confirmed, so no completion is
+         * implied by reaching it. Said plainly here rather than left to be inferred from the absence
+         * of the other line.
+         *
+         * AND NO REASON TRAVELS WITH IT, for the reason the paragraph above already gives about the
+         * redirect: a reply on this leg can carry an authorization url, which is a bearer
+         * capability. That hazard does not stop at the response — it was measured reaching this
+         * line — and a log is not a lesser destination. Both vendor calls on this route therefore
+         * log what happened and where to look, and nothing derived from what the vendor said. See
+         * `arcade-completion-status-unknown` below, which drops its reason for the same reason and
+         * over a worse secret.
          */
+        console.error(
+          JSON.stringify({
+            type: "arcade-return-confirmation-unknown",
+            server: attempt.serverId,
+            action: attempt.action,
+            authorizationId: authId,
+            attemptStartedAt: attempt.createdAt,
+            note: "A person returned from a consent screen and the vendor could not be asked whether this return belongs to their authorization, so nothing was read and nothing was written. The attempt was left standing and returning to the link can still settle it. Unlike arcade-completion-status-unknown this implies no completed consent: the status was never reached. No reason is carried here on purpose: a reply on this leg can hold an authorization url, which is a bearer capability.",
+          }),
+        );
         return refusedWith("vendor-unavailable");
       }
 
@@ -2029,6 +2054,52 @@ export function mountConnectionRoutes({
       try {
         settled = await settledStatus(flow, authId);
       } catch {
+        /*
+         * THE ONE UNKNOWN ON THIS LEG THAT CAN SIT OVER A LIVE GRANT, AND IT USED TO BE SILENT.
+         *
+         * Everything above has already passed: the handle was confirmed, it named THIS mint, and the
+         * person is standing here because a consent screen sent them. So the likeliest state behind
+         * this throw is a consent that COMPLETED AT THE VENDOR — and the only thing that failed is
+         * this deployment reading the status that would let it record one. Nothing is written, so the
+         * grant is live at Arcade and no row here names it.
+         *
+         * THE ROW IS LEFT STANDING, DELIBERATELY, AND THAT IS WHY A LINE IS THE WHOLE FIX. A status
+         * this deployment could not read is not a verdict: closing the attempt would take away the
+         * link the person can come back to, and writing a connection would record a completion
+         * nothing here has evidence of. The attempt stands until its TTL and a return can still
+         * settle it — so the recovery already exists, and what was missing was anybody knowing to
+         * look. See `arcade-mint-outcome-unknown`, which is this shape on the opening leg.
+         *
+         * AND THIS LINE CARRIES NO REASON, WHICH IS THE ONE PLACE IT DEPARTS FROM ITS SIBLINGS.
+         *
+         * `arcade-mint-outcome-unknown` and `arcade-context-withdrawal-unknown` both log the error
+         * through {@link reasonWithoutStatement}, on the argument that everything reaching them
+         * carries this deployment's own sentence. THAT ARGUMENT DOES NOT HOLD HERE and it was
+         * MEASURED not holding: this is the status leg, whose reply carries a LIVE PROVIDER ACCESS
+         * TOKEN and the person's profile (D31) — the adapter already inverts the carry-the-vendor-
+         * error-as-`cause` convention for exactly that reason — and a failure injected on this seam
+         * put the token straight into the line. A log is not a lesser destination than a redirect,
+         * and this leg's whole discipline is that nothing of that answer travels anywhere.
+         *
+         * So the line names WHAT HAPPENED AND WHERE TO LOOK, and nothing derived from the vendor:
+         * the authorization id an operator finds the flow by, the app, the action, and when the
+         * attempt began. The reason is the one thing that cannot be included without reopening the
+         * hole this leg exists to keep shut, and an operator holding the id can ask the vendor
+         * directly — which is the thing the missing reason would only have described.
+         *
+         * Held by `arcade-verify.test.ts`, which asserts the token reaches neither the response nor
+         * this line.
+         */
+        console.error(
+          JSON.stringify({
+            type: "arcade-completion-status-unknown",
+            server: attempt.serverId,
+            action: attempt.action,
+            authorizationId: authId,
+            attemptStartedAt: attempt.createdAt,
+            note: "A person returned from a consent screen and this deployment could not read whether the authorization completed, so nothing was recorded. The consent may well be LIVE at the vendor with no row here naming it. The attempt was left standing rather than closed, so returning to the link can still settle it; if it expires first, check the authorization at the vendor before assuming nothing was granted. No reason is carried here on purpose: the vendor's status answer holds a live access token.",
+          }),
+        );
         return refusedWith("vendor-unavailable");
       }
 
@@ -2108,9 +2179,29 @@ export function mountConnectionRoutes({
             collateral = await withVendorDeadline(() =>
               store.siblingApps({ toolkit: retiredApp, account: retired }),
             );
-          } catch {
-            // Nothing from the vendor's answer travels with this, here as everywhere on this leg.
+          } catch (error) {
+            /*
+             * Nothing from the vendor's answer travels with this, here as everywhere on this leg.
+             *
+             * AND THE FIX THAT LOGGED THE REVOKE THROW DID NOT REACH ITS OWN SIBLING. `arcade-
+             * context-withdrawal-unknown` below covers the revoke raising; this call sits one step
+             * in front of it and decides whether that revoke is attempted AT ALL. Unresolved, the
+             * revoke is skipped entirely and the attempt is closed `unreconciled` — the same outcome
+             * the branch below writes a line for, reached by a different road and, until now,
+             * without one. An operator reading the trail saw `unreconciled` and nothing saying why.
+             */
             collateral = null;
+            console.error(
+              JSON.stringify({
+                type: "arcade-sibling-resolution-unknown",
+                server: attempt.serverId,
+                app: retiredApp,
+                action: attempt.action,
+                authorizationId: authId,
+                note: "A consent completed at the vendor after this app's account changed, and which apps the retired identity's grant also covers could not be resolved. No withdrawal was attempted, so the retired identity's grant is still live at the vendor and this deployment's rows for it were left alone. The attempt was closed unreconciled. Disconnect the app here to settle it.",
+                error: reasonWithoutStatement(error),
+              }),
+            );
           }
         }
         if (retiredApp && collateral) {

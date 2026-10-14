@@ -621,7 +621,9 @@ describe("a return leg this deployment will not complete", () => {
       throw new Error("vendor down: https://vendor.example/consent?secret=x");
     };
 
-    const response = await verify(ACTOR, "?flow_id=flow-abc");
+    const [response, said] = await heard(() =>
+      verify(ACTOR, "?flow_id=flow-abc"),
+    );
     await expectRefusal(response, "vendor-unavailable");
     expect(response.headers.get("location")).not.toContain("vendor.example");
 
@@ -629,6 +631,20 @@ describe("a return leg this deployment will not complete", () => {
     expect(row?.completedAt).toBeNull();
     expect(row?.outcome).toBeNull();
     await expectNothingWritten();
+
+    /*
+     * AND AN OPERATOR IS LEFT A LINE. This refusal and the status one share a sentence at the
+     * browser, so without this the two are indistinguishable in the only place anybody could tell
+     * them apart — and they are not equally serious. This one ran before the confirmation, so no
+     * completed consent is implied by reaching it, and the line says so.
+     */
+    const line = lines(said).find((text) =>
+      text.includes("arcade-return-confirmation-unknown"),
+    );
+    expect(line).toBeDefined();
+    expect(line).toContain(`"authorizationId":"${MINTED}"`);
+    // The vendor's own words stay out of it, exactly as they stay out of the redirect above.
+    expect(line).not.toContain("vendor.example");
   });
 });
 
@@ -840,7 +856,9 @@ describe("what the authorization's own status decides", () => {
       throw new Error(`vendor down, token ${TOKEN}`);
     };
 
-    const response = await verify(ACTOR, "?flow_id=flow-abc");
+    const [response, said] = await heard(() =>
+      verify(ACTOR, "?flow_id=flow-abc"),
+    );
     await expectRefusal(response, "vendor-unavailable");
     // THE WHOLE ANSWER: the vendor's failure carries the token in its message, so a check of
     // `Location` alone would miss it riding another header or the body.
@@ -850,6 +868,28 @@ describe("what the authorization's own status decides", () => {
     expect(row?.completedAt).toBeNull();
     expect(row?.outcome).toBeNull();
     await expectNothingWritten();
+
+    /*
+     * AND THE ONE UNKNOWN THAT CAN SIT OVER A LIVE GRANT IS SAID OUT LOUD.
+     *
+     * Everything before this point passed: the handle was confirmed and it named this mint, and the
+     * person is here because a consent screen sent them. So the likeliest state behind the throw is
+     * a consent that COMPLETED at the vendor with nothing here recording it. Silent, that is a live
+     * grant nobody knows to look for.
+     */
+    const line = lines(said).find((text) =>
+      text.includes("arcade-completion-status-unknown"),
+    );
+    expect(line).toBeDefined();
+    expect(line).toContain(`"authorizationId":"${MINTED}"`);
+
+    /*
+     * AND THE LOG IS HELD TO THE SAME BAR AS THE RESPONSE (D31). A status reply on this leg carries
+     * a LIVE PROVIDER ACCESS TOKEN, so a line written about a status failure is exactly where one
+     * would escape — and a log is not a lesser destination than a redirect. The refusal above
+     * already proves the response is clean; this proves the line beside it is.
+     */
+    expect(mentionsOf(line ?? "", TOKEN)).toEqual([]);
   });
 
   /**
@@ -1221,6 +1261,42 @@ describe("a consent whose account context has moved on", () => {
       [TOOLKIT, siblingApp()].sort(),
     );
     expect((await attemptRow())?.outcome).toBe("unreconciled");
+  });
+
+  /**
+   * AND THE SAME OUTCOME REACHED BY THE OTHER ROAD SAYS SO TOO.
+   *
+   * `arcade-context-withdrawal-unknown` covers the revoke RAISING. This resolution sits one step in
+   * front of it and decides whether that revoke is attempted at all, so an unresolved sibling set
+   * closes the attempt `unreconciled` without the revoke ever running — the same row on the trail,
+   * reached differently, and for a while with no line against it. An operator saw `unreconciled`
+   * and nothing saying why.
+   */
+  test("a sibling set that could not be resolved leaves an operator a line too", async () => {
+    await giveAttempt({ authId: MINTED, ageMinutes: 1 });
+    await switchToShared();
+    await hold(TOOLKIT, ACTOR);
+    authProviderAnswer = async () => {
+      throw new Error("the vendor would not say which provider holds this");
+    };
+
+    const [response, said] = await heard(() =>
+      verify(ACTOR, "?flow_id=flow-abc"),
+    );
+    await expectRefusal(response, "context-changed");
+
+    expect(revokeCalls).toEqual([]);
+    expect((await attemptRow())?.outcome).toBe("unreconciled");
+
+    const line = lines(said).find((text) =>
+      text.includes("arcade-sibling-resolution-unknown"),
+    );
+    expect(line).toBeDefined();
+    expect(line).toContain(`"authorizationId":"${MINTED}"`);
+    expect(line).toContain(`"app":"${TOOLKIT}"`);
+    expect(line).toContain(
+      "the vendor would not say which provider holds this",
+    );
   });
 });
 
