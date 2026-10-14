@@ -44,6 +44,7 @@ const GMAIL: GrantState[] = [
     action: "Gmail.ListEmails",
     state: "authorized",
     scopes: ["gmail.readonly"],
+    authorization: "held",
   },
   { action: "Gmail.SendEmail", state: "needs-consent", scopes: ["gmail.send"] },
 ];

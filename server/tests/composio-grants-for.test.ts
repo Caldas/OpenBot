@@ -478,6 +478,7 @@ describe("Composio's grantsFor", () => {
         action: "GMAIL_FETCH_EMAILS",
         state: "authorized",
         scopes: ["gmail.modify"],
+        authorization: "held",
       },
     ]);
     // And the gate agrees, which is the consistency the state is measured for.
@@ -517,6 +518,7 @@ describe("Composio's grantsFor", () => {
         action: "GMAIL_FETCH_EMAILS",
         state: "authorized",
         scopes: ["gmail.modify", "gmail.readonly", "gmail.send"],
+        authorization: "held",
       },
     ]);
   });
@@ -548,7 +550,12 @@ describe("Composio's grantsFor", () => {
     expect(
       await broker.grantsFor({ toolkit: "gmail", account: ACCOUNT }),
     ).toEqual([
-      { action: "GMAIL_FETCH_EMAILS", state: "authorized", scopes: [] },
+      {
+        action: "GMAIL_FETCH_EMAILS",
+        state: "authorized",
+        scopes: [],
+        authorization: "held",
+      },
     ]);
   });
 
