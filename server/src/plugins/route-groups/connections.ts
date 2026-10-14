@@ -200,7 +200,10 @@ export function mountConnectionRoutes({
        */
       if (!composio) {
         return context.json(
-          { error: new BrokerUnconfiguredError().message },
+          {
+            error: new BrokerUnconfiguredError(store.brokerProvider, "person")
+              .message,
+          },
           503,
         );
       }
@@ -726,6 +729,7 @@ export function mountConnectionRoutes({
            */
           returnUrl: brokerReturnUrl(
             connectedAccountsUrlFor(connect.appUrl, { serverId }, returnTo),
+            store.brokerProvider,
           ),
         }));
       } catch (error) {
@@ -900,7 +904,11 @@ export function mountConnectionRoutes({
     }
     if (!composio) {
       return {
-        refusal: { error: new BrokerUnconfiguredError().message, status: 503 },
+        refusal: {
+          error: new BrokerUnconfiguredError(store.brokerProvider, "person")
+            .message,
+          status: 503,
+        },
       };
     }
     const resolved = await store.accountRefFor(serverId, context.var.actor.id);

@@ -61,7 +61,10 @@ export function mountComposioAppRoutes({
 
     if (!composio) {
       return context.json(
-        { error: new BrokerUnconfiguredError().message },
+        {
+          error: new BrokerUnconfiguredError(store.brokerProvider, "operator")
+            .message,
+        },
         503,
       );
     }
@@ -148,7 +151,10 @@ export function mountComposioAppRoutes({
 
     if (!composio) {
       return context.json(
-        { error: new BrokerUnconfiguredError().message },
+        {
+          error: new BrokerUnconfiguredError(store.brokerProvider, "operator")
+            .message,
+        },
         503,
       );
     }

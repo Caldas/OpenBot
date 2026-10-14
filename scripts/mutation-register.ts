@@ -98,7 +98,7 @@ export const REGISTER: MutationEntry[] = [
   {
     id: "composio-revoke-asks-under-local-id",
     kind: "identity",
-    path: "server/src/plugins/composio-adapter.ts",
+    path: "server/src/plugins/composio-client/consent.ts",
     anchor: "async revoke({ account, toolkit }): Promise<boolean> {",
     find: "const userId = account.vendorUserId;",
     replace: "const userId = account.userId;",
@@ -108,7 +108,7 @@ export const REGISTER: MutationEntry[] = [
   {
     id: "composio-is-connected-asks-under-local-id",
     kind: "identity",
-    path: "server/src/plugins/composio-adapter.ts",
+    path: "server/src/plugins/composio-client/consent.ts",
     anchor: "async isConnected({ account, toolkit }): Promise<boolean> {",
     find: "const userId = account.vendorUserId;",
     replace: "const userId = account.userId;",
@@ -177,7 +177,7 @@ export const REGISTER: MutationEntry[] = [
   {
     id: "composio-account-listing-unscoped-by-person",
     kind: "query-scope",
-    path: "server/src/plugins/composio-adapter.ts",
+    path: "server/src/plugins/composio-client/context.ts",
     find: "userIds: [userId],",
     replace: "",
     tests: ["server/tests/composio-adapter.test.ts"],
@@ -199,7 +199,7 @@ export const REGISTER: MutationEntry[] = [
   {
     id: "disconnect-never-asks-the-vendor",
     kind: "call-made",
-    path: "server/src/plugins/store.ts",
+    path: "server/src/plugins/plugin-store/connections.ts",
     find: "const ended = await broker.revoke({",
     replace:
       "const ended = await ((_skipped: unknown) => Promise.resolve(false))({",

@@ -4,6 +4,7 @@ import {
   agentProfiles,
   agents,
   mcpServers,
+  mcpTools,
   pluginGrants,
   skills,
   skillTools,
@@ -126,6 +127,27 @@ export function skillMethods(context: StoreContext) {
       return row !== undefined;
     },
 
+    /**
+     * Whether this server publishes an action named EXACTLY this.
+     *
+     * One indexed read on `mcp_tools`' `(server_id, name)` key, and deliberately not `listServers`,
+     * which materialises every tool and every grant in the deployment to answer. The comparison is
+     * `=` on the stored text and so CASE-SENSITIVE: Arcade names are dotted and case-sensitive and
+     * are never normalized, and `Gmail.SendEmail` is not `gmail.sendemail`.
+     */
+    async serverPublishesAction(
+      serverId: string,
+      action: string,
+    ): Promise<boolean> {
+      if (!serverId || !action) return false;
+      const [row] = await database
+        .select({ name: mcpTools.name })
+        .from(mcpTools)
+        .where(and(eq(mcpTools.serverId, serverId), eq(mcpTools.name, action)))
+        .limit(1);
+      return row !== undefined;
+    },
+
     async agentOwner(agentId: string): Promise<string | null | undefined> {
       const [row] = await database
         .select({ ownerUserId: agentProfiles.ownerUserId })
@@ -186,12 +208,26 @@ export function skillMethods(context: StoreContext) {
         })
         // Editing keeps the owner it already had. Whose a skill is, is not something a re-save
         // should quietly change, and the route has already checked this person may edit it.
+        // `installed_by` is left alone too: it records who first installed it, not who last saved.
         .onConflictDoUpdate({
           target: skills.slug,
           set: {
             title: input.title,
             summary: input.summary,
             instructions: input.instructions,
+            /*
+             * WHERE THE TEXT NOW COMES FROM, WRITTEN BESIDE THE TEXT.
+             *
+             * CRITERION. A save through here leaves `origin` saying what it says on an insert.
+             *
+             * REASON. `origin = 'catalogue'` is the condition the package seed (`tenant-package.ts`,
+             * `setWhere`) overwrites a skill on at every boot. Leaving it standing after somebody
+             * edited a shipped skill here kept the row eligible, so the next boot silently replaced
+             * their edit with the package's text — the exact outcome that seed's own comment says
+             * it exists to prevent ("rather than the package silently replacing something somebody
+             * wrote").
+             */
+            origin: input.origin ?? "yours",
             updatedAt: new Date(),
           },
         });

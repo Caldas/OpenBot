@@ -104,19 +104,19 @@ const TRACKED: Tracked[] = [
   {
     decision: "sibling-cascade-rules",
     names: ["clearEndedSiblings"],
-    home: "server/src/plugins/store.ts",
+    home: "server/src/plugins/plugin-store/context.ts",
   },
   /* Which apps a revoke ends besides the one it names: "the one place that answers it". */
   {
     decision: "sibling-resolution",
     names: ["resolveSiblings"],
-    home: "server/src/plugins/store.ts",
+    home: "server/src/plugins/plugin-store/context.ts",
   },
   /* Whether an app is a key, consent or neither, read off `mcp_servers`; every rule 1 asks it. */
   {
     decision: "brokered-app-kind",
     names: ["brokeredAppKind"],
-    home: "server/src/plugins/store.ts",
+    home: "server/src/plugins/plugin-store/context.ts",
   },
   /* The migrator's journal table, named once (C4). Its literal spellings are in SPELLED below. */
   {
@@ -158,7 +158,7 @@ const KNOWN_DUPLICATES: Record<
       "app/src/lib/plugins/grants.ts",
       "server/src/plugins/arcade-adapter.ts",
       "server/src/plugins/arcade.ts",
-      "server/src/plugins/composio-adapter.ts",
+      "server/src/plugins/composio-vendor.ts",
     ],
   },
 };
@@ -265,8 +265,10 @@ test("a definition is matched, and a call or a mention is not", () => {
  * once per logical line that spells the decision — against either the home or the debt on record.
  *
  * WHAT A PATH KEY CANNOT SAY. Two spellings in one file are that path listed twice; which of the two
- * is the home is not something a path can carry. For A5b and A5c the second spelling is in the SAME
- * file as the first (`plugins/store.ts`), so the guard holds the COUNT: a third spelling anywhere,
+ * is the home is not something a path can carry. For A5c the second spelling is in the SAME file as
+ * the first (`plugin-store/connections.ts`; both A5b and A5c were in `plugins/store.ts` before #784
+ * split it, and A5b's two now sit in `context.ts` and `connections.ts`), so the guard holds the
+ * COUNT: a third spelling anywhere,
  * that file included, goes red; collapsing one goes red until the list drops a line. Moving the
  * spelling from the owning function into a sibling function of the same file does not. That is the
  * price of not going red on a rewrapped comment, and the same price the name table already pays.
@@ -332,7 +334,7 @@ const SPELLED: Spelled[] = [
       // the rows of one app at one url, which is not a revoke's answer and not this decision.
       /\.siblings\s*(?:\?\.|\.)\s*(?:forEach|map|flatMap|filter|reduce|some|every|find)\s*\(/,
     ],
-    home: ["server/src/plugins/store.ts"],
+    home: ["server/src/plugins/plugin-store/context.ts"],
   },
   /*
    * WHAT THE TRAIL SAYS WAS ASKED OF THE VENDOR, for the app an act was ABOUT. A key app's answer
@@ -347,7 +349,7 @@ const SPELLED: Spelled[] = [
     patterns: [
       /\bvendorRevocationRequested\s*[:=]\s*(?!true\b|false\b|boolean\b)\S/,
     ],
-    home: ["server/src/plugins/store.ts"],
+    home: ["server/src/plugins/plugin-store/connections.ts"],
   },
 ];
 
@@ -366,16 +368,19 @@ const KNOWN_SECOND_SPELLINGS: Record<
   "sibling-cascade-walk": {
     finding: "A5b (round 2, wave 3) — open",
     why: "`retireConnectionsFor` builds its `endedWith` map by walking the siblings itself, with rule 2 (`if (!entry.requested) continue`) and without rule 1, so a key app's trail row can name an OAuth revoke as what ended it. Its shape is an annotation, not a delete, which is why it was not routed through `clearEndedSiblings` with the other three.",
-    sites: ["server/src/plugins/store.ts", "server/src/plugins/store.ts"],
+    sites: [
+      "server/src/plugins/plugin-store/context.ts",
+      "server/src/plugins/plugin-store/connections.ts",
+    ],
   },
   "key-app-revoke-answer": {
     finding:
       "A5c (round 2, wave 3) — open; the `retireConnectionsFor` line is the same divergence, found by L5",
     why: "`removeServer` writes `vendorRevocationRequested[index] ?? false` — the vendor's raw answer — for the removed app even when it is a key app, and `retireConnectionsFor` writes `connection.requested || Boolean(endedBy)`, also raw for a key app; `disconnectBrokered` writes `false` for a key. One field, three answers.",
     sites: [
-      "server/src/plugins/store.ts",
-      "server/src/plugins/store.ts",
-      "server/src/plugins/store.ts",
+      "server/src/plugins/plugin-store/connections.ts",
+      "server/src/plugins/plugin-store/connections.ts",
+      "server/src/plugins/plugin-store/servers.ts",
     ],
   },
 };

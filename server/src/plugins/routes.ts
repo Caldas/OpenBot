@@ -2,6 +2,7 @@ import { Hono, type MiddlewareHandler } from "hono";
 import type { BotAccessCheck } from "../agents/profile-policy";
 import type { AppVariables } from "../auth/guards";
 import type { AccountModeSwitch } from "./account-mode";
+import type { BrokerProvider } from "./access";
 import type { ComposioBroker } from "./broker";
 import { mountComposioAppRoutes } from "./route-groups/composio-apps";
 import { mountConnectionRoutes } from "./route-groups/connections";
@@ -72,7 +73,7 @@ export function createPluginRoutes(
    * trap `connect` documents applies here with one more argument in it — every parameter from that
    * position on is optional, so a misplaced one typechecks and quietly does nothing.
    */
-  composio?: { broker: ComposioBroker },
+  composio?: { broker: ComposioBroker; provider: BrokerProvider },
   /**
    * Who may use an app's one shared account, and the switch that makes an app Shared or Personal.
    *
