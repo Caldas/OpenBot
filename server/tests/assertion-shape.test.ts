@@ -898,7 +898,9 @@ const ALLOW: Allowed[] = [
   },
   {
     file: "server/tests/arcade-disconnect-cascade.test.ts",
-    line: 36,
+    // Moved from 36 by round 2's A5 fix, which added three tests above it; the offence is the
+    // same one and is re-keyed rather than re-found.
+    line: 39,
     shape: "e",
     finding: "round 2 — arcade-disconnect-cascade.test.ts:36,60",
     why: "const revoked: string[] = [];",
