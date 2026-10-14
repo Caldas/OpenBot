@@ -91,6 +91,43 @@ export function normalizeArcadeError(error: unknown): ArcadeFailure | null {
 }
 
 /**
+ * THIS DEPLOYMENT'S ONE SENTENCE FOR "ARCADE ANSWERED, AND THE ANSWER HAD NO BODY IN IT".
+ *
+ * ONE SENTENCE AND NOT SEVERAL, because the fact is one fact wherever it lands: the socket carried
+ * a status and no readable value under it — an empty 204, or a body whose whole JSON is `null`.
+ * It is written in the uncertainty register {@link vendorCall}'s `APIConnectionError` sentence uses
+ * ("is not known here") rather than the refusal register ("Arcade refused …"), because an empty
+ * answer is not the vendor declining: whether the call took effect is genuinely unknown, and every
+ * caller that spends a DELETE off this reading must treat it as unknown.
+ *
+ * NOT A SHAPE QUOTED BACK. The body is the thing this file exists to keep off an admin page; see
+ * {@link vendorCall}. "No body" says all there is to say without quoting one.
+ */
+const unreadableBody = (step: string): string =>
+  `Arcade answered ${step} with no body this deployment could read — an empty response, or one whose JSON is the literal null — so what it says is not known here.`;
+
+/**
+ * THE ANSWER'S BODY, OR THIS DEPLOYMENT'S REFUSAL — never a dereference of `null`.
+ *
+ * FOR THE CALLS THAT ARE NOT PAGED LISTINGS. A page goes through `OffsetPage`'s constructor, which
+ * raises on a null body and is caught in {@link vendorCall}; `tools.authorize`, `auth.status` and
+ * `auth.confirmUser` go through no constructor at all, so the SDK hands a literal `null` straight
+ * back WEARING ITS DECLARED RESPONSE TYPE. The generated types are a description of what Arcade
+ * sends today and are validated by nothing — the same reading `confirmReturn`'s `auth_id` check
+ * already states one field down — so reading `answer.status` off one of those is the identical
+ * unguarded dereference, raising the identical bare `TypeError` from inside this file instead.
+ *
+ * THE FIELD-LEVEL GUARDS BELOW STAY EXACTLY AS THEY ARE: this establishes only that there is an
+ * object to read fields off, and says nothing about what is in it.
+ */
+function requireBody<T>(step: string, answer: T): T & object {
+  if (answer === null || typeof answer !== "object") {
+    throw new Error(unreadableBody(step));
+  }
+  return answer as T & object;
+}
+
+/**
  * ONE CALL TO THE VENDOR, WITH ITS REFUSAL TURNED INTO THIS DEPLOYMENT'S OWN SENTENCE.
  *
  * EVERY `client.*` CALL IN THIS FILE GOES THROUGH HERE, and that uniformity is the point rather
@@ -102,11 +139,26 @@ export function normalizeArcadeError(error: unknown): ArcadeFailure | null {
  * any of those. `step` is written HERE, at the call site, for the reason `callTool`'s refusal names
  * the action from the call site: nothing in an `APIError` says what was being asked.
  *
- * WHAT IS NOT AN SDK ERROR IS RETHROWN UNTOUCHED, which is deliberate and is load-bearing twice
- * over. It leaves this file's own refusals — the malformed-listing sentences, the mint with no url
- * — exactly as they were; and it leaves the vendor's `TypeError` out of the SDK's `OffsetPage`
- * constructor, which a JSON body of literal `null` raises, escaping as itself. Catching THAT by
- * shape rather than by `normalizeArcadeError` answering is what would swallow genuine `APIError`s.
+ * WHAT IS NOT AN SDK ERROR IS RETHROWN UNTOUCHED, which is deliberate: it leaves this file's own
+ * refusals — the malformed-listing sentences, the mint with no url — exactly as they were.
+ *
+ * WITH ONE EXCEPTION, AND IT IS THE BODY THE SDK COULD NOT READ. A 204 with `content-length: 0`,
+ * and a body whose JSON is the literal `null`, both reach `OffsetPage`'s constructor as `body ===
+ * null` and raise a bare `TypeError: null is not an object (evaluating 'body.items')` from inside
+ * `@arcadeai/arcadejs`, before one line of this file has looked at anything. Left to escape as
+ * itself, that `TypeError` is the WRONG ANSWER TWICE: an operator reading the Plugins page gets a
+ * vendor stack trace instead of this deployment's sentence, indistinguishable in the logs from a
+ * programmer error here; and the only reason the revoke invariant holds on those two shapes is
+ * that a crash is technically "not answering" — one tidy-up of the cast that raises it (a `?? []`,
+ * say) turns both into `revoke` answering `false` with no DELETE spent, which is the live defect
+ * `broker.ts:712-717` forbids. So the body this deployment could not read gets a REFUSAL, the same
+ * one {@link requireBody} writes for the non-paged calls, and never a fallback to an empty list.
+ *
+ * THE ORDER IS WHAT MAKES THAT SAFE, and it is the whole of the old warning against catching "by
+ * shape": `normalizeArcadeError` IS ASKED FIRST and every `APIError` answers it, so nothing
+ * reaching the `TypeError` branch carries a vendor response at all. The `run()` closures here are
+ * one `client.*` call each and nothing else, so a `TypeError` with no `APIError` anywhere in its
+ * chain is the SDK failing to read an answer, which is exactly what the sentence says.
  *
  * A REFUSAL THAT IS ALREADY MEDIATED PASSES STRAIGHT THROUGH, so a nested call cannot dress one
  * sentence up in another.
@@ -117,7 +169,10 @@ async function vendorCall<T>(step: string, run: () => Promise<T>): Promise<T> {
   } catch (error) {
     if (error instanceof ArcadeFailureError) throw error;
     const failure = normalizeArcadeError(error);
-    if (!failure) throw error;
+    if (!failure) {
+      if (error instanceof TypeError) throw new Error(unreadableBody(step));
+      throw error;
+    }
     throw new ArcadeFailureError(
       failure.status === undefined
         ? // `status` is undefined for `APIConnectionError` and `APIUserAbortError`: no response was
@@ -394,6 +449,11 @@ function scopesOf(item: unknown): string[] {
  */
 function shapeOf(value: unknown): string {
   if (Array.isArray(value)) return "a list";
+  // `typeof null` IS `"object"`, so the bare template would write "a object" — the wrong grammar
+  // and, worse, the wrong fact: a hole is not a shape this deployment read and could not use, it
+  // is the absence of one. The callers that pass a present-but-unreadable field guard both of
+  // these before asking; `connectionsFor`'s unreadable ROW is the one that can carry a `null`.
+  if (value === null || value === undefined) return "nothing";
   return `a ${typeof value}`;
 }
 
@@ -761,9 +821,34 @@ async function connectionsFor(
     unreadableTotal: (shown) =>
       `Arcade reported its connection list's total_count as ${shown}, which is not a count, so whether what this account holds at ${toolkit} was listed in full could not be checked.`,
   })) {
-    const row = item as ConnectionRow;
+    /*
+     * A ROW THAT IS NOT AN OBJECT IS A HOLE IN THE LISTING, AND A HOLE IS NOT A ROW TO SKIP.
+     *
+     * `items: [null]` is what the live API sent here, and `item as ConnectionRow` believed it: the
+     * very next line read `row.provider_id` off `null` and raised a bare `TypeError`, which is the
+     * wrong answer in both directions. It carries a stack trace onto the Disconnect path where
+     * this deployment's own sentence belongs; and the only reason the revoke invariant held on
+     * this shape was that a crash is technically "not answering" — make the cast defensive with a
+     * skip or a `?? []` and the listing silently becomes two rows instead of three, which is
+     * `revoke` answering off a listing it could not read whole, the exact outcome
+     * `broker.ts:712-717` forbids.
+     *
+     * SO IT REFUSES, in the register of this listing's own `malformed` sentence one block up: the
+     * unreadable row is not attributable to any provider instance, and a DELETE spent on the rows
+     * BESIDE it would be a partial ask reported as a clean success.
+     */
+    // ARRAYS ARE REFUSED WITH THE REST, which {@link record} alone would not do — it answers a
+    // list as an object, and a list has no `provider_id`, so the row would be dropped silently
+    // and the listing would again be read short.
+    const row = Array.isArray(item) ? null : record(item);
+    if (!row) {
+      throw new Error(
+        `Arcade's connection list carried ${shapeOf(item)} where a connection belongs, so what this account holds at ${toolkit} could not be read.`,
+      );
+    }
     const instance = textOf(row.provider_id)?.toLowerCase();
-    if (instance !== undefined && instances.has(instance)) rows.push(row);
+    if (instance !== undefined && instances.has(instance))
+      rows.push(row as ConnectionRow);
   }
   return rows;
 }
@@ -1216,11 +1301,17 @@ export function createArcadeClient(apiKey: string): {
       // puts the body it could not read a `message` off into its own `message`. See
       // {@link vendorCall}; the route's definite-or-uncertain decision reads `status` through
       // `normalizeArcadeError` and is unaffected.
-      const answer = await vendorCall(`the authorization for ${action}`, () =>
-        client.tools.authorize({
-          tool_name: action,
-          user_id: account.vendorUserId,
-        }),
+      // THROUGH {@link requireBody}: a mint that answered an empty body, or a body of literal
+      // `null`, has `answer === null` wearing `AuthorizationResponse`, and the `status` read below
+      // would raise a bare `TypeError` rather than the sentence this route shows somebody.
+      const answer = requireBody(
+        `the authorization for ${action}`,
+        await vendorCall(`the authorization for ${action}`, () =>
+          client.tools.authorize({
+            tool_name: action,
+            user_id: account.vendorUserId,
+          }),
+        ),
       );
       // WHAT THE VENDOR SAID ABOUT THIS AUTHORIZATION, READ BEFORE ITS URL IS READ AS A NEXT STEP.
       // `tools.authorize` does not only answer "go to this screen": it answers `completed` for an
@@ -1344,8 +1435,15 @@ export function createArcadeClient(apiKey: string): {
         //
         // AND THE CALLER'S DEADLINE REACHES THE WIRE: an abandoned poll closes its socket rather
         // than leaving this deployment holding one open against a vendor nobody is waiting on.
-        const answer = await vendorCall("an authorization status read", () =>
-          client.auth.status({ id }, { signal: options?.signal }),
+        //
+        // AND THROUGH {@link requireBody}, for `authorize`'s reason: an empty body arrives here
+        // as `null` wearing the declared response type, and the three field reads below would
+        // raise a bare `TypeError` instead of saying what happened.
+        const answer = requireBody(
+          "an authorization status read",
+          await vendorCall("an authorization status read", () =>
+            client.auth.status({ id }, { signal: options?.signal }),
+          ),
         );
         const scopes = answer.scopes;
         return {
@@ -1364,13 +1462,21 @@ export function createArcadeClient(apiKey: string): {
       confirmReturn: async ({ handle, vendorUserId }, options) => {
         let answer: { auth_id?: unknown };
         try {
-          answer = await vendorCall("the return-leg confirmation", () =>
-            client.auth.confirmUser(
-              {
-                flow_id: handle,
-                user_id: vendorUserId,
-              },
-              { signal: options?.signal },
+          // THROUGH {@link requireBody}, for `authorize`'s reason. The refusal it writes is
+          // raised INSIDE the try, which is deliberate and harmless: `normalizeArcadeError`
+          // answers `null` for it, so it is not read as `user_mismatch` and is rethrown as
+          // itself by the `throw error` below — an unreadable body is an outage, which is the
+          // same judgement the `auth_id` check further down already states.
+          answer = requireBody(
+            "the return-leg confirmation",
+            await vendorCall("the return-leg confirmation", () =>
+              client.auth.confirmUser(
+                {
+                  flow_id: handle,
+                  user_id: vendorUserId,
+                },
+                { signal: options?.signal },
+              ),
             ),
           );
         } catch (error) {
