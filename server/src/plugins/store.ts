@@ -3181,9 +3181,11 @@ export function createPluginStore(options: PluginStoreOptions) {
    * by somebody else — {@link resolveSiblings} reads the identity, {@link accountRow} the holder —
    * is exactly that case, and it used to get a row saying it had been disconnected.
    *
-   * ALL THREE ARE {@link removeServer}'S, which is the oldest spelling of this cascade and the one
-   * both callers cite; it keeps 2 and 3 in its own sibling loop. Its loop is NOT routed through
-   * here yet and so is still missing rule 1 — see the report for round 2's finding A5.
+   * THE ONLY SPELLING OF THESE RULES. Three acts cascade a revoke onto its siblings —
+   * {@link disconnectBrokered}, {@link clearWithdrawnAccount} and {@link removeServer} — and all
+   * three call this. {@link removeServer}'s loop was the oldest spelling and kept only 2 and 3 for
+   * itself, deleting a KEY sibling's row on a removal; routing it here closed that (round 2, A5a).
+   * A fourth cascade belongs here too, not beside it.
    *
    * `vendorRevocationRequested` IS TRUE ON EVERY ROW THIS WRITES AND IS NOT A GUESS: rule 2 says a
    * revoke answered true, and that ask ended the siblings with the app it named. `false` means "no
@@ -3209,8 +3211,8 @@ export function createPluginStore(options: PluginStoreOptions) {
     by: string;
     /**
      * The trail's one word for why, from the closed set the writers of this event use. Wider than
-     * either caller's own `reason` so that {@link removeServer}'s `mcp_server_removed` needs no
-     * change here when its loop joins them.
+     * any one caller's own `reason`, so {@link removeServer} passes `mcp_server_removed` through
+     * the same parameter the other two pass theirs.
      */
     reason: BrokeredDisconnectReason;
   }): Promise<string[]> {
@@ -4484,47 +4486,38 @@ export function createPluginStore(options: PluginStoreOptions) {
         }
 
         /*
-         * THE SIBLINGS THE VENDOR ENDED WITH THIS APP, each filed as `disconnectBrokered` files one:
-         * under its own app, naming the app whose removal ended it, with the count of apps that could
-         * not be asked about. Only for an account whose revoke ANSWERED TRUE. `false` means nothing
-         * was found to withdraw or the auth provider could not be resolved, and the vendor was not
-         * shown to have ended anything, so a sibling's row is left standing rather than claimed
-         * gone. It sits after the revokes above for the same reason the asked app's rows do: an
-         * exception from any of them left every row standing.
+         * THE SIBLINGS THE VENDOR ENDED WITH THIS APP, by the three rules written down once in
+         * {@link clearEndedSiblings} — the same call {@link disconnectBrokered} and
+         * {@link clearWithdrawnAccount} make. This loop used to spell rules 2 and 3 itself and so
+         * missed rule 1: a KEY sibling's row was deleted on the strength of an OAuth revoke that
+         * never ended it, leaving a live account at the vendor with no local row to reach it.
          *
-         * AND IT IS REACHED ONLY FOR THE CONFIGURED PROVIDER'S OWN ROWS, which is what keeps the
-         * `accountRow` delete below — keyed on `brokerProvider` — about the same broker as the
-         * siblings it deletes: `true` here requires `rowBroker`, and there is no `rowBroker` for a
-         * row the other broker minted.
+         * WHAT DIFFERS FROM THOSE CALLERS IS ONLY THE ASKED APP, and it is handled above rather
+         * than here: a removal ends EVERY holder's row for `toolkit` in one delete keyed on the
+         * ROW's provider, where a disconnect ends one account's. So `endedWith` is `toolkit`, whose
+         * rows are already gone, and the helper never clears it. `revoked` is the vendor's raw
+         * answer per account, as `disconnectBrokered` passes its own `ended`.
+         *
+         * It sits after the revokes above for the same reason the asked app's rows do: an exception
+         * from any of them left every row standing. AND IT CAN CLEAR ONLY THE CONFIGURED PROVIDER'S
+         * OWN ROWS, which is what keeps the helper's `accountRow` delete — keyed on `brokerProvider`
+         * — about the same broker as the siblings it deletes: `revoked` true requires `rowBroker`,
+         * and there is no `rowBroker` for a row the other broker minted.
          */
         for (const [index, account] of accounts.entries()) {
           const { siblings, unanswered } = endedBesides[index] ?? {
             siblings: [],
             unanswered: 0,
           };
-          if (!vendorRevocationRequested[index]) continue;
-          for (const app of siblings) {
-            const [deleted] = await database
-              .delete(brokeredConnections)
-              .where(accountRow(app, account))
-              .returning({ app: brokeredConnections.app });
-            if (!deleted) continue;
-            await recordAuditEvent(auditStore, {
-              eventType: "mcp.account_disconnected",
-              targetType: "mcp_server",
-              targetId: app,
-              payload: {
-                actor: by,
-                server: app,
-                owner:
-                  account.holder === "person" ? account.userId : "deployment",
-                reason: "mcp_server_removed",
-                vendorRevocationRequested: true,
-                unansweredSiblings: unanswered,
-                endedWith: toolkit,
-              },
-            });
-          }
+          await clearEndedSiblings({
+            siblings,
+            account,
+            endedWith: toolkit,
+            revoked: vendorRevocationRequested[index] ?? false,
+            unanswered,
+            by,
+            reason: "mcp_server_removed",
+          });
         }
 
         // Last of all, for the reason above, and skipped entirely on a deployment with no
@@ -8486,8 +8479,9 @@ export function createPluginStore(options: PluginStoreOptions) {
      * an app that had no row here had nothing to explain.
      *
      * THAT RULE AND THE TWO BESIDE IT NOW LIVE IN {@link clearEndedSiblings}, which this method
-     * hands its siblings to and which {@link disconnectBrokered} hands its own to. They were
-     * spelled twice and the two spellings disagreed about every one of them.
+     * hands its siblings to and which {@link disconnectBrokered} and {@link removeServer} hand
+     * their own to. They were spelled three times and the spellings disagreed about every one of
+     * them.
      *
      * `reason` IS ONE WORD AND IT IS THIS ONE. "The consent's context moved on" is not any of the
      * four {@link disconnectBrokered} takes — nobody disconnected anything, nobody was offboarded,
