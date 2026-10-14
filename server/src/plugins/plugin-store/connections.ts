@@ -1083,8 +1083,8 @@ export function connectionMethods(context: StoreContext) {
      *
      * The first write is the only one, and it can be NULL: a vendor that answered with no id
      * leaves the attempt null, and it expires. Answers whether it wrote. False means the attempt
-     * was discarded, replaced, already minted or already settled. The route does not act on the
-     * answer.
+     * was discarded, replaced, already minted or already settled. The authorize route acts on it:
+     * on false it does not hand out the consent url, because nothing here records that flow.
      */
     async recordAuthorizationMint(input: {
       actorId: string;

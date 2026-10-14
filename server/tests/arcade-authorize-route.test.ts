@@ -707,4 +707,84 @@ describe("POST /servers/:id/authorize", () => {
       .where(eq(pendingAuthorizations.actorId, SHARED_VENDOR_ID));
     expect(stray).toEqual([]);
   });
+
+  describe("a mint that the store declines to record", () => {
+    const cancel = (app: Hono, serverId: string) =>
+      app.request(`/api/plugins/servers/${serverId}/authorize`, {
+        method: "DELETE",
+      });
+
+    /*
+     * B5d. The mint is held open at the vendor, the person cancels, and only then does the vendor
+     * answer. `recordAuthorizationMint` finds no attempt under `(actor_id, created_at)` and writes
+     * nothing. The consent url the vendor answered is a bearer capability for a flow that this
+     * deployment no longer has any record of, so it must not be handed out.
+     */
+    test("a cancel that lands while the mint is in flight: no consent url, no attempt, a 409 that says why", async () => {
+      const actor = await person("cancel-mid-mint");
+      let release: () => void = () => {};
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let entered: () => void = () => {};
+      const minting = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      beforeMint = () => {
+        entered();
+        return held;
+      };
+      const app = appAs("user", actor);
+      const started = authorize(app, personalApp);
+      await minting;
+      // The attempt is standing with no auth_id while the vendor has not answered yet.
+      expect(await attemptsFor(actor)).toMatchObject([{ authId: null }]);
+      const cancelled = await cancel(app, personalApp);
+      expect(cancelled.status).toBe(200);
+      expect(await cancelled.json()).toEqual({ cancelled: true });
+      release();
+      const response = await started;
+      const text = await response.text();
+      // The vendor did mint, and nothing stands behind it here.
+      expect(mints).toHaveLength(1);
+      expect(await attemptsFor(actor)).toEqual([]);
+      expect(text).not.toContain("bearer-capability");
+      expect(text).not.toContain("ar_minted_1");
+      expect(response.status).toBe(409);
+      const body = JSON.parse(text) as {
+        error?: string;
+        authorizationUrl?: string;
+      };
+      expect(body.authorizationUrl).toBeUndefined();
+      expect(body.error).toContain("cancelled");
+      // Nothing holds the actor: starting over mints again and binds the new attempt.
+      beforeMint = null;
+      mints = [];
+      nextAuthId = "ar_after_cancel";
+      const again = await authorize(app, personalApp);
+      expect(again.status).toBe(200);
+      expect(await again.json()).toEqual({ authorizationUrl: SECRET_URL });
+      expect(await attemptsFor(actor)).toMatchObject([
+        { authId: "ar_after_cancel", completedAt: null },
+      ]);
+    });
+
+    test("whatever the reason the write declined, the consent url is not handed out", async () => {
+      const actor = await person("mint-declined");
+      const response = await authorize(
+        appAs("user", actor, "arcade", {
+          recordAuthorizationMint: async () => false,
+        }),
+        personalApp,
+      );
+      const text = await response.text();
+      expect(mints).toHaveLength(1);
+      expect(text).not.toContain("bearer-capability");
+      expect(text).not.toContain("ar_minted_1");
+      expect(response.status).toBe(409);
+      expect(
+        (JSON.parse(text) as { authorizationUrl?: string }).authorizationUrl,
+      ).toBeUndefined();
+    });
+  });
 });

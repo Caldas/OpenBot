@@ -1575,8 +1575,9 @@ export function mountConnectionRoutes({
       );
     }
     // A null id is recorded as NULL: an attempt holding none can never complete and simply expires.
+    let bound: boolean;
     try {
-      await store.recordAuthorizationMint({
+      bound = await store.recordAuthorizationMint({
         actorId: context.var.actor.id,
         createdAt: claim.attempt.createdAt,
         authId: minted.authorizationId,
@@ -1641,6 +1642,37 @@ export function mountConnectionRoutes({
             : "The app's vendor started that authorization, and this deployment could not record it — so it cannot be finished here and nothing was connected. The attempt could not be cleared either; it expires within fifteen minutes, and starting over works after that.",
         },
         500,
+      );
+    }
+    if (!bound) {
+      /*
+       * THE MINT WROTE NOTHING, SO THE CONSENT URL IS NOT HANDED OUT.
+       *
+       * `recordAuthorizationMint` answers false when no unminted, unsettled attempt stands under
+       * `(actor_id, created_at)`. On this route that is a cancel that landed while the vendor was
+       * minting: `DELETE /servers/:id/authorize` discarded the attempt (and filed
+       * `mcp.authorization_cancelled` for it), and only then did the vendor answer. The url it
+       * answered is a bearer capability for a flow with NO ATTEMPT BEHIND IT. Handing it out sent
+       * the person to grant access at the vendor against a record that does not exist, and the
+       * return leg then refused that consent as `no-attempt`, after the grant had been made. The
+       * person asked for nothing to be started, so nothing is.
+       *
+       * 409, THE STATUS THE CANCEL ROUTE ANSWERS WHEN IT AND A COMPLETION CROSS, because this is
+       * that kind of race seen from the other request: two acts on one attempt, and the one that
+       * lost is told so in an error a client cannot mistake for a url to follow. Nothing is
+       * discarded here: false means no attempt of this request's is left to discard, and a newer
+       * or settled row by the same actor is not this request's to touch.
+       *
+       * NOTHING IS LOGGED. The flow at the vendor is unreachable: its url was given to nobody and
+       * is written nowhere, so it expires there. The person's cancel is already on the trail.
+       * Neither the url nor the `ar_...` reaches this body.
+       */
+      return context.json(
+        {
+          error:
+            "That authorization was cancelled before the app's vendor finished starting it, so you were not sent on and nothing was connected. Press Authorize to start again.",
+        },
+        409,
       );
     }
     return context.json({ authorizationUrl: minted.redirectUrl });
