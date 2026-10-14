@@ -32,14 +32,14 @@ const personalApp = `arcade-cp-${suite}`;
 const sharedApp = `arcade-cs-${suite}`;
 const otherApp = `arcade-co-${suite}`;
 const movedApp = `arcade-cm-${suite}`;
+const composioApp = `composio-cp-${suite}`;
+const composioSharedApp = `composio-cs-${suite}`;
 const SHARED_VENDOR_ID = `openbot-deployment:acme-${suite}:R`;
 const ACTION = "Gmail.SendEmail";
 const SECRET_URL = "https://vendor.example/consent?secret=bearer-capability";
 
 let mints: { vendorUserId: string; action?: string; toolkit: string }[] = [];
 let nextAuthId: string | null = "ar_minted_1";
-// What the next mint does before answering; a test sets it to throw, or to hold the mint open.
-let beforeMint: (() => Promise<void>) | null = null;
 
 const arcadeBroker: ConnectedAppBroker = {
   grantIsLocal: false,
@@ -59,7 +59,6 @@ const arcadeBroker: ConnectedAppBroker = {
   deleteAuthConfig: async () => {},
   authorize: async ({ account, toolkit, action }) => {
     mints.push({ vendorUserId: account.vendorUserId, action, toolkit });
-    await beforeMint?.();
     return { redirectUrl: SECRET_URL, authorizationId: nextAuthId };
   },
   isConnected: async () => true,
@@ -70,15 +69,17 @@ const arcadeBroker: ConnectedAppBroker = {
   accountName: async () => "acme-bot",
 };
 
+/*
+ * A broker that runs NO per-action authorization flow — `authorizations: null`, the declared
+ * capability the cancel route's Composio half is reached under. `POST /authorize` refuses such a
+ * deployment with a 503 before any mint, so a mint reached under it is a defect, not a case.
+ */
 const composioBroker: ConnectedAppBroker = {
   ...arcadeBroker,
   grantIsLocal: true,
-  // Nothing here asks what auth provider a connection is held under.
-  authProviderOf: async () => null,
   authorizations: null,
-  authorize: async ({ account, toolkit, action }) => {
-    mints.push({ vendorUserId: account.vendorUserId, action, toolkit });
-    return { redirectUrl: SECRET_URL, authorizationId: null };
+  authorize: async () => {
+    throw new Error("nothing here mints under a broker with no flow");
   },
 };
 
@@ -196,6 +197,25 @@ beforeAll(async () => {
       authScheme: "OAUTH2",
       accountMode: "personal",
     },
+    {
+      id: composioApp,
+      title: "Composio Gmail",
+      vendor: "Composio",
+      url: `composio://cp${suite}`,
+      provenance: "composio",
+      authScheme: "OAUTH2",
+      accountMode: "personal",
+    },
+    {
+      id: composioSharedApp,
+      title: "Composio Team Gmail",
+      vendor: "Composio",
+      url: `composio://cs${suite}`,
+      provenance: "composio",
+      authScheme: "OAUTH2",
+      accountMode: "shared",
+      sharedVendorUserId: SHARED_VENDOR_ID,
+    },
   ]);
   await database.insert(mcpTools).values(
     [personalApp, sharedApp, otherApp, movedApp].map((serverId) => ({
@@ -209,7 +229,14 @@ afterAll(async () => {
   await database
     .delete(mcpServers)
     .where(
-      inArray(mcpServers.id, [personalApp, sharedApp, otherApp, movedApp]),
+      inArray(mcpServers.id, [
+        personalApp,
+        sharedApp,
+        otherApp,
+        movedApp,
+        composioApp,
+        composioSharedApp,
+      ]),
     );
   if (actors.length) {
     await database
@@ -223,7 +250,6 @@ afterAll(async () => {
 beforeEach(() => {
   mints = [];
   nextAuthId = "ar_minted_1";
-  beforeMint = null;
 });
 
 describe("DELETE /servers/:id/authorize", () => {
@@ -462,5 +488,94 @@ describe("DELETE /servers/:id/authorize", () => {
         .set({ url: `arcade://M${suite}` })
         .where(eq(mcpServers.id, movedApp));
     }
+  });
+});
+
+/*
+ * B5a. THE COMPOSIO HALF: CANCEL UNDER A BROKER WHOSE `authorizations` IS NULL.
+ *
+ * The cancel route reads no flow capability at all — it resolves the attempt row first and
+ * discards it, and only with nothing of this actor's on the named app does it resolve the app
+ * through `brokeredAccountFor`, under the ACTIVE provider's url parser. So on such a deployment
+ * the route is still reachable, and these pin what it answers there: a cancel is not the POST's
+ * "this deployment does not authorize per action" 503, an attempt left standing across a switch
+ * of provider is still the person's to retract, and the refusals keep their words under the
+ * Composio parser.
+ */
+describe("DELETE /servers/:id/authorize on a deployment whose broker runs no authorization flow", () => {
+  test("with nothing standing, a Composio app answers { cancelled: false }, not the POST's 503", async () => {
+    const actor = await person("c-none");
+    const response = await cancel(
+      appAs("user", actor, "composio"),
+      composioApp,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ cancelled: false });
+    expect(mints).toEqual([]);
+    expect(await attemptsFor(actor)).toEqual([]);
+  });
+
+  test("an attempt minted before the deployment switched to Composio can still be cancelled", async () => {
+    const actor = await person("c-switched");
+    expect((await authorize(appAs("user", actor), personalApp)).status).toBe(
+      200,
+    );
+    const [before] = await attemptsFor(actor);
+    expect(before?.serverId).toBe(personalApp);
+    mints = [];
+
+    // Under Composio `arcade://` parses to no app at all, so only the attempt-first order reaches it.
+    const response = await cancel(
+      appAs("user", actor, "composio"),
+      personalApp,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ cancelled: true });
+    expect(await attemptsFor(actor)).toEqual([]);
+    expect(mints).toEqual([]);
+  });
+
+  test("a cancel naming a Composio app does not cancel this actor's attempt on another app", async () => {
+    const actor = await person("c-other");
+    expect((await authorize(appAs("user", actor), personalApp)).status).toBe(
+      200,
+    );
+    const [before] = await attemptsFor(actor);
+
+    const response = await cancel(
+      appAs("user", actor, "composio"),
+      composioApp,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ cancelled: false });
+
+    const [after] = await attemptsFor(actor);
+    expect(after?.serverId).toBe(personalApp);
+    expect(after?.createdAt.getTime()).toBe(before?.createdAt.getTime());
+    expect(after?.authId).toBe("ar_minted_1");
+  });
+
+  test("with nothing standing, an `arcade://` row is refused under the Composio parser in so many words", async () => {
+    const actor = await person("c-refused");
+    const response = await cancel(
+      appAs("user", actor, "composio"),
+      personalApp,
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "That app is not reached through a broker.",
+    });
+  });
+
+  test("with nothing standing, a non-administrator aimed at a Shared Composio app is refused", async () => {
+    const actor = await person("c-shared");
+    const response = await cancel(
+      appAs("user", actor, "composio"),
+      composioSharedApp,
+    );
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: "An administrator connects shared apps.",
+    });
   });
 });
