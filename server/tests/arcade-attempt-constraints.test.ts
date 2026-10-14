@@ -75,10 +75,18 @@ describe("pending_authorizations holds its declared unions", () => {
     );
   });
 
+  /*
+   * Each roster case carries a `completed_at` alongside its junk `outcome`, so the row is legal in
+   * every respect but the one under test. Without it the row also breaks the completion pairing
+   * below, postgres names whichever constraint it evaluated first, and the test stops being about
+   * the roster at all.
+   */
   test("an outcome outside the roster is refused on insert", async () => {
-    expect(await refusedBy(() => insert({ outcome: "banana" }))).toBe(
-      "pending_authorizations_outcome_check",
-    );
+    expect(
+      await refusedBy(() =>
+        insert({ outcome: "banana", completedAt: new Date() }),
+      ),
+    ).toBe("pending_authorizations_outcome_check");
   });
 
   test("an outcome outside the roster is refused on update", async () => {
@@ -88,10 +96,51 @@ describe("pending_authorizations holds its declared unions", () => {
       database
         .update(pendingAuthorizations)
         // biome-ignore lint/suspicious/noExplicitAny: a cast past the union is exactly what the CHECK is for.
-        .set({ outcome: "cancelled" as any })
+        .set({ outcome: "cancelled" as any, completedAt: new Date() })
         .where(sql`actor_id = ${actorId}`),
     );
     expect(refusal).toBe("pending_authorizations_outcome_check");
+  });
+
+  /**
+   * The pairing of `completed_at` and `outcome`, which is the one invariant of this table that no
+   * single column can hold.
+   *
+   * A row carrying an `outcome` with `completed_at` still NULL is a FINISHED attempt that every
+   * reader here reads as a LIVE one: `claimAuthorizationAttempt` replaces a held key only
+   * `WHERE created_at < now() - interval '15 minutes' OR completed_at IS NOT NULL`, and
+   * `authorizationAttemptFor` answers on `completed_at IS NULL` alone. Neither looks at `outcome`,
+   * so such a row locks its actor out of starting another authorization for the rest of the TTL,
+   * with a verdict already recorded against it. The other half is less damaging and just as wrong:
+   * a `completed_at` with no `outcome` is an attempt that ended with nothing saying how, and every
+   * operator-facing reading of the table is of `outcome`.
+   *
+   * Nothing in the application writes either shape — both writers set the pair in one statement —
+   * which is exactly why it belongs in the database rather than in a comment: the only ways in are
+   * a hand-run UPDATE, a restore, or the next writer, and none of those is reviewed here.
+   */
+  test("an outcome with no completion time is refused", async () => {
+    expect(
+      await refusedBy(() => insert({ outcome: "failed", completedAt: null })),
+    ).toBe("pending_authorizations_completion_check");
+  });
+
+  test("a completion time with no outcome is refused", async () => {
+    expect(
+      await refusedBy(() => insert({ completedAt: new Date(), outcome: null })),
+    ).toBe("pending_authorizations_completion_check");
+  });
+
+  test("breaking the pair by UPDATE is refused too", async () => {
+    const actorId = `pair-${suite}`;
+    await insert({ actorId });
+    const refusal = await refusedBy(() =>
+      database
+        .update(pendingAuthorizations)
+        .set({ outcome: "withdrawn" })
+        .where(sql`actor_id = ${actorId}`),
+    );
+    expect(refusal).toBe("pending_authorizations_completion_check");
   });
 
   test("a person attempt with no user id is refused", async () => {
@@ -133,6 +182,8 @@ describe("pending_authorizations holds its declared unions", () => {
     const action = `legal-${suite}`;
     await insert({ action, holder: "person", userId: `user-${suite}` });
     await insert({ action, holder: "deployment", userId: null });
+    // Each ended shape carries its `completed_at`, because the pair is now held by a CHECK: an
+    // outcome on its own is no longer one of the legal shapes, and this list says which are.
     for (const outcome of [
       null,
       "completed",
@@ -140,7 +191,11 @@ describe("pending_authorizations holds its declared unions", () => {
       "unreconciled",
       "withdrawn",
     ]) {
-      await insert({ action, outcome });
+      await insert({
+        action,
+        outcome,
+        completedAt: outcome === null ? null : new Date(),
+      });
     }
     const rows = await database.execute(
       sql`select count(*)::int as n from pending_authorizations where action = ${action}`,
