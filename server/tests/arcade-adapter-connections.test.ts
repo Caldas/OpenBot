@@ -135,19 +135,36 @@ function configs(items: unknown[] = CONFIGS) {
  * engine omits `total_count` — see `arcade-pagination-engine.test.ts`, which proves that against a
  * real HTTP engine. So the stub answers what the real `list` resolves to: an object with `items`,
  * honouring the `limit`/`offset` the adapter sends.
+ *
+ * AND SCOPED TO THE IDENTITY THE QUERY NAMES, which is the other half of what the real listing
+ * does and what this stub once left out. `admin.userConnections.list` answers the connections of
+ * ONE `user_id`; a stub that served its rows to every query made the identity the adapter sends
+ * unobservable, so sending `account.userId` — the LOCAL id — or sending no `user_id` at all passed
+ * every test in this file. Scoping the read to `account.vendorUserId` is the whole subject of
+ * commit `28b13e4a`, a live defect in which one person's Disconnect could read, and spend DELETEs
+ * against, another person's connections. So: rows are served only to a query naming `heldBy`
+ * (the vendor identity by default), and any other query — wrong id, or none — gets a real empty
+ * page, exactly as the vendor would answer for an identity holding nothing.
+ *
+ * Returns the queries it was asked, so a test can assert the identity by name as well as by effect.
  */
-function listing(rows: unknown[]) {
+type ListingQuery = { user_id?: unknown; limit?: number; offset?: number };
+function listing(rows: unknown[], heldBy: string = account.vendorUserId) {
+  const asked: ListingQuery[] = [];
   stub("list", (query) => {
-    const asked = query as { limit?: number; offset?: number } | undefined;
-    const offset = asked?.offset ?? 0;
-    const limit = asked?.limit ?? rows.length;
+    const q = (query ?? {}) as ListingQuery;
+    asked.push(q);
+    const mine = q.user_id === heldBy ? rows : [];
+    const offset = q.offset ?? 0;
+    const limit = q.limit ?? mine.length;
     return Promise.resolve({
-      items: rows.slice(offset, offset + limit),
+      items: mine.slice(offset, offset + limit),
       offset,
       limit,
-      total_count: rows.length,
+      total_count: mine.length,
     });
   });
+  return asked;
 }
 
 /** The TYPE each toolkit's listing names. Nothing here is an instance id. */
@@ -181,6 +198,46 @@ describe("arcade adapter connection lifecycle", () => {
     expect(await broker.isConnected({ account, toolkit: "Github" })).toBe(
       false,
     );
+  });
+
+  /*
+   * THE IDENTITY THE LISTING IS READ FOR, ASSERTED BY NAME. `AccountRef` carries two ids and they
+   * are not interchangeable: `userId` is this deployment's own, `vendorUserId` is the one Arcade
+   * files a connection under. Reading the listing for the wrong one is what commit `28b13e4a`
+   * fixed in the source, and sending no `user_id` at all is worse still — `admin.userConnections`
+   * then answers EVERY account's connections, which `revoke` would attribute to this one and
+   * spend DELETEs against. Both are spelled out here because an effect-only assertion cannot tell
+   * the difference between "scoped to the right id" and "scoped to a wrong id that happens to
+   * hold these rows".
+   */
+  test("the connection listing is read for the VENDOR identity, on every page and every member", async () => {
+    const asked = listing([row(1, "cpk-poc", { name: "Ada" })]);
+    stub("delete", () => Promise.resolve());
+    const { broker } = createArcadeClient("never-dialled");
+    const toolkit = "Github";
+    expect(await broker.isConnected({ account, toolkit })).toBe(true);
+    expect(await broker.accountName({ account, toolkit })).toBe("Ada");
+    expect(await broker.revoke({ account, toolkit })).toBe(true);
+    expect(asked.length).toBeGreaterThan(0);
+    for (const query of asked) {
+      expect(query.user_id).toBe(account.vendorUserId);
+      expect(query.user_id).not.toBe(account.userId);
+    }
+  });
+
+  test("connections held by ANOTHER vendor identity are neither read nor deleted", async () => {
+    listing([row(1, "cpk-poc", { name: "Ada" })], "vendor-somebody-else");
+    const deleted: unknown[] = [];
+    stub("delete", (id) => {
+      deleted.push(id);
+      return Promise.resolve();
+    });
+    const { broker } = createArcadeClient("never-dialled");
+    const toolkit = "Github";
+    expect(await broker.isConnected({ account, toolkit })).toBe(false);
+    expect(await broker.accountName({ account, toolkit })).toBeNull();
+    expect(await broker.revoke({ account, toolkit })).toBe(false);
+    expect(deleted).toEqual([]);
   });
 
   test("delete is passed the ac_ connection_id, never the at_ id", async () => {
