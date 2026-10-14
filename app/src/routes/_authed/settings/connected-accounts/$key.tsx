@@ -1,7 +1,7 @@
 import { IconArrowUpRight, IconChevronDown } from "@tabler/icons-react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { createFileRoute, useParams, useSearch } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   PageEmpty,
   PageRows,
@@ -122,6 +122,39 @@ function RouteComponent() {
   const { action } = useSearch({
     from: "/_authed/settings/connected-accounts/$key",
   });
+  /*
+   * `?action=` IS READ ONCE HERE AND DROPPED FROM THE URL BELOW, BUT IT FEEDS TWO THINGS.
+   *
+   * Its only sender is the per-action verifier's redirect (`server/src/plugins/routes.ts`), so it is
+   * a report of a consent that has just completed — news exactly once. Left in the address bar it is
+   * read again on every reload and back-navigation, and "You just authorized X" is redrawn about a
+   * consent that may be hours old. That is the omission `index.tsx` closed for its own three report
+   * parameters.
+   *
+   * It is NOT only the notice, though: the same value marks the matching row of the grant list with
+   * `data-landed`, and that list draws only once its own read answers — which can be well after the
+   * strip has landed. So the strip is safe only because BOTH readers draw from this snapshot, never
+   * from the live search: read live, the notice would vanish with the parameter and the grant list
+   * would come up with nothing marked. The mark is the same news as the notice, so it is right for
+   * both to outlive the URL for this visit and for both to be gone on a reload.
+   *
+   * KEYED ON THE APP, so a snapshot taken on one app's page is never repeated on another's should the
+   * router keep this component mounted across a change of `$key`.
+   */
+  const [arrival] = useState(() => ({
+    key,
+    landedAction: landedActionFrom(action),
+  }));
+  const navigate = Route.useNavigate();
+  /*
+   * ONE NAVIGATE, the same shape as `index.tsx`'s: `search` replaces the whole object, so a strip is
+   * written as dropping its keys from what is there and keeping the rest, never as a rebuilt object.
+   * `action` is the only key this route accepts, so it is the only one dropped.
+   */
+  useEffect(() => {
+    if (action === undefined) return;
+    navigate({ search: ({ action: _a, ...rest }) => rest, replace: true });
+  }, [action, navigate]);
   const plugins = useQuery(pluginsPageQueryOptions());
   const connections = useQuery(connectionsQueryOptions());
   const [notice, setNotice] = useState<string | null>(null);
@@ -186,7 +219,8 @@ function RouteComponent() {
     brokered && connection !== undefined && siblings.data
       ? disconnectSiblingsNotice(siblings.data)
       : null;
-  const landedAction = landedActionFrom(action);
+  /* From the snapshot above and never from the live search, which is stripped. */
+  const landedAction = arrival.key === key ? arrival.landedAction : null;
   /*
    * THE GRANT LIST IS DRAWN WHERE THE BROKER AUTHORIZES PER ACTION, read off the declared
    * capability and never off the vendor's name. The server computes `authorizesPerAction` from the
