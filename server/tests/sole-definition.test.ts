@@ -106,6 +106,25 @@ const TRACKED: Tracked[] = [
     names: ["clearEndedSiblings"],
     home: "server/src/plugins/plugin-store/context.ts",
   },
+  /*
+   * Rule 1's one spelling, the sibling judgement without the delete, and the asked app's trail
+   * claim — the three K5 made single-source so the trail and the deletion judge a key app once.
+   */
+  {
+    decision: "consent-revoke-reaches",
+    names: ["consentRevokeReaches"],
+    home: "server/src/plugins/plugin-store/context.ts",
+  },
+  {
+    decision: "siblings-ended-by",
+    names: ["siblingsEndedBy"],
+    home: "server/src/plugins/plugin-store/context.ts",
+  },
+  {
+    decision: "vendor-revocation-claim",
+    names: ["vendorRevocationClaim"],
+    home: "server/src/plugins/plugin-store/context.ts",
+  },
   /* Which apps a revoke ends besides the one it names: "the one place that answers it". */
   {
     decision: "sibling-resolution",
@@ -265,11 +284,11 @@ test("a definition is matched, and a call or a mention is not", () => {
  * once per logical line that spells the decision — against either the home or the debt on record.
  *
  * WHAT A PATH KEY CANNOT SAY. Two spellings in one file are that path listed twice; which of the two
- * is the home is not something a path can carry. For A5c the second spelling is in the SAME file as
+ * is the home is not something a path can carry. For A5c the second spelling was in the SAME file as
  * the first (`plugin-store/connections.ts`; both A5b and A5c were in `plugins/store.ts` before #784
- * split it, and A5b's two now sit in `context.ts` and `connections.ts`), so the guard holds the
- * COUNT: a third spelling anywhere,
- * that file included, goes red; collapsing one goes red until the list drops a line. Moving the
+ * split it; K5 collapsed both into `context.ts`), so the guard holds the COUNT: a second spelling
+ * anywhere, the home's own file included, goes red; collapsing one goes red until the list drops a
+ * line. Moving the
  * spelling from the owning function into a sibling function of the same file does not. That is the
  * price of not going red on a rewrapped comment, and the same price the name table already pays.
  */
@@ -323,8 +342,10 @@ const SPELLED: Spelled[] = [
   /*
    * THE SIBLING-CASCADE RULES: which of a revoke's siblings it ended. Spelled as a walk over a
    * {@link resolveSiblings} answer, because every spelling of the three rules is one — rule 1 and
-   * rule 3 are each a `continue` inside that walk, rule 2 the guard before it. `clearEndedSiblings`
-   * is the one walk; a site that needs the rules calls it rather than walking the set itself.
+   * rule 3 are each a `continue` inside that walk, rule 2 the guard before it. `siblingsEndedBy`
+   * is the one walk (rules 1 and 2); `clearEndedSiblings` adds rule 3 and the delete over its
+   * answer, and `retireConnectionsFor` files `endedWith` from the same answer (K5). A site that
+   * needs the rules asks one of those rather than walking the set itself.
    */
   {
     decision: "sibling-cascade-walk",
@@ -339,7 +360,9 @@ const SPELLED: Spelled[] = [
   /*
    * WHAT THE TRAIL SAYS WAS ASKED OF THE VENDOR, for the app an act was ABOUT. A key app's answer
    * is `false` — nothing was asked of any vendor about a credential this deployment holds — and
-   * `disconnectBrokered` spells that once, as `askedIsKey ? false : ended`. A writer that computes
+   * `vendorRevocationClaim` spells that once, as a payload fragment every writer of an asked app's
+   * row spreads (`disconnectBrokered`, `removeServer`, `retireConnectionsFor`; K5 moved the home
+   * here from `disconnectBrokered`'s `askedIsKey ? false : ended`). A writer that computes
    * the field from anything else is a second answer to the same question. A constant `true` or
    * `false` is not a computation and is not matched: `clearEndedSiblings` writes `true` on rows
    * rule 1 has already kept key apps out of, and the vault loops write `false` about secrets.
@@ -349,7 +372,7 @@ const SPELLED: Spelled[] = [
     patterns: [
       /\bvendorRevocationRequested\s*[:=]\s*(?!true\b|false\b|boolean\b)\S/,
     ],
-    home: ["server/src/plugins/plugin-store/connections.ts"],
+    home: ["server/src/plugins/plugin-store/context.ts"],
   },
 ];
 
@@ -365,24 +388,13 @@ const KNOWN_SECOND_SPELLINGS: Record<
   string,
   { finding: string; why: string; sites: string[] }
 > = {
-  "sibling-cascade-walk": {
-    finding: "A5b (round 2, wave 3) — open",
-    why: "`retireConnectionsFor` builds its `endedWith` map by walking the siblings itself, with rule 2 (`if (!entry.requested) continue`) and without rule 1, so a key app's trail row can name an OAuth revoke as what ended it. Its shape is an annotation, not a delete, which is why it was not routed through `clearEndedSiblings` with the other three.",
-    sites: [
-      "server/src/plugins/plugin-store/context.ts",
-      "server/src/plugins/plugin-store/connections.ts",
-    ],
-  },
-  "key-app-revoke-answer": {
-    finding:
-      "A5c (round 2, wave 3) — open; the `retireConnectionsFor` line is the same divergence, found by L5",
-    why: "`removeServer` writes `vendorRevocationRequested[index] ?? false` — the vendor's raw answer — for the removed app even when it is a key app, and `retireConnectionsFor` writes `connection.requested || Boolean(endedBy)`, also raw for a key app; `disconnectBrokered` writes `false` for a key. One field, three answers.",
-    sites: [
-      "server/src/plugins/plugin-store/connections.ts",
-      "server/src/plugins/plugin-store/connections.ts",
-      "server/src/plugins/plugin-store/servers.ts",
-    ],
-  },
+  /*
+   * EMPTY SINCE ROUND 2, K5. Both entries L5 landed with were collapsed into one home each in
+   * `plugin-store/context.ts`: "sibling-cascade-walk" (A5b — `retireConnectionsFor`'s own walk,
+   * without rule 1) now asks `siblingsEndedBy`, and "key-app-revoke-answer" (A5c, L5-a —
+   * `removeServer` and `retireConnectionsFor` passing a key app's raw vendor answer through) now
+   * asks `vendorRevocationClaim`, as `disconnectBrokered` does. A new entry here is a new defect.
+   */
 };
 
 /** Every source file in which one of `patterns` matches a logical line, comments stripped. */

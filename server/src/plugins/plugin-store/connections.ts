@@ -61,6 +61,9 @@ export function connectionMethods(context: StoreContext) {
     brokerProvider,
     closeAuthorizationAttempt,
     resolveSiblings,
+    consentRevokeReaches,
+    vendorRevocationClaim,
+    siblingsEndedBy,
     clearEndedSiblings,
   } = context;
   return {
@@ -2859,8 +2862,12 @@ export function connectionMethods(context: StoreContext) {
        * weakened the trail claim: a KEY sibling's row was deleted anyway, by the single OAuth
        * revoke that never ended it, leaving a live account at the vendor with no local row to
        * reach it.
+       *
+       * The claim is {@link vendorRevocationClaim}'s, which {@link removeServer} and
+       * {@link retireConnectionsFor} make for their own asked apps: this method was the one of the
+       * three that said `false` for a key, and now none of them says it for itself.
        */
-      const askedIsKey = (await brokeredAppKind(input.toolkit)) === "key";
+      const claim = await vendorRevocationClaim(input.toolkit);
 
       // Whether there was an account to end at all, which is what decides if anybody was
       // disconnected. Named apart from the field below because for a key the two differ: something
@@ -2875,7 +2882,7 @@ export function connectionMethods(context: StoreContext) {
         toolkit: input.toolkit,
       });
 
-      const vendorRevocationRequested = askedIsKey ? false : ended;
+      const asked = claim(ended);
 
       /*
        * THE ASKED APP FIRST, and on its own terms — this is the act, not a cascade of it.
@@ -2912,7 +2919,7 @@ export function connectionMethods(context: StoreContext) {
                 ? input.account.userId
                 : "deployment",
             reason: input.reason,
-            vendorRevocationRequested,
+            ...asked,
             /*
              * HOW MANY apps on this identity could not be asked about and so were left out of
              * the set below, never their names. An integer, so an operator can see that "we did
@@ -2935,7 +2942,7 @@ export function connectionMethods(context: StoreContext) {
         reason: input.reason,
       });
 
-      return { vendorRevocationRequested };
+      return asked;
     },
 
     /**
@@ -3004,8 +3011,11 @@ export function connectionMethods(context: StoreContext) {
        * it (rule 1); the caller watched that revoke answer true, which is the contract above and
        * is rule 2 discharged at the door; and a row that was not here had nothing to explain
        * (rule 3). The act itself is already recorded on the attempt row, as `withdrawn`.
+       *
+       * Rule 1 is asked of {@link consentRevokeReaches}, its one spelling, rather than of the kind
+       * directly — this was the one site that compared the kind for itself (round 2, K5).
        */
-      if ((await brokeredAppKind(input.toolkit)) !== "key") {
+      if (await consentRevokeReaches(input.toolkit)) {
         const [deleted] = await database
           .delete(brokeredConnections)
           .where(accountRow(input.toolkit, input.account))
@@ -3242,6 +3252,24 @@ export function connectionMethods(context: StoreContext) {
       }
 
       /*
+       * WHAT THE TRAIL MAY CLAIM WAS ASKED OF THE VENDOR FOR EACH APP, read before a single revoke
+       * goes out, as {@link disconnectBrokered} reads its own. A KEY app's row says `false` whatever
+       * the vendor answered — see {@link vendorRevocationClaim}, which all three writers of an asked
+       * app's row now ask. This one used to pass the vendor's answer through for a key (round 2,
+       * L5-a), the same divergence {@link removeServer} had (A5c).
+       */
+      const toRetire: {
+        toolkit: string;
+        claim: Awaited<ReturnType<typeof vendorRevocationClaim>>;
+      }[] = [];
+      for (const connection of brokered) {
+        toRetire.push({
+          toolkit: connection.toolkit,
+          claim: await vendorRevocationClaim(connection.toolkit),
+        });
+      }
+
+      /*
        * What the broker was actually asked for each app, kept so the trail below records the answer
        * rather than the call. False where there is no broker at all: a deployment whose key has
        * since been unset can still offboard somebody, and it could not have been calling Composio
@@ -3260,12 +3288,17 @@ export function connectionMethods(context: StoreContext) {
        * asked — a later one is not punished for an earlier one — and the first refusal is rethrown
        * below, so the act still fails loudly and the administrator still gets a 500.
        */
-      const withdrawn: { toolkit: string; requested: boolean }[] = [];
+      const withdrawn: {
+        toolkit: string;
+        requested: boolean;
+        claim: Awaited<ReturnType<typeof vendorRevocationClaim>>;
+      }[] = [];
       const refusals: unknown[] = [];
-      for (const connection of brokered) {
+      for (const connection of toRetire) {
         try {
           withdrawn.push({
             toolkit: connection.toolkit,
+            claim: connection.claim,
             requested: broker
               ? await broker.revoke({
                   /*
@@ -3329,12 +3362,22 @@ export function connectionMethods(context: StoreContext) {
        * APPS THIS PERSON HOLDS ARE ALL THIS CAN SPEAK FOR. A sibling resolved on the same identity
        * but held by the deployment, or an app whose own revoke threw and so has no row here, is
        * left alone: this map only corrects what the loop below is already about to write.
+       *
+       * WHICH SIBLINGS A REVOKE ENDED IS {@link siblingsEndedBy}'S ANSWER, the one
+       * {@link clearEndedSiblings} deletes on — rules 1 and 2 — and not a walk of this method's
+       * own. It was one: rule 2 without rule 1, so a KEY app whose own ask answered false was filed
+       * as ended by an OAuth sibling's revoke that never reached it (round 2, A5b). What differs
+       * here is only what is DONE with the answer: this method deletes its own rows as its own acts
+       * above, so it takes the judgement without the delete and files `endedWith` from it.
        */
       const endedWith = new Map<string, string>();
       for (const entry of withdrawn) {
-        if (!entry.requested) continue;
-        for (const app of endedBesides.get(entry.toolkit)?.siblings ?? []) {
-          if (app === entry.toolkit) continue;
+        const ended = await siblingsEndedBy({
+          siblings: endedBesides.get(entry.toolkit)?.siblings ?? [],
+          endedWith: entry.toolkit,
+          revoked: entry.requested,
+        });
+        for (const app of ended) {
           if (!endedWith.has(app)) endedWith.set(app, entry.toolkit);
         }
       }
@@ -3375,8 +3418,11 @@ export function connectionMethods(context: StoreContext) {
              * made about the same grant. On Arcade the ask that ended this app may have been
              * spelled with a sibling's name, and `revoke`'s `false` here then means "already
              * gone", not "nobody asked" — `endedWith` beside it names the app that asked.
+             *
+             * AND NEVER FOR A KEY: {@link vendorRevocationClaim} makes the claim from that
+             * reading, and for a key app it is `false` whatever the vendor answered.
              */
-            vendorRevocationRequested: connection.requested || Boolean(endedBy),
+            ...connection.claim(connection.requested || Boolean(endedBy)),
             /*
              * AND WHERE A SIBLING RELATIONSHIP IS BEING CLAIMED, HOW MANY apps on this identity
              * could not be asked about and so could not be ruled siblings either way — an
