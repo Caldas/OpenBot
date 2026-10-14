@@ -220,7 +220,12 @@ function startEngine(shape: Shape): Engine {
       return new Response("not found", { status: 404 });
     },
   });
-  return { port: server.port, requests, stop: () => server.stop(true) };
+  // `Bun.serve().port` is `number | undefined`. Refuse loudly rather than coercing: a stub that
+  // never bound a port would otherwise send every request of this file to a nonsense address and
+  // the invariant below would "hold" for the wrong reason.
+  const { port } = server;
+  if (port === undefined) throw new Error("the stub vendor did not bind a port");
+  return { port, requests, stop: () => server.stop(true) };
 }
 
 let running: Engine | null = null;
