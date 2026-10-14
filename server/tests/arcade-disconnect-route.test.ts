@@ -30,7 +30,13 @@ let counter = 0;
 
 type Provider = "arcade" | "composio";
 let revokes: string[] = [];
-let revokeAnswer: boolean | Error = true;
+/**
+ * What the vendor stub answers. A function answers PER TOOLKIT, which is the only way a case can
+ * have one connection's revoke succeed while another's fails: the store makes exactly one ask per
+ * disconnect, so a partial failure is a wave of disconnects and not a single call that half-ran.
+ */
+type RevokeAnswer = boolean | Error | ((toolkit: string) => boolean | Error);
+let revokeAnswer: RevokeAnswer = true;
 
 const providerOf = (provider: Provider) => (toolkit: string) =>
   provider === "composio"
@@ -55,8 +61,12 @@ function brokerFor(provider: Provider): ConnectedAppBroker {
     isConnected: async () => true,
     revoke: async (request) => {
       revokes.push(request.toolkit);
-      if (revokeAnswer instanceof Error) throw revokeAnswer;
-      return revokeAnswer;
+      const answer =
+        typeof revokeAnswer === "function"
+          ? revokeAnswer(request.toolkit)
+          : revokeAnswer;
+      if (answer instanceof Error) throw answer;
+      return answer;
     },
     connectionFields: async () => [],
     connectWithFields: async () => ({ accountId: "ca_1" }),
@@ -234,21 +244,53 @@ describe("the disconnect", () => {
     );
   });
 
-  test("a partial vendor failure leaves EVERY row standing and audits nothing", async () => {
+  test("a revoke that throws leaves EVERY row of the identity standing and audits nothing", async () => {
     const n = run();
-    for (const t of [n.gmail, n.calendar]) await app(n, t);
+    // Three apps on ONE auth provider, so the single ask below covers two siblings as well as the
+    // app pressed: the throw must leave all three, not only the one named.
+    for (const t of [n.gmail, n.calendar, n.docs]) await app(n, t);
     await hold(n, n.gmail, n.person);
     await hold(n, n.calendar, n.person);
+    await hold(n, n.docs, n.person);
     revokeAnswer = new Error("revoke failed halfway");
 
     const response = await disconnect(n, n.gmail);
 
     expect(response.status).toBeGreaterThanOrEqual(500);
     expect(revokes).toEqual([n.gmail]);
-    expect(await rowsFor([n.gmail, n.calendar])).toEqual(
+    expect(await rowsFor([n.gmail, n.calendar, n.docs])).toEqual(
+      [n.gmail, n.calendar, n.docs].sort(),
+    );
+    expect(await trailFor([n.gmail, n.calendar, n.docs])).toEqual([]);
+  });
+
+  test("a partial failure across an identity's connections ends the asked one and leaves the failed one whole", async () => {
+    const n = run();
+    // TWO connections for one identity: Slack is its own auth provider, Gmail and Calendar share
+    // google. The store asks the vendor ONCE per disconnect, so "partial" is this wave — one ask
+    // answered, the next thrown on — and the point is that the succeeded half is not rolled back
+    // and the failed half is not half-applied.
+    for (const t of [n.gmail, n.calendar, n.slack]) await app(n, t);
+    await hold(n, n.gmail, n.person);
+    await hold(n, n.calendar, n.person);
+    await hold(n, n.slack, n.person);
+    revokeAnswer = (toolkit) =>
+      toolkit === n.slack ? true : new Error("revoke failed halfway");
+
+    const ok = await disconnect(n, n.slack);
+    const failed = await disconnect(n, n.gmail);
+
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ vendorRevocationRequested: true });
+    expect(failed.status).toBeGreaterThanOrEqual(500);
+    // BOTH asks reached the vendor, in that order: the failure is the vendor's answer and not a
+    // disconnect this deployment declined to make.
+    expect(revokes).toEqual([n.slack, n.gmail]);
+    // The succeeded one is gone; the failed one took NEITHER its own row nor its sibling's.
+    expect(await rowsFor([n.gmail, n.calendar, n.slack])).toEqual(
       [n.gmail, n.calendar].sort(),
     );
-    expect(await trailFor([n.gmail, n.calendar])).toEqual([]);
+    expect(await trailFor([n.gmail, n.calendar, n.slack])).toEqual([n.slack]);
   });
 
   test("answers what the vendor was asked, passing a false through unrewritten", async () => {
@@ -260,6 +302,9 @@ describe("the disconnect", () => {
     const response = await disconnect(n, n.gmail);
 
     expect(await response.json()).toEqual({ vendorRevocationRequested: false });
+    // The false is the VENDOR's: one DELETE was spent asking, not a default returned by a route
+    // that deleted the row and never asked.
+    expect(revokes).toEqual([n.gmail]);
     expect(await rowsFor([n.gmail])).toEqual([]);
   });
 });
@@ -277,6 +322,9 @@ describe("Composio, where an app is its own auth provider", () => {
     const response = await disconnect(n, n.gmail);
 
     expect(response.status).toBe(200);
+    // ONE DELETE spent at the vendor, for the app pressed and no other: the local row going is
+    // half the disconnect, and a row deleted with no ask leaves a live grant nothing here reaches.
+    expect(revokes).toEqual([n.gmail]);
     expect(await rowsFor([n.gmail, n.calendar])).toEqual([n.calendar]);
     expect(await trailFor([n.gmail, n.calendar])).toEqual([n.gmail]);
   });
