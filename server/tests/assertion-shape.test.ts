@@ -835,14 +835,14 @@ const ALLOW: Allowed[] = [
   },
   {
     file: "server/tests/composio-adapter.test.ts",
-    line: 5067,
+    line: 5412,
     shape: "c",
     finding: "NEW (round 2 did not find this)",
     why: 'expect( await actions.listActions("gmail", { limit: WHOLE_LISTING }), ).toEqual([ { slug: "GMAIL_FETCH_EMAILS"',
   },
   {
     file: "server/tests/composio-adapter.test.ts",
-    line: 5115,
+    line: 5458,
     shape: "c",
     finding: "NEW (round 2 did not find this)",
     why: 'expect( await actions.listActions("gmail", { limit: WHOLE_LISTING }), ).toEqual([ { slug: "GMAIL_FETCH_EMAILS"',
