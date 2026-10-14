@@ -5,6 +5,8 @@ import { join } from "node:path";
 import postgres from "postgres";
 import {
   applyMigrations,
+  MIGRATIONS_JOURNAL,
+  type MigrationsJournal,
   MigrationsOutOfReachError,
 } from "../src/db/apply-migrations";
 import { testDatabaseUrl } from "./support/database";
@@ -14,7 +16,7 @@ import { testDatabaseUrl } from "./support/database";
  * database and nothing short of one can show it.
  *
  * A database is created per case and dropped afterwards. A schema inside the shared test database
- * would not do: the migrator's own bookkeeping lives at `drizzle.__drizzle_migrations`, and these
+ * would not do: the migrator's own bookkeeping lives in one table (`MIGRATIONS_JOURNAL`), and these
  * cases are entirely about what that one table already contains, so they need a database whose
  * contents nothing else wrote.
  *
@@ -141,7 +143,8 @@ describe("a database that ran a branch before the branch was merged", () => {
       // the branch left it, which is the state an operator can reason about.
       expect(await exists(client, "from_main")).toBe(false);
       const [row] = await client<{ count: string }[]>`
-        select count(*)::text as count from drizzle.__drizzle_migrations
+        select count(*)::text as count
+        from ${client(MIGRATIONS_JOURNAL.migrationsSchema)}.${client(MIGRATIONS_JOURNAL.migrationsTable)}
       `;
       expect(row?.count).toBe("2");
     } finally {
@@ -174,6 +177,66 @@ describe("a database that ran a branch before the branch was merged", () => {
       await expect(applyMigrations(client, merged)).rejects.toThrow(
         MigrationsOutOfReachError,
       );
+    } finally {
+      await client.end({ timeout: 5 });
+    }
+  });
+});
+
+describe("a journal kept somewhere other than the default", () => {
+  /*
+   * The check and the migrator must read and write the same bookkeeping table. Were the check to
+   * look somewhere fixed while the migrator honoured its configuration, the check would find no
+   * table, conclude nothing had been applied, and let the migrator walk past the unreachable
+   * migration exactly as if there were no check at all.
+   */
+  const elsewhere: MigrationsJournal = {
+    migrationsSchema: "c4_journal",
+    migrationsTable: "applied_migrations",
+  };
+
+  test("is the table the check reads, so a renumber is still refused", async () => {
+    const url = await throwawayDatabase();
+    const client = postgres(url, { max: 1, onnotice: () => {} });
+    try {
+      await applyMigrations(
+        client,
+        await folderOf([first, asShipped]),
+        elsewhere,
+      );
+
+      const merged = await folderOf([
+        first,
+        {
+          tag: "0001_from_main",
+          when: 2_000_000,
+          sql: 'CREATE TABLE "from_main" ("id" text PRIMARY KEY);\n',
+        },
+        {
+          ...asShipped,
+          tag: "0002_branch_renumbered",
+          when: 4_000_000,
+          sql: 'ALTER TABLE "branch" ADD COLUMN "renumbered" boolean;\n',
+        },
+      ]);
+
+      const refusal = await applyMigrations(client, merged, elsewhere).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(refusal).toBeInstanceOf(MigrationsOutOfReachError);
+      expect(await exists(client, "from_main")).toBe(false);
+
+      // And the bookkeeping is where it was configured to be, and nowhere else.
+      const [row] = await client<{ count: string }[]>`
+        select count(*)::text as count
+        from ${client(elsewhere.migrationsSchema)}.${client(elsewhere.migrationsTable)}
+      `;
+      expect(row?.count).toBe("2");
+      const [fallback] = await client<{ present: string | null }[]>`
+        select to_regclass(format('%I.%I', ${MIGRATIONS_JOURNAL.migrationsSchema}::text, ${MIGRATIONS_JOURNAL.migrationsTable}::text))::text as present
+      `;
+      expect(fallback?.present).toBeNull();
     } finally {
       await client.end({ timeout: 5 });
     }
