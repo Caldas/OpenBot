@@ -2984,6 +2984,29 @@ export function createPluginRoutes(
    * AND NOT ADMIN-GATED AT THE ROUTE, as the disconnect route above: `brokeredAccountFor` is where
    * a Shared app is refused to anybody but an administrator.
    *
+   * THE ATTEMPT IS RESOLVED BEFORE THE APP IS, AND THAT ORDER IS THE WHOLE POINT. Cancelling is an
+   * operation on the ATTEMPT ROW, and this route reads NOTHING off `brokeredAccountFor`'s success
+   * branch — not the toolkit, not the account, not the title. The deletion is keyed
+   * `(actor_id, created_at)` off the row itself. So resolving the app first bought no fact this
+   * route uses and cost the one case that needs cancelling most: AN ATTEMPT OUTLIVES ITS APP. Once
+   * an administrator removes the row, `brokeredAccountFor` answers `appOfUrl(null)` → "That app is
+   * not reached through a broker", 400, and a person holding a live pending authorization on an app
+   * that is gone could never retract it — while `claimAuthorizationAttempt` went on refusing them a
+   * new one for the full fifteen minutes. A not-found about the app, in answer to a request about
+   * their own attempt.
+   *
+   * DROPPING THE GATE FOR THAT CASE GIVES NOBODY ANYTHING THEY DID NOT ALREADY HAVE. The row
+   * reached here is the signed-in person's OWN attempt, by the only key the table has, and the act
+   * is its deletion; the administrator requirement on a Shared app guards that app's deployment
+   * account, which this route never touches. The one actor it newly admits is somebody whose
+   * authority changed while their own consent was in flight — and letting them retract what they
+   * started is the right answer, not a hole.
+   *
+   * THE REFUSALS SURVIVE WHERE THEY STILL MEAN SOMETHING, which is the branch with nothing of this
+   * actor's to cancel. A DELETE aimed at an ordinary OAuth row, or at no row at all, is then still
+   * told so in the words every sibling route uses, rather than being flattened into a cheerful
+   * `{ cancelled: false }` that claims the request was understood.
+   *
    * AND IT CANCELS THE ATTEMPT THE PATH NAMES, NEVER MERELY "WHATEVER THIS ACTOR IS HOLDING". The
    * attempt key is the actor alone, so the lookup can only answer that one row — but the request
    * names an app, and an attempt standing on a DIFFERENT app is not the thing being cancelled.
@@ -3000,6 +3023,15 @@ export function createPluginRoutes(
    */
   routes.delete("/servers/:id/authorize", requireUser, async (context) => {
     const serverId = context.req.param("id");
+    const actorId = context.var.actor.id;
+    const attempt = await store.authorizationAttemptFor(actorId);
+    if (attempt && attempt.serverId === serverId) {
+      const cancelled = await store.discardAuthorizationAttempt({
+        actorId,
+        createdAt: attempt.createdAt,
+      });
+      return context.json({ cancelled });
+    }
     const resolved = await brokeredAccountFor(context, serverId);
     if (resolved.refusal) {
       return context.json(
@@ -3007,16 +3039,7 @@ export function createPluginRoutes(
         resolved.refusal.status,
       );
     }
-    const actorId = context.var.actor.id;
-    const attempt = await store.authorizationAttemptFor(actorId);
-    if (!attempt || attempt.serverId !== serverId) {
-      return context.json({ cancelled: false });
-    }
-    const cancelled = await store.discardAuthorizationAttempt({
-      actorId,
-      createdAt: attempt.createdAt,
-    });
-    return context.json({ cancelled });
+    return context.json({ cancelled: false });
   });
 
   /**

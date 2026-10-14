@@ -25,6 +25,7 @@ const suite = randomUUID().slice(0, 8);
 const personalApp = `arcade-cp-${suite}`;
 const sharedApp = `arcade-cs-${suite}`;
 const otherApp = `arcade-co-${suite}`;
+const movedApp = `arcade-cm-${suite}`;
 const SHARED_VENDOR_ID = `openbot-deployment:acme-${suite}:R`;
 const ACTION = "Gmail.SendEmail";
 const SECRET_URL = "https://vendor.example/consent?secret=bearer-capability";
@@ -173,9 +174,18 @@ beforeAll(async () => {
       authScheme: "OAUTH2",
       accountMode: "personal",
     },
+    {
+      id: movedApp,
+      title: "Notion",
+      vendor: "Arcade",
+      url: `arcade://M${suite}`,
+      provenance: "arcade",
+      authScheme: "OAUTH2",
+      accountMode: "personal",
+    },
   ]);
   await database.insert(mcpTools).values(
-    [personalApp, sharedApp, otherApp].map((serverId) => ({
+    [personalApp, sharedApp, otherApp, movedApp].map((serverId) => ({
       serverId,
       name: ACTION,
     })),
@@ -185,7 +195,9 @@ beforeAll(async () => {
 afterAll(async () => {
   await database
     .delete(mcpServers)
-    .where(inArray(mcpServers.id, [personalApp, sharedApp, otherApp]));
+    .where(
+      inArray(mcpServers.id, [personalApp, sharedApp, otherApp, movedApp]),
+    );
   if (actors.length) {
     await database
       .delete(pendingAuthorizations)
@@ -299,5 +311,85 @@ describe("DELETE /servers/:id/authorize", () => {
     expect(after?.authId).toBe("ar_newer");
     expect(after?.completedAt).toBeNull();
     expect(after?.outcome).toBeNull();
+  });
+
+  /*
+   * B5. CANCELLING IS AN OPERATION ON THE ATTEMPT, AND THE ATTEMPT OUTLIVES WHAT THE APP LOOKS
+   * LIKE. The route used to resolve the app FIRST and refuse on anything `brokeredAccountFor`
+   * refuses — while reading nothing off its success branch. So every way an app can stop
+   * resolving, with a live attempt still standing, was a person holding a pending authorization
+   * they could not retract: the attempt key is the actor ALONE, so that one row also refused them
+   * a new authorization on ANY app for the full fifteen minutes.
+   *
+   * A HARD `DELETE` OF THE SERVER ROW IS NOT ONE OF THOSE WAYS, and that is worth writing down
+   * rather than testing: `pending_authorizations.server_id` is `references(mcpServers.id,
+   * { onDelete: "cascade" })`, so `removeServer` takes the attempt with it and there is nothing
+   * left to cancel. The two below are reachable, and both by an administrator doing something
+   * ordinary.
+   */
+  test("an attempt on an app whose url no longer parses as brokered can still be cancelled", async () => {
+    const actor = person("moved");
+    const app = appAs("user", actor);
+    expect((await authorize(app, movedApp)).status).toBe(200);
+    expect(await attemptsFor(actor)).toHaveLength(1);
+
+    // The app is re-pointed at an ordinary MCP endpoint: `appOfUrl` now answers null for it.
+    await database
+      .update(mcpServers)
+      .set({ url: `https://moved-${suite}.example/mcp` })
+      .where(eq(mcpServers.id, movedApp));
+    try {
+      const response = await cancel(app, movedApp);
+      expect(response.status).toBeLessThan(300);
+      expect(await response.json()).toEqual({ cancelled: true });
+      expect(await attemptsFor(actor)).toEqual([]);
+    } finally {
+      await database
+        .update(mcpServers)
+        .set({ url: `arcade://M${suite}` })
+        .where(eq(mcpServers.id, movedApp));
+    }
+  });
+
+  test("an administrator demoted mid-consent can still cancel their own Shared-app attempt", async () => {
+    const actor = person("demoted");
+    expect((await authorize(appAs("admin", actor), sharedApp)).status).toBe(
+      200,
+    );
+    const [before] = await attemptsFor(actor);
+    expect(before?.serverId).toBe(sharedApp);
+    expect(before?.vendorUserId).toBe(SHARED_VENDOR_ID);
+
+    // The same person, no longer an administrator, with their own consent still in flight.
+    const response = await cancel(appAs("user", actor), sharedApp);
+    expect(response.status).toBeLessThan(300);
+    expect(await response.json()).toEqual({ cancelled: true });
+    expect(await attemptsFor(actor)).toEqual([]);
+  });
+
+  /*
+   * AND THE REFUSALS ARE NOT TRADED AWAY FOR THAT. With nothing of this actor's to cancel, a
+   * DELETE aimed at a row that is not brokered is still told so, rather than flattened into a
+   * `{ cancelled: false }` that claims the request was understood.
+   */
+  test("with no attempt of this actor's, a non-brokered app is still refused in so many words", async () => {
+    const actor = person("refused");
+    const app = appAs("user", actor);
+    await database
+      .update(mcpServers)
+      .set({ url: `https://refused-${suite}.example/mcp` })
+      .where(eq(mcpServers.id, movedApp));
+    try {
+      const response = await cancel(app, movedApp);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        error: "That app is not reached through a broker.",
+      });
+    } finally {
+      await database
+        .update(mcpServers)
+        .set({ url: `arcade://M${suite}` })
+        .where(eq(mcpServers.id, movedApp));
+    }
   });
 });
