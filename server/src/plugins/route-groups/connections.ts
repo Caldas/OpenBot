@@ -1566,10 +1566,31 @@ export function mountConnectionRoutes({
           error: reasonWithoutStatement(error),
         }),
       );
+      /*
+       * L4a-b: THE SENTENCE NAMED A STEP THIS BRANCH MAKES IMPOSSIBLE.
+       *
+       * It used to end "finish it if you were sent to a consent screen" — and the line logged
+       * immediately above says, of the very same branch, that NOBODY WAS SENT TO ONE. Both cannot
+       * be true, and the log is the one that is: this branch is reached when the MINT did not
+       * answer clearly, so there is no authorization url to hand back and the browser never left
+       * this page. An instruction nobody can follow is worse than no instruction — somebody goes
+       * looking through their tabs and their mail for a consent screen that was never opened, and
+       * concludes they lost it.
+       *
+       * WHAT REPLACES IT IS WHAT THEY CAN ACTUALLY DO, in the register the two sibling refusals on
+       * this route already use for the same predicament (the uncertain-mint and unrecorded-mint
+       * sentences below): nothing opened, nothing connected, whether a flow started at the vendor
+       * is unknown, one that did cannot be finished from here, and the wait is bounded and named.
+       *
+       * THE WAIT IS NOT A SUGGESTION AND IS NOT DROPPED. The attempt is deliberately left standing
+       * precisely because a flow MAY be live, so "cancel it and start again" would be the wrong
+       * advice however much friendlier it reads — it is the hold that keeps a second authorization
+       * from being minted beside a first nobody can see.
+       */
       return context.json(
         {
           error:
-            "The app's vendor did not answer clearly, and the authorization may or may not have started. Wait for it to expire, or finish it if you were sent to a consent screen, before starting another.",
+            "The app's vendor did not answer clearly, so nobody was sent to a consent screen and nothing was connected. Whether an authorization started at the vendor is unknown, and one that did cannot be finished from here. This attempt expires within fifteen minutes, and starting over works after that.",
         },
         502,
       );

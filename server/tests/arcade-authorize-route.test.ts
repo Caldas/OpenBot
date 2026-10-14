@@ -541,6 +541,23 @@ describe("POST /servers/:id/authorize", () => {
       expect(line).not.toContain("bearer-capability");
       expect(line).not.toContain(actor);
       expect(Object.keys(logged)).not.toContain("authorizationId");
+
+      /*
+       * L4a-b: AND THE SENTENCE THE PERSON GETS NAMES ONLY STEPS THIS BRANCH CAN DELIVER.
+       *
+       * It used to end "finish it if you were sent to a consent screen", while the line asserted
+       * just above says of the same branch that nobody was sent to one — and the line is the one
+       * that is true, because reaching here means the mint never answered a url. Somebody acting on
+       * the old sentence searched their tabs for a consent screen that was never opened.
+       *
+       * ASSERTED AS THE ABSENCE OF THE INSTRUCTION, not as the presence of a replacement: the words
+       * may be reworded, and what must not come back is a step nobody can take. The bounded wait is
+       * checked too, because it is the one thing here that IS actionable.
+       */
+      const { error: said502 } = (await response.json()) as { error: string };
+      expect(said502).not.toContain("consent screen, before starting another");
+      expect(said502).toContain("nobody was sent to a consent screen");
+      expect(said502).toContain("expires within fifteen minutes");
     });
 
     test("the missing-id mint is uncertain and leaves the same line, carrying the adapter's sentence", async () => {
