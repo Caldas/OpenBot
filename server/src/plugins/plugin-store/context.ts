@@ -1785,6 +1785,78 @@ export function createStoreContext(options: PluginStoreOptions) {
   }
 
   /**
+   * WHETHER A CONSENT REVOKE AT THE VENDOR REACHES THIS APP AT ALL — the one spelling of rule 1,
+   * which every judgement below about a KEY app asks rather than comparing a kind itself.
+   *
+   * A key is a credential of this deployment's own; no withdrawal at the vendor ends it. So a key
+   * app is never an app a revoke ENDED (its row stands, and no trail row names an ender for it),
+   * and never one whose trail row may say a vendor was ASKED to withdraw it. `!== "key"` keeps the
+   * reading every caller already made: an app whose scheme cannot be read, or that has no account,
+   * is reported as reached, which is the claim that cannot be too weak (see
+   * {@link disconnectBrokered}'s roster).
+   */
+  async function consentRevokeReaches(app: string): Promise<boolean> {
+    return (await brokeredAppKind(app)) !== "key";
+  }
+
+  /**
+   * WHAT THE TRAIL SAYS WAS ASKED OF THE VENDOR ABOUT THE APP AN ACT WAS ABOUT — the one spelling
+   * of `vendorRevocationRequested` that is computed rather than constant.
+   *
+   * `answered` is the caller's own reading of what the vendor said: {@link disconnectBrokered}'s
+   * `ended`, {@link removeServer}'s per-account answer, {@link retireConnectionsFor}'s own answer
+   * or-ed with "a sibling's ask ended it". For a KEY app that reading is not the claim — whatever
+   * the vendor answered, it did not withdraw a key it never held — so the field is `false`. Three
+   * writers decided that three ways (round 2, A5c and L5-a): only the first said `false`.
+   *
+   * IN TWO STEPS, READ THEN ANSWER: the app's kind is read when this is called and the claim is
+   * made when the vendor's answer is handed to what it returns. Every writer reads the kind BEFORE
+   * its revoke goes out — so a failed read leaves the act before anything was asked of the vendor —
+   * and that order is kept rather than moved behind the revoke for the helper's convenience.
+   *
+   * Answers the payload fragment rather than the boolean so that no writer computes the field
+   * itself: a writer spreads this, and the guard in `sole-definition.test.ts` holds that to one
+   * home.
+   */
+  async function vendorRevocationClaim(
+    app: string,
+  ): Promise<(answered: boolean) => { vendorRevocationRequested: boolean }> {
+    const reaches = await consentRevokeReaches(app);
+    return (answered) => ({ vendorRevocationRequested: reaches && answered });
+  }
+
+  /**
+   * WHICH OF A REVOKE'S SIBLINGS THAT REVOKE ENDED — rules 1 and 2 of {@link clearEndedSiblings},
+   * as a JUDGEMENT with no write attached, so that a caller who needs the answer without the delete
+   * asks the same question rather than walking the set itself.
+   *
+   * {@link clearEndedSiblings} deletes and files what this answers (and adds rule 3, which is about
+   * a row and so belongs to the delete). {@link retireConnectionsFor} needs only the answer: it has
+   * already revoked every app the person holds and deletes them as its own acts, and what it needs
+   * from the siblings is which of its rows to annotate with `endedWith`. It used to walk the set
+   * itself with rule 2 and without rule 1, and so filed a KEY app as ended by an OAuth sibling's
+   * revoke (round 2, A5b) — trail-only, which is why no audit of the rows caught it.
+   *
+   * Deduplicated, the asking app excluded, in {@link resolveSiblings}' order.
+   */
+  async function siblingsEndedBy(input: {
+    siblings: readonly string[];
+    /** The app whose revoke this is. Never in the answer — it has its own row. */
+    endedWith: string;
+    /** What that revoke ANSWERED. Rule 2. */
+    revoked: boolean;
+  }): Promise<string[]> {
+    if (!input.revoked) return [];
+    const ended: string[] = [];
+    for (const app of new Set(input.siblings)) {
+      if (app === input.endedWith) continue;
+      if (!(await consentRevokeReaches(app))) continue;
+      ended.push(app);
+    }
+    return ended;
+  }
+
+  /**
    * THE LOCAL ROWS ONE REVOKE'S CASCADE ENDS, AND THE THREE RULES THAT DECIDE WHICH — in ONE place,
    * because they were in two and the two disagreed about all three.
    *
@@ -1821,7 +1893,10 @@ export function createStoreContext(options: PluginStoreOptions) {
    * {@link disconnectBrokered}, {@link clearWithdrawnAccount} and {@link removeServer} — and all
    * three call this. {@link removeServer}'s loop was the oldest spelling and kept only 2 and 3 for
    * itself, deleting a KEY sibling's row on a removal; routing it here closed that (round 2, A5a).
-   * A fourth cascade belongs here too, not beside it.
+   * A fourth cascade belongs here too, not beside it. Rules 1 and 2 themselves are
+   * {@link siblingsEndedBy}'s, which this asks and which {@link retireConnectionsFor} asks for the
+   * one thing it needs without the delete — the `endedWith` it files — so the judgement about which
+   * siblings a revoke ended has one home whether or not a row is deleted on it (round 2, K5).
    *
    * `vendorRevocationRequested` IS TRUE ON EVERY ROW THIS WRITES AND IS NOT A GUESS: rule 2 says a
    * revoke answered true, and that ask ended the siblings with the app it named. `false` means "no
@@ -1852,11 +1927,10 @@ export function createStoreContext(options: PluginStoreOptions) {
      */
     reason: BrokeredDisconnectReason;
   }): Promise<string[]> {
-    if (!input.revoked) return [];
+    // Rules 1 and 2, and the dedupe, are {@link siblingsEndedBy}'s; rule 3 is the delete's.
+    const ended = await siblingsEndedBy(input);
     const cleared: string[] = [];
-    for (const app of new Set(input.siblings)) {
-      if (app === input.endedWith) continue;
-      if ((await brokeredAppKind(app)) === "key") continue;
+    for (const app of ended) {
       // `returning` because whether a row was here is the whole of rule 3, and a delete that
       // answered nothing would leave the two cases indistinguishable.
       const [deleted] = await database
@@ -1928,6 +2002,9 @@ export function createStoreContext(options: PluginStoreOptions) {
     brokerProvider,
     closeAuthorizationAttempt,
     resolveSiblings,
+    consentRevokeReaches,
+    vendorRevocationClaim,
+    siblingsEndedBy,
     clearEndedSiblings,
   };
 }

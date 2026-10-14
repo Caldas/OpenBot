@@ -70,6 +70,7 @@ export function serverMethods(context: StoreContext) {
     brokeredAppScheme,
     brokerProvider,
     resolveSiblings,
+    vendorRevocationClaim,
     clearEndedSiblings,
   } = context;
   return {
@@ -1202,7 +1203,12 @@ export function serverMethods(context: StoreContext) {
          * key has since been unset can still remove the app, and it could not have been calling it
          * either way — but nothing was asked of Composio and the row must not claim otherwise.
          */
-        const vendorRevocationRequested: boolean[] = [];
+        const revokeAnswers: boolean[] = [];
+        /*
+         * What the trail may CLAIM from those answers about this app, read before anything is
+         * revoked, as {@link disconnectBrokered} reads its own; see {@link vendorRevocationClaim}.
+         */
+        const claim = await vendorRevocationClaim(toolkit);
         /*
          * THE APPS EACH ACCOUNT'S REVOCATION ENDS BESIDES THIS ONE, read BEFORE anything is revoked
          * and through {@link resolveSiblings}, the one place that answers it. Where a connection is
@@ -1239,7 +1245,7 @@ export function serverMethods(context: StoreContext) {
               ? await resolveSiblings({ toolkit, account }, authProviders)
               : { siblings: [], unanswered: 0 },
           );
-          vendorRevocationRequested.push(
+          revokeAnswers.push(
             rowBroker ? await rowBroker.revoke({ account, toolkit }) : false,
           );
         }
@@ -1298,9 +1304,13 @@ export function serverMethods(context: StoreContext) {
                * outlives it somewhere else, so a constant here would be worse than none. It says
                * "requested" because that is the strongest thing the vendor's answer supports:
                * the upstream withdrawal runs as a background job nothing here can poll.
+               *
+               * AND NEVER FOR A KEY: the claim is {@link vendorRevocationClaim}'s, the one
+               * {@link disconnectBrokered} and {@link retireConnectionsFor} make, and for a key app
+               * it is `false` whatever the vendor answered. This row used to pass the raw answer
+               * through for a key (round 2, A5c).
                */
-              vendorRevocationRequested:
-                vendorRevocationRequested[index] ?? false,
+              ...claim(revokeAnswers[index] ?? false),
             },
           });
         }
@@ -1333,7 +1343,7 @@ export function serverMethods(context: StoreContext) {
             siblings,
             account,
             endedWith: toolkit,
-            revoked: vendorRevocationRequested[index] ?? false,
+            revoked: revokeAnswers[index] ?? false,
             unanswered,
             by,
             reason: "mcp_server_removed",

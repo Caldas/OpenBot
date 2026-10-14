@@ -428,3 +428,95 @@ describe("offboarding a person", () => {
     });
   });
 });
+
+/*
+ * WHAT THE TRAIL SAYS ABOUT A KEY APP, on the two acts that used to decide it for themselves (round
+ * 2, K5: A5b, A5c, L5-a). A key is a credential this deployment holds; no consent revoke at the
+ * vendor reaches it, so no `mcp.account_disconnected` row may say a vendor was asked to withdraw
+ * one — the reading `disconnectBrokered` already writes — nor that an OAuth sibling's revoke ended
+ * it. The ROWS were already right on both acts; these hold what the trail says about why.
+ */
+describe("the trail about a KEY app", () => {
+  /** A store over `revoke`, otherwise the file's own broker. */
+  const storeWith = (revoke: ConnectedAppBroker["revoke"]) =>
+    createPluginStore({
+      brokerProvider: "arcade",
+      database,
+      auditStore: createAuditStore(database),
+      credentials: {} as never,
+      encryptionKey: "x".repeat(44),
+      policy: () => ({ mode: "enforce" as const, deny: [], allow: ["true"] }),
+      broker: { ...broker, revoke },
+      deploymentId: "acme",
+      sharedUse: async () => ({ allowed: true }),
+    });
+  /** The one trail row for `app`, or a failure naming what is missing. */
+  async function onlyRowFor(app: string): Promise<Record<string, unknown>> {
+    const rows = await trailFor([app]);
+    if (rows.length !== 1 || !rows[0]) {
+      throw new Error(
+        `expected one trail row for ${app}, found ${rows.length}`,
+      );
+    }
+    return rows[0].payload;
+  }
+
+  test("offboarding: an OAuth sibling's revoke is not named as what ended a KEY app", async () => {
+    const t = run();
+    await server(t.gmail, "personal");
+    await server(t.calendar, "personal", "API_KEY");
+    await hold(t.gmail, t.person);
+    await hold(t.calendar, t.person);
+    // Arcade's shape: Gmail is asked first, ends the Google connection and answers true; the KEY
+    // app's own ask then finds nothing and answers false.
+    const ended = new Set<string>();
+    const arcadeStore = storeWith(async ({ account, toolkit }) => {
+      const connection = `${account.vendorUserId}:${providerOf(toolkit)}`;
+      if (ended.has(connection)) return false;
+      ended.add(connection);
+      return true;
+    });
+
+    await arcadeStore.retireConnectionsFor(t.person, "admin");
+
+    expect(await onlyRowFor(t.calendar)).toEqual({
+      actor: "admin",
+      server: t.calendar,
+      owner: t.person,
+      reason: "person_removed",
+      vendorRevocationRequested: false,
+    });
+  });
+
+  test("offboarding: a KEY app's own revoke answering true is not filed as a vendor withdrawal", async () => {
+    const t = run();
+    await server(t.calendar, "personal", "API_KEY");
+    await hold(t.calendar, t.person);
+
+    await storeWith(async () => true).retireConnectionsFor(t.person, "admin");
+
+    expect(await onlyRowFor(t.calendar)).toEqual({
+      actor: "admin",
+      server: t.calendar,
+      owner: t.person,
+      reason: "person_removed",
+      vendorRevocationRequested: false,
+    });
+  });
+
+  test("removing a KEY app: its own revoke answering true is not filed as a vendor withdrawal", async () => {
+    const t = run();
+    await server(t.calendar, "personal", "API_KEY");
+    await hold(t.calendar, t.person);
+
+    await storeWith(async () => true).removeServer(t.calendar, "admin");
+
+    expect(await onlyRowFor(t.calendar)).toEqual({
+      actor: "admin",
+      server: t.calendar,
+      owner: t.person,
+      reason: "mcp_server_removed",
+      vendorRevocationRequested: false,
+    });
+  });
+});
