@@ -255,7 +255,7 @@ server/tests/settings-instructions-routes.test.ts:314: error TS7006: Parameter '
 server/tests/skill-ownership.integration.test.ts:29: error TS2322: Type '{ readSecret: () => Promise<null>; }' is not assignable to type 'CredentialSecretReader & CredentialStore'.
 server/tests/skill-tools.integration.test.ts:35: error TS2322: Type '{ readSecret: () => Promise<null>; }' is not assignable to type 'CredentialSecretReader & CredentialStore'.
 server/tests/skill-uninstall-grants.integration.test.ts:26: error TS2322: Type '{ readSecret: () => Promise<null>; }' is not assignable to type 'CredentialSecretReader & CredentialStore'.
-server/tests/store-scheme-sites.test.ts:102: error TS2322: Type '{ readSecret: () => Promise<null>; create: () => Promise<never>; updateSecret: () => Promise<never>; revoke: () => Promise<never>; }' is not assignable to type 'CredentialSecretReader & CredentialStore'.
+server/tests/store-scheme-sites.test.ts:88: error TS2322: Type '{ readSecret: () => Promise<null>; create: () => Promise<never>; updateSecret: () => Promise<never>; revoke: () => Promise<never>; }' is not assignable to type 'CredentialSecretReader & CredentialStore'.
 server/tests/tenant-package.test.ts:1440: error TS2698: Spread types may only be created from object types.
 server/tests/tenant-package.test.ts:1518: error TS2698: Spread types may only be created from object types.
 server/tests/thread-routes.test.ts:22: error TS2769: No overload matches this call.
