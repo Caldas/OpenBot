@@ -103,4 +103,42 @@ describe("Arcade authProviderOf", () => {
       await createArcadeClient("never-dialled").broker.authProviderOf("Gmail"),
     ).toBeNull();
   });
+
+  /**
+   * AN UNREADABLE AUTHORIZATION BESIDE A READABLE ONE IS UNANSWERED, NOT THE READABLE ONE'S ID.
+   * The seam's caller (`store.ts`'s sibling resolver) counts `null` as unanswered and ends nothing
+   * for it; answering `google` here would let it end rows on a listing it never read whole.
+   */
+  test("answers null when another action's authorization could not be read", async () => {
+    stub(toolsProto(), "list", () =>
+      Promise.resolve({
+        items: [
+          toolUnder("Gmail", 1, "google"),
+          {
+            qualified_name: "Gmail.A2",
+            requirements: { authorization: "oauth2" },
+          },
+        ],
+      }),
+    );
+
+    expect(
+      await createArcadeClient("never-dialled").broker.authProviderOf("Gmail"),
+    ).toBeNull();
+  });
+
+  test("still answers the provider when another action has NO authorization at all", async () => {
+    stub(toolsProto(), "list", () =>
+      Promise.resolve({
+        items: [
+          toolUnder("Gmail", 1, "google"),
+          { qualified_name: "Gmail.A2", requirements: null },
+        ],
+      }),
+    );
+
+    expect(
+      await createArcadeClient("never-dialled").broker.authProviderOf("Gmail"),
+    ).toBe("google");
+  });
 });
