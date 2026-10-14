@@ -359,4 +359,80 @@ describe("failAuthorizationAttempt / markAuthorizationUnreconciled", () => {
     expect(attempt.outcome).toBe("unreconciled");
     expect(attempt.completedAt).not.toBeNull();
   });
+
+  /*
+   * THE CASE THE `(actor_id, auth_id)` MATCH DOES NOT EXCLUDE ON ITS OWN. A completed attempt is
+   * still holding the `ar_...` the failing leg matches on, so without `completed_at IS NULL` this
+   * close rewrote a person's SUCCESSFUL authorization as a failure — while the connection row and
+   * the `mcp.account_connected` entry written by that completion stood. The attempt and the trail
+   * then disagreed, and the attempt was the one that was wrong.
+   *
+   * Sequential rather than concurrent, deliberately, and it is not a weaker test: the failing leg
+   * is a LATE callback and the thing under test is the state of the committed row it arrives at,
+   * not a lock ordering. Concurrency is what `completeAuthorizationAttempt`'s own race test proves.
+   */
+  test("a late failure callback does NOT reopen an attempt that already completed", async () => {
+    const a = actor("late-fail");
+    const app = toolkit("late-fail");
+    await attemptWith(a, "ar_late_fail");
+
+    await store.completeAuthorizationAttempt({
+      actorId: a,
+      authId: "ar_late_fail",
+      toolkit: app,
+      account: account(a),
+      action: "Google.SendEmail",
+      scopes: ["gmail.send"],
+      authProvider: "google",
+    });
+    const completed = await attemptRow(a);
+    expect(completed.outcome).toBe("completed");
+
+    /*
+     * THE ROW IS ASSERTED BEFORE THE RETURN VALUE, so a regression here reads as the corruption it
+     * is rather than as a boolean that came back the wrong way. The boolean is checked too, below.
+     */
+    const closed = await store.failAuthorizationAttempt({
+      actorId: a,
+      authId: "ar_late_fail",
+    });
+
+    const after = await attemptRow(a);
+    expect(after.outcome).toBe("completed");
+    // NOT MERELY "still terminal": the timestamp must be the completion's own, because re-stamping
+    // it would move when this grant was obtained even where the verdict survived.
+    expect(after.completedAt).toEqual(completed.completedAt);
+    // The grant the attempt is the record OF is untouched, which is the half a reader checks next.
+    expect((await connectionsFor(app)).length).toBe(1);
+    expect((await connectedEventsFor(app)).length).toBe(1);
+    expect(closed).toBe(false);
+  });
+
+  /* The same rule among the three non-completion verdicts: the first one to settle the row wins. */
+  test("a second verdict does not overwrite the first one an attempt settled on", async () => {
+    const a = actor("settled");
+    await attemptWith(a, "ar_settled");
+
+    expect(
+      await store.failAuthorizationAttempt({
+        actorId: a,
+        authId: "ar_settled",
+      }),
+    ).toBe(true);
+    const failed = await attemptRow(a);
+
+    const withdrew = await store.markAuthorizationWithdrawn({
+      actorId: a,
+      authId: "ar_settled",
+    });
+    const unreconciled = await store.markAuthorizationUnreconciled({
+      actorId: a,
+      authId: "ar_settled",
+    });
+
+    const after = await attemptRow(a);
+    expect(after.outcome).toBe("failed");
+    expect(after.completedAt).toEqual(failed.completedAt);
+    expect([withdrew, unreconciled]).toEqual([false, false]);
+  });
 });

@@ -1716,9 +1716,35 @@ export function createPluginStore(options: PluginStoreOptions) {
         );
 
   /**
-   * The one statement behind `failAuthorizationAttempt` and `markAuthorizationUnreconciled`, so the
-   * two verdicts cannot drift into two row shapes. `completed_at` is truncated to milliseconds for
-   * the reason `claimAuthorizationAttempt` truncates `created_at`.
+   * The one statement behind `failAuthorizationAttempt`, `markAuthorizationUnreconciled` and
+   * `markAuthorizationWithdrawn`, so the three verdicts cannot drift into three row shapes.
+   * `completed_at` is truncated to milliseconds for the reason `claimAuthorizationAttempt`
+   * truncates `created_at`.
+   *
+   * CONDITIONAL ON `completed_at IS NULL`, EXACTLY AS THE COMPLETION ABOVE IS, BECAUSE A SETTLED
+   * ATTEMPT IS A RECORD AND NOT A DRAFT. Without that condition this UPDATE matched on
+   * `(actor_id, auth_id)` alone, and `(actor_id, auth_id)` does not stop naming a row when the row
+   * settles: a return leg that completed is still holding the `ar_...` a second leg will match on.
+   * So a slow or retried FAILURE callback arriving behind a SUCCESSFUL completion rewrote
+   * `outcome = 'completed'` as `outcome = 'failed'` and re-stamped `completed_at`, and the attempt
+   * then said the person's authorization failed while the grant was live at the vendor, the
+   * `brokered_connections` row was written and `mcp.account_connected` was on the trail. The trail
+   * and the attempt disagreed about what happened, and the attempt was the one that was wrong.
+   *
+   * THE OLD COMMENT HERE ARGUED THE ASYMMETRY WAS THE POINT, on the grounds that "a second one
+   * re-stamping the same verdict grants nothing to anybody". That is true of the case it imagined —
+   * `failed` over `failed` — and says nothing about the case that actually happens, which is a
+   * verdict over a DIFFERENT and already-final one. Completion is not the only write that must
+   * happen once; it is the only one that was treated that way.
+   *
+   * FIRST TERMINAL VERDICT WINS, AND A LATE ONE IS REFUSED RATHER THAN APPLIED. `false` now means
+   * one of three things — no attempt under that actor, an attempt holding a different `auth_id`,
+   * or an attempt that has already settled — and all three are "this call did not close anything",
+   * which is the only distinction a caller has ever acted on. Nothing is lost to the person on the
+   * losing leg: their own request still ends in the refusal redirect it would have ended in anyway.
+   * What this deployment cannot yet SAY is that two legs of one authorization disagreed; there is
+   * no audit event type for it and inventing one is wider than this change. Recording the true
+   * outcome is strictly better than recording the false one, which is what the alternative was.
    */
   const closeAuthorizationAttempt = async (
     input: { actorId: string; authId: string },
@@ -1734,6 +1760,7 @@ export function createPluginStore(options: PluginStoreOptions) {
         and(
           eq(pendingAuthorizations.actorId, input.actorId),
           eq(pendingAuthorizations.authId, input.authId),
+          isNull(pendingAuthorizations.completedAt),
         ),
       )
       .returning({ actorId: pendingAuthorizations.actorId });
@@ -6828,10 +6855,10 @@ export function createPluginStore(options: PluginStoreOptions) {
      * all it holds is the `ar_...`. An attempt with no `auth_id` matches nothing, which is correct:
      * no callback can be about an attempt that never minted one.
      *
-     * NOT CONDITIONAL ON `completed_at IS NULL`, unlike the completion above, and the asymmetry is
-     * the point. Completion is the write that must happen exactly once because it hands out access;
-     * these two record that it did not, and a second one re-stamping the same verdict grants
-     * nothing to anybody.
+     * CONDITIONAL ON `completed_at IS NULL`, exactly as the completion above is: an attempt that
+     * has settled — completed, failed, unreconciled or withdrawn — is not reopened by a later
+     * callback, and `false` says so. See {@link closeAuthorizationAttempt} for what the asymmetry
+     * used to be and what it cost.
      */
     async failAuthorizationAttempt(input: {
       actorId: string;
