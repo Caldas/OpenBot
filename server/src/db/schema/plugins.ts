@@ -500,6 +500,30 @@ export const pendingAuthorizations = pgTable(
       "pending_authorizations_outcome_check",
       sql`${table.outcome} IS NULL OR ${table.outcome} IN ('completed', 'failed', 'unreconciled', 'withdrawn')`,
     ),
+    /**
+     * An attempt has ended, or it has not: `completed_at` and `outcome` are set together or
+     * neither is.
+     *
+     * A ROW CARRYING AN `outcome` WITH `completed_at` STILL NULL IS A FINISHED ATTEMPT THAT EVERY
+     * READER READS AS A LIVE ONE. `claimAuthorizationAttempt` frees a held key only
+     * `WHERE created_at < now() - interval '15 minutes' OR completed_at IS NOT NULL`, and
+     * `authorizationAttemptFor` answers on `completed_at IS NULL` alone; neither consults
+     * `outcome`. So one such row locks its actor out of authorizing anything for the rest of the
+     * 15-minute TTL, with a verdict already recorded against it. The mirror shape — a
+     * `completed_at` with no `outcome` — is an attempt that ended with nothing saying how, and
+     * `outcome` is what every operator-facing reading of this table is of.
+     *
+     * HERE AND NOT IN THE APPLICATION, although both writers already set the pair in one
+     * statement. That those two agree today is precisely what makes the invariant invisible to the
+     * next writer, to a hand-run UPDATE and to a partial restore, and none of those three passes
+     * through the two functions that currently get it right. Written as a boolean equality rather
+     * than two `OR`-ed clauses because `(x IS NULL) = (y IS NULL)` is never itself NULL, so the
+     * CHECK can only pass or refuse — it has no third, silently-accepting verdict.
+     */
+    check(
+      "pending_authorizations_completion_check",
+      sql`(${table.completedAt} IS NULL) = (${table.outcome} IS NULL)`,
+    ),
   ],
 );
 
