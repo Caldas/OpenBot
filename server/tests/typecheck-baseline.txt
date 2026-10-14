@@ -46,7 +46,7 @@ server/tests/approvals-question-resume.integration.test.ts:250: error TS2741: Pr
 server/tests/approvals-question-resume.integration.test.ts:261: error TS2741: Property 'resumeWaiting' is missing in type 'Pick<ResponsibilityStore, "get" | "listRuns">' but required in type 'Pick<ResponsibilityStore, "get" | "listRuns" | "resumeWaiting">'.
 server/tests/approvals.test.ts:155: error TS2322: Type 'Promise<{ id: string; ownerUserId: string; botId: string; toolRef: string; effect: string; scope: string; revokedAt: Date | null; createdAt: Date; }[]>' is not assignable to type 'Promise<ApprovalRule[]>'.
 server/tests/approvals.test.ts:296: error TS2741: Property 'preconnect' is missing in type '() => Promise<Response>' but required in type 'typeof fetch'.
-server/tests/arcade-authorize-status-engine.test.ts:52: error TS2322: Type 'number | undefined' is not assignable to type 'number'.
+server/tests/arcade-authorize-status-engine.test.ts:58: error TS2322: Type 'number | undefined' is not assignable to type 'number'.
 server/tests/arcade-confirm-engine.test.ts:41: error TS2322: Type 'number | undefined' is not assignable to type 'number'.
 server/tests/arcade-connection-kind-engine.test.ts:85: error TS2322: Type 'number | undefined' is not assignable to type 'number'.
 server/tests/arcade-connection-kind-engine.test.ts:87: error TS2322: Type 'Engine | null' is not assignable to type 'Engine'.
@@ -81,7 +81,7 @@ server/tests/component-decision.test.ts:30: error TS2769: No overload matches th
 server/tests/composio-connection-kinds.test.ts:1908: error TS2769: No overload matches this call.
 server/tests/composio-connection-kinds.test.ts:1910: error TS7053: Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<"key" | "none" | "consent" | "unreadable", Cell>'.
 server/tests/composio-connection-kinds.test.ts:1924: error TS2769: No overload matches this call.
-server/tests/composio-connection-kinds.test.ts:1926: error TS7053: Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<"answered" | "unreachable" | "nothing" | "complained", Cell>'.
+server/tests/composio-connection-kinds.test.ts:1926: error TS7053: Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<"nothing" | "answered" | "unreachable" | "complained", Cell>'.
 server/tests/composio-connection-kinds.test.ts:327: error TS2769: No overload matches this call.
 server/tests/composio-connection-kinds.test.ts:481: error TS2769: No overload matches this call.
 server/tests/composio-connections.test.ts:4417: error TS2769: No overload matches this call.

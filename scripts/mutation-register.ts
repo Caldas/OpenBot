@@ -118,9 +118,12 @@ export const REGISTER: MutationEntry[] = [
   {
     id: "arcade-connection-status-unfolded",
     kind: "casing",
-    path: "server/src/plugins/arcade-adapter.ts",
-    find: "const status = textOf(row.connection_status)?.trim().toLowerCase();",
-    replace: "const status = textOf(row.connection_status);",
+    // K2: every vendor status is folded in ONE place, `vendorStatusOf` in the transport, so the
+    // per-site expressions this entry and the next once quoted are gone. Both re-quote the shared
+    // fold; each still names the suites that must see it for ITS reader.
+    path: "server/src/plugins/arcade.ts",
+    find: 'return { kind: "text", text: value.trim().toLowerCase() };',
+    replace: 'return { kind: "text", text: value };',
     tests: [
       "server/tests/arcade-adapter-connections.test.ts",
       "server/tests/arcade-adapter-status.test.ts",
@@ -130,12 +133,11 @@ export const REGISTER: MutationEntry[] = [
   {
     id: "arcade-mint-status-unfolded",
     kind: "casing",
-    path: "server/src/plugins/arcade-adapter.ts",
-    find: "const status = textOf(answer.status)?.trim().toLowerCase();",
-    replace: "const status = textOf(answer.status);",
+    path: "server/src/plugins/arcade.ts",
+    find: 'return { kind: "text", text: value.trim().toLowerCase() };',
+    replace: 'return { kind: "text", text: value };',
     tests: ["server/tests/arcade-authorize-status-engine.test.ts"],
-    why: "D6: deleting the fold on the mint's own status was reported to leave arcade-authorize-status-engine green, because :118 asserts only BrokerRefusalError, which the allowlist yields anyway.",
-    survivesUntil: "D6",
+    why: "D6: deleting the fold on the mint's own status was reported to leave arcade-authorize-status-engine green, because :118 asserts only BrokerRefusalError, which the allowlist yields anyway. K2 added padded/re-cased allowlist rows that are handed on only when folded.",
   },
   {
     id: "arcade-mint-not-started-dropped",
@@ -144,13 +146,13 @@ export const REGISTER: MutationEntry[] = [
     find: 'const MINT_AWAITS_CONSENT_STATUSES = new Set(["not_started", "pending"]);',
     replace: 'const MINT_AWAITS_CONSENT_STATUSES = new Set(["pending"]);',
     tests: ["server/tests/arcade-authorize-status-engine.test.ts"],
-    why: "D6: not_started, half the allowlist, is untested — a mint that has not begun would be refused as if it were finished.",
-    survivesUntil: "D6",
+    why: "D6: not_started, half the allowlist, is untested — a mint that has not begun would be refused as if it were finished. K2 added the not_started rows.",
   },
   {
     id: "arcade-unreadable-authorization-read-as-none",
     kind: "absent-vs-unreadable",
-    path: "server/src/plugins/arcade-adapter.ts",
+    // K2 moved `authorizationRequirementOf` into the transport, which both readers import.
+    path: "server/src/plugins/arcade.ts",
     anchor:
       'if (typeof authorization !== "object" || Array.isArray(authorization)) {',
     find: 'kind: "unreadable",',
@@ -161,6 +163,37 @@ export const REGISTER: MutationEntry[] = [
       "server/tests/arcade-adapter-connections.test.ts",
     ],
     why: "C2/C2b: an authorization block that cannot be read is not the vendor saying none — reading it as none silently drops the consent requirement.",
+  },
+  {
+    id: "arcade-unreadable-scopes-read-as-none",
+    kind: "absent-vs-unreadable",
+    path: "server/src/plugins/arcade.ts",
+    find: 'return { kind: "unreadable", field: "scopes", shape: shapeOf(scopes) };',
+    replace: 'return { kind: "read", scopes: [] };',
+    tests: ["server/tests/arcade-vendor-read-contract.test.ts"],
+    why: "K2 (C2c): an unreadable oauth2 scopes value read as [] is 'the connection is the grant' on the gate, the catalogue and the grants screen at once.",
+  },
+  {
+    id: "arcade-missing-token-status-read-as-held",
+    kind: "absent-vs-unreadable",
+    path: "server/src/plugins/arcade-adapter.ts",
+    find: 'if (tokenStatus.kind !== "text") {',
+    replace:
+      'if (tokenStatus.kind !== "text") return [{ action, state: "authorized", scopes, authorization: "held" }]; if (false) {',
+    tests: ["server/tests/arcade-vendor-read-contract.test.ts"],
+    why: "K2 (A7c): a token_status the listing did not give read as a held grant marked every action of a configured provider authorized for everyone.",
+  },
+  {
+    id: "arcade-unreadable-status-read-as-absent",
+    kind: "absent-vs-unreadable",
+    path: "server/src/plugins/arcade.ts",
+    find: 'return { kind: "unreadable", shape: shapeOf(value) };',
+    replace: 'return { kind: "absent" };',
+    tests: [
+      "server/tests/arcade-vendor-read-contract.test.ts",
+      "server/tests/arcade-authorize-status-engine.test.ts",
+    ],
+    why: "K2 (A7b, L2-b): a present-but-unreadable vendor status read as silence makes a connection live and hands a mint's bearer url on as a redirect.",
   },
   {
     id: "arcade-auth-providers-skip-unreadable",

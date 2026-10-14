@@ -11,10 +11,18 @@
  * that is present but not text reads as live (A7b), and the mint's allowlist test could not fail
  * on a missing `.trim().toLowerCase()` (D6). The tests never presented the shapes that show it.
  *
- * THE RULE THE TABLE STATES. Absent (`missing`, `undefined`, and `null` where the vendor uses it
- * for absence) reads as the field's documented default. A value that is PRESENT BUT NOT THE SHAPE
- * THE FIELD HAS is unreadable, and unreadable FAILS CLOSED: the grants screen says `unknown`, a
- * listing refuses, a connection is not live. Never authorized, never live, never `[]`-as-grant.
+ * THE RULE THE TABLE STATES — the one `vendorStatusOf` / `requiredScopesOf` /
+ * `authorizationRequirementOf` in `server/src/plugins/arcade.ts` implement. Absent (`missing`,
+ * `undefined`, `null`) reads as the field's documented default. A value that is PRESENT BUT NOT THE
+ * SHAPE THE FIELD HAS is unreadable, and unreadable FAILS CLOSED: the grants screen says `unknown`,
+ * a listing refuses, a connection is not live, a mint is refused. Never authorized, never live,
+ * never `[]`-as-grant, never a redirect.
+ *
+ * TWO READINGS THIS TABLE ONCE HELD APART, SETTLED (K2). `null` is ABSENCE on every field — C2's
+ * reading, which the vendor's own `requirements: null` evidences — so `connection_status: null` is
+ * live like a missing one, not "a value sent" (the A7b row that said otherwise is withdrawn). And a
+ * BLANK STRING is UNREADABLE on every decision field — C2b's reading of a blank `provider_id` — so
+ * `connection_status: ""` is not live (the source's "absent or empty reads as live" is withdrawn).
  *
  * EACH ROW IS DRIVEN THROUGH THE READER'S PUBLIC DOOR — `broker.grantsFor`, `broker.listApps`,
  * the transport's `listTools`, `broker.isConnected`, `broker.authorize` — over SDK prototype
@@ -452,14 +460,46 @@ const ROWS: Row[] = [
   ),
   // connectionIsLive — absent is live ("silence is not a no", documented in the source, and so is
   // an empty string); present but not text is the vendor saying something this cannot read.
+  // `null` is absence here as on every field, and a blank string is unreadable as on every
+  // decision field — see the header's "settled".
   ...sweep(
     CONNECTION_IS_LIVE,
     ["connection_status"],
-    { absent: "live", unreadable: "not-live", readableAsAbsent: ['""'] },
-    "present but not text is not 'no status'",
-  ).map((row) =>
-    // Explicit `null` is a value the vendor SENT on a connection row (A7b), not an omission.
-    row.shape === "null" ? { ...row, want: "not-live" } : row,
+    { absent: "live", unreadable: "not-live" },
+    "present but not text (or blank) is not 'no status'",
+  ),
+  // The mint's own `status` (L2-b): absent is silence and the url stands; anything present that is
+  // not status text is NOT handed to a browser as a live redirect.
+  ...sweep(
+    MINT_STATUS,
+    ["status"],
+    { absent: "consent-next", unreadable: "refuses" },
+    "a bearer url beside a status nobody could read is not a consent screen to send somebody to",
+  ),
+  // A scope list holding something that is not a scope is not the narrower list without it.
+  ...(
+    [
+      [GRANT_STATE_OF, "unknown"],
+      [CATALOGUE_SCOPES_OF, "refuses"],
+      [TRANSPORT_SCOPES_OF, "refuses"],
+    ] as const
+  ).flatMap(([reader, want]) =>
+    (
+      [
+        ['["repo",5]', ["repo", 5]],
+        ['["repo",""]', ["repo", ""]],
+        ['["repo",null]', ["repo", null]],
+      ] as const
+    ).map(
+      ([shape, value]): Row => ({
+        reader,
+        field: [...AUTH, "oauth2", "scopes"],
+        shape,
+        value,
+        want,
+        why: "a partly unreadable scope list read as the readable part is a narrower grant than the one described",
+      }),
+    ),
   ),
 
   // Readable controls: the reader still READS. Without these a reader that answered the
@@ -571,72 +611,12 @@ const ROWS: Row[] = [
 // THE DEBT. Delete an entry when its reader is fixed; never add one. See the header.
 // ---------------------------------------------------------------------------------------------
 
-const A7C = "A7c: missing/unreadable token_status falls back to status";
-const C2C = "C2c: unreadable oauth2/scopes collapses to []";
-const A7B = "A7b: present-but-not-text connection_status reads as live";
-const A7C_CASE = "A7c: grantStateOf skips .trim().toLowerCase()";
-
-const KNOWN_FAIL_OPEN: Record<string, { now: string; finding: string }> = {
-  // grantStateOf · token_status — every shape authorizes, off the provider's `status: "active"`.
-  ...Object.fromEntries(
-    SHAPES.map(({ label }) => [
-      `grantStateOf (arcade-adapter.ts) · requirements.authorization.token_status · ${label}`,
-      { now: "authorized [repo]", finding: A7C },
-    ]),
-  ),
-  ...Object.fromEntries(
-    ["{}", "false", "0", '""'].map((label) => [
-      `grantStateOf (arcade-adapter.ts) · requirements.authorization.oauth2.scopes · ${label}`,
-      { now: "authorized []", finding: C2C },
-    ]),
-  ),
-  ...Object.fromEntries(
-    ["[]", "false", "0", '""'].map((label) => [
-      `grantStateOf (arcade-adapter.ts) · requirements.authorization.oauth2 · ${label}`,
-      { now: "authorized []", finding: C2C },
-    ]),
-  ),
-  ...Object.fromEntries(
-    ["{}", "false", "0", '""'].map((label) => [
-      `scopesOf (arcade-adapter.ts) · requirements.authorization.oauth2.scopes · ${label}`,
-      { now: "unscoped", finding: C2C },
-    ]),
-  ),
-  ...Object.fromEntries(
-    ["[]", "false", "0", '""'].map((label) => [
-      `scopesOf (arcade-adapter.ts) · requirements.authorization.oauth2 · ${label}`,
-      { now: "unscoped", finding: C2C },
-    ]),
-  ),
-  ...Object.fromEntries(
-    ["[]", "false", "0", '""'].map((label) => [
-      `scopesOf (arcade.ts) · requirements.authorization · ${label}`,
-      { now: "scopes []", finding: C2C },
-    ]),
-  ),
-  ...Object.fromEntries(
-    ["[]", "false", "0", '""'].map((label) => [
-      `scopesOf (arcade.ts) · requirements.authorization.oauth2 · ${label}`,
-      { now: "scopes []", finding: C2C },
-    ]),
-  ),
-  ...Object.fromEntries(
-    ["{}", "false", "0", '""'].map((label) => [
-      `scopesOf (arcade.ts) · requirements.authorization.oauth2.scopes · ${label}`,
-      { now: "scopes []", finding: C2C },
-    ]),
-  ),
-  ...Object.fromEntries(
-    ["null", "{}", "false", "0", "[]"].map((label) => [
-      `connectionIsLive (arcade-adapter.ts) · connection_status · ${label}`,
-      { now: "live", finding: A7B },
-    ]),
-  ),
-  [`grantStateOf (arcade-adapter.ts) · requirements.authorization.token_status · ${BESIDE_INACTIVE}`]:
-    { now: "needs-consent [repo]", finding: A7C_CASE },
-  'grantStateOf (arcade-adapter.ts) · requirements.authorization.token_status · "NOT_STARTED"':
-    { now: "unknown", finding: A7C_CASE },
-};
+/**
+ * EMPTY SINCE K2: the 43 entries L2 recorded (A7c ×10, C2c ×28, A7b ×5) were paid by giving every
+ * reader the one reading in `server/src/plugins/arcade.ts`. An entry added here is a reader that
+ * fails open written after that, which is what this gate exists to say.
+ */
+const KNOWN_FAIL_OPEN: Record<string, { now: string; finding: string }> = {};
 
 // ---------------------------------------------------------------------------------------------
 // The checks.

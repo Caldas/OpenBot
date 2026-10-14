@@ -3,7 +3,11 @@ import {
   type ArcadeActions,
   type ArcadeFailure,
   ArcadeFailureError,
+  authorizationRequirementOf,
   classify,
+  requiredScopesOf,
+  shapeOf,
+  vendorStatusOf,
 } from "./arcade";
 import {
   type BrokerApp,
@@ -429,85 +433,22 @@ function isClassified(metadata: unknown): boolean {
   return behavior !== null && flagOf(behavior.destructive, false) === true;
 }
 
-/** The oauth2 scopes one listed action asks for, by the path `grantStateOf` reads them on. */
-function scopesOf(item: unknown): string[] {
-  const authorization = record(record(item)?.requirements)?.authorization;
-  const scopes = record(authorization)?.oauth2;
-  const listed = record(scopes)?.scopes;
-  return Array.isArray(listed)
-    ? listed.filter((s): s is string => typeof s === "string")
-    : [];
-}
-
 /**
- * WHAT ARRIVED WHERE A SHAPE BELONGED, named without quoting it.
+ * The oauth2 scopes one listed action asks for, for the catalogue's counts — read through
+ * {@link requiredScopesOf}, the one reading `grantStateOf` and the transport's listing share.
  *
- * A listing row carries whatever the vendor chose to put on it, and a refusal from here is read off
- * an admin page, so the SHAPE is the part that is both safe to say and the part that helps —
- * `sent` in `composio-adapter.ts` says this at length and this is the same judgement, kept local
- * because that file is the other vendor's door and neither imports the other.
+ * AN UNREADABLE SCOPES BLOCK REFUSES, as {@link requiresAuthorization} refuses an unreadable
+ * authorization block, and for its reason: `[]` here files the action as unscoped — "the connection
+ * itself is the grant" — so a block this deployment could not read would be counted as the vendor
+ * saying no separate permission exists. The SHAPE (`authorizationRequirementOf`, `shapeOf`) lives in
+ * `./arcade` because the transport's own listing reads the same block for the scopes the gate checks.
  */
-function shapeOf(value: unknown): string {
-  if (Array.isArray(value)) return "a list";
-  // `typeof null` IS `"object"`, so the bare template would write "a object" — the wrong grammar
-  // and, worse, the wrong fact: a hole is not a shape this deployment read and could not use, it
-  // is the absence of one. The callers that pass a present-but-unreadable field guard both of
-  // these before asking; `connectionsFor`'s unreadable ROW is the one that can carry a `null`.
-  if (value === null || value === undefined) return "nothing";
-  return `a ${typeof value}`;
-}
-
-/**
- * What one listed action's `requirements.authorization` SAYS, read once for every caller that asks.
- *
- * THE ONE READING OF THIS FIELD'S ABSENCE. Two readers once reached opposite answers on the same
- * row: {@link requiresAuthorization} read a missing block as "needs nothing" and filed the app as
- * `no-auth`, while {@link grantStateOf} read the same silence as "could not be read" and drew every
- * action of that app as a broker outage on the grants screen, forever. The vendor's own listing
- * settles which is right — `Apollo` publishes NO authorization block and a deployment secret
- * instead, verbatim in `fixtures/arcade-catalogue.json` — so `null` and an absent field are
- * `none`, here and therefore everywhere.
- *
- * A PRESENT FIELD THIS DEPLOYMENT CANNOT READ IS NEITHER ANSWER. It is `unreadable`, with WHICH
- * field and the shape that arrived there, and each caller decides what an unreadable row costs it:
- * the catalogue refuses, the grants screen says `unknown`.
- */
-type AuthorizationRequirement =
-  | { kind: "none" }
-  | {
-      kind: "unreadable";
-      field: "requirements" | "authorization";
-      shape: string;
-    }
-  | { kind: "required"; authorization: Record<string, unknown> };
-
-function authorizationRequirementOf(item: unknown): AuthorizationRequirement {
-  const requirements = record(item)?.requirements;
-  if (requirements === undefined || requirements === null) {
-    return { kind: "none" };
-  }
-  if (typeof requirements !== "object" || Array.isArray(requirements)) {
-    return {
-      kind: "unreadable",
-      field: "requirements",
-      shape: shapeOf(requirements),
-    };
-  }
-  const authorization = (requirements as Record<string, unknown>).authorization;
-  if (authorization === undefined || authorization === null) {
-    return { kind: "none" };
-  }
-  if (typeof authorization !== "object" || Array.isArray(authorization)) {
-    return {
-      kind: "unreadable",
-      field: "authorization",
-      shape: shapeOf(authorization),
-    };
-  }
-  return {
-    kind: "required",
-    authorization: authorization as Record<string, unknown>,
-  };
+function scopesOf(item: unknown, toolkit: string): string[] {
+  const read = requiredScopesOf(item);
+  if (read.kind === "read") return read.scopes;
+  throw new BrokerRefusalError(
+    `Arcade sent ${read.shape} where the ${read.field === "requirements" || read.field === "authorization" ? read.field : `oauth2 ${read.field}`} of one of ${toolkit}'s actions belongs, and that is what says which permissions connecting ${toolkit} asks for. A shape this deployment cannot read is not "no separate permission", so the catalogue stops here rather than count it as one. That is a change in what Arcade answers rather than a setting an operator can correct, so upgrading this deployment's @arcadeai/arcadejs is what fixes it.`,
+  );
 }
 
 /**
@@ -636,10 +577,11 @@ async function listApps(client: Arcade): Promise<BrokerApp[]> {
     const name = textOf(toolkit?.name);
     if (!name) continue;
     const classified = isClassified(record(item)?.metadata);
-    const scopes = scopesOf(item);
     // READ OFF THIS ACTION, never written down for the catalogue; see {@link requiresAuthorization}.
-    // Asked AFTER the name, so a refusal can say which app it is about.
+    // Asked AFTER the name, so a refusal can say which app it is about, and BEFORE the scopes, so an
+    // unreadable authorization block is refused in that function's words rather than the scopes'.
     const authorizes = requiresAuthorization(item, name);
+    const scopes = scopesOf(item, name);
     const standing =
       counts.get(name) ??
       ({
@@ -940,6 +882,19 @@ const LIVE_CONNECTION_STATUS = "active";
 const MINT_AWAITS_CONSENT_STATUSES = new Set(["not_started", "pending"]);
 
 /**
+ * The listing's `token_status` spellings under which this account holds no usable token and a
+ * consent is what would give it one. `completed` is the held grant; anything else is `unknown`.
+ * Kept apart from {@link MINT_AWAITS_CONSENT_STATUSES} for the reason that set's docblock gives,
+ * even where the spellings overlap: `failed` belongs here (a failed token is one to consent again
+ * for) and not there (a failed MINT is not a consent screen to send somebody to).
+ */
+const TOKEN_AWAITS_CONSENT_STATUSES = new Set([
+  "not_started",
+  "pending",
+  "failed",
+]);
+
+/**
  * Whether a connection row is one somebody can actually USE, read off the row's OWN `connection_status`.
  *
  * THE ROW'S EXISTENCE IS NOT THE ANSWER, WHICH IS WHAT THIS IS FOR. A user-connection row carries
@@ -949,13 +904,21 @@ const MINT_AWAITS_CONSENT_STATUSES = new Set(["not_started", "pending"]);
  * reporting as expired, revoked at the provider, pending or failed. Nothing then goes wrong until a
  * tool call fails, far from the screen that said Connected, with no way back but guessing.
  *
- * SILENCE IS NOT A NO. An ABSENT or empty status reads as live, deliberately: the field is OPTIONAL
- * on the wire (`connection_status?: string`), so a pessimistic reading would answer "not connected"
- * for every real connection against any engine that omits it — `isConnected` false, `accountName`
- * null and `revoke` false WITHOUT SPENDING A DELETE, which is precisely the live defect this seam
+ * SILENCE IS NOT A NO. An ABSENT status — the key missing, `undefined` or `null` — reads as live,
+ * deliberately: the field is OPTIONAL on the wire (`connection_status?: string`), so a pessimistic
+ * reading would answer "not connected" for every real connection against any engine that omits it
+ * — `isConnected` false and `accountName` null — which is precisely the live defect this seam
  * already suffered once when it compared a provider TYPE to a provider INSTANCE. The rule is
  * therefore: the vendor said something other than live → not live; the vendor said nothing → the
  * existence of the row is all the evidence there is, and it stands.
+ *
+ * BUT A STATUS THAT IS PRESENT AND CANNOT BE READ IS NOT SILENCE. `{}`, `false`, `0`, a list, or a
+ * BLANK string is the vendor saying SOMETHING about this connection in a shape this deployment does
+ * not read — and "live" is the one answer that would act on it. It reads as not live, by
+ * {@link vendorStatusOf}'s rule: a blank string on a field whose value is a decision is unreadable,
+ * the judgement `authProvidersNamedBy` already makes of a blank `provider_id`. (This file once said
+ * "absent or empty reads as live"; the empty half is withdrawn, so that one rule — absent is
+ * `undefined`/`null`, blank is unreadable — holds on every vendor authorization field.)
  *
  * FOLDED AND TRIMMED, Amendment 16's client-side fold, for the reason every other comparison in
  * this file is: a case the vendor changes must not change an answer about somebody's account.
@@ -966,9 +929,9 @@ const MINT_AWAITS_CONSENT_STATUSES = new Set(["not_started", "pending"]);
  * POSITIVE reads — `isConnected`, `accountName` — ask this question.
  */
 function connectionIsLive(row: ConnectionRow): boolean {
-  const status = textOf(row.connection_status)?.trim().toLowerCase();
-  if (status === undefined || status === "") return true;
-  return status === LIVE_CONNECTION_STATUS;
+  const status = vendorStatusOf(row.connection_status);
+  if (status.kind === "absent") return true;
+  return status.kind === "text" && status.text === LIVE_CONNECTION_STATUS;
 }
 
 /**
@@ -1092,22 +1055,48 @@ function grantStateOf(item: unknown): GrantState[] {
       },
     ];
   }
-  const { authorization } = read;
-  const oauth2 = record(authorization.oauth2)?.scopes;
-  const scopes = Array.isArray(oauth2)
-    ? oauth2.filter((s): s is string => typeof s === "string")
-    : [];
-  const tokenStatus = textOf(authorization.token_status);
-  const status = textOf(authorization.status);
-  if (tokenStatus === "completed" || (!tokenStatus && status === "active")) {
+  // THE SCOPES BY THE ONE READING, see {@link requiredScopesOf}: an unreadable `oauth2` or
+  // `scopes` is `unknown`, never `[]` — `authorized []` is "the connection is the whole grant",
+  // which is an answer about this account the listing did not give.
+  const scopesRead = requiredScopesOf(item);
+  if (scopesRead.kind === "unreadable") {
+    return [
+      {
+        action,
+        state: "unknown",
+        reason: `Arcade listed the permissions this action needs as ${scopesRead.shape}, so what this account holds could not be read.`,
+      },
+    ];
+  }
+  const { scopes } = scopesRead;
+  /*
+   * `token_status` IS THE WHOLE OF WHAT THIS ACCOUNT HOLDS, AND `status` IS NOT READ HERE AT ALL.
+   * The two sit side by side and answer different questions: `status` (`active`/`inactive`, with a
+   * `status_reason` such as "Provider not found" in `fixtures/arcade-catalogue.json`) is the AUTH
+   * PROVIDER's standing at this deployment, and is the same for everybody; `token_status` is this
+   * account's token. Reading `status: "active"` as a grant when `token_status` was missing marked
+   * EVERY action of a configured provider as held by everyone the listing was asked about (A7c), and
+   * reading `inactive` as "go and consent" sends somebody to a consent screen for a provider that
+   * is not there. So an absent or unreadable `token_status` is `unknown`, with the reason, and the
+   * text is FOLDED AND TRIMMED by {@link vendorStatusOf} as every other vendor status is.
+   */
+  const tokenStatus = vendorStatusOf(read.authorization.token_status);
+  if (tokenStatus.kind !== "text") {
+    return [
+      {
+        action,
+        state: "unknown",
+        reason:
+          tokenStatus.kind === "absent"
+            ? "Arcade's listing did not say whether this account holds a token for this action."
+            : `Arcade's listing gave this account's token status for this action as ${tokenStatus.shape}, so whether it is held could not be read.`,
+      },
+    ];
+  }
+  if (tokenStatus.text === "completed") {
     return [{ action, state: "authorized", scopes, authorization: "held" }];
   }
-  if (
-    tokenStatus === "not_started" ||
-    tokenStatus === "pending" ||
-    tokenStatus === "failed" ||
-    status === "inactive"
-  ) {
+  if (TOKEN_AWAITS_CONSENT_STATUSES.has(tokenStatus.text)) {
     return [{ action, state: "needs-consent", scopes }];
   }
   return [
@@ -1115,7 +1104,7 @@ function grantStateOf(item: unknown): GrantState[] {
       action,
       state: "unknown",
       reason:
-        "Arcade's listing gave this action's authorization neither a status nor a token status.",
+        "Arcade's listing gave this account's token status for this action in a spelling this deployment does not read.",
     },
   ];
 }
@@ -1324,10 +1313,7 @@ async function authProvidersNamedBy(
       unreadable ??= {
         action,
         field: "provider_id",
-        shape:
-          typeof providerId === "string"
-            ? "a blank string"
-            : shapeOf(providerId),
+        shape: shapeOf(providerId),
       };
   }
   return { named, unreadable };
@@ -1477,9 +1463,13 @@ export function createArcadeClient(apiKey: string): {
       // spelling goes on sending a browser to it, which is the defect itself.
       //
       // SILENCE IS NOT A NO, as it is not in {@link connectionIsLive}: `status` is OPTIONAL on the
-      // wire, so an absent or blank field leaves the url and the id as the whole of the evidence
-      // and they stand. FOLDED AND TRIMMED for this file's standing reason: a case the vendor
-      // changes must not change what somebody is told about their own account.
+      // wire, so an ABSENT field (missing, `undefined`, `null`) leaves the url and the id as the
+      // whole of the evidence and they stand. A status that is PRESENT AND UNREADABLE — `{}`,
+      // `false`, a number, a blank string — is not silence: the vendor said something about this
+      // authorization and this deployment cannot tell what, so the bearer url beside it is NOT
+      // handed on as a live redirect. {@link vendorStatusOf} is the one reading of both, and it
+      // FOLDS AND TRIMS the text for this file's standing reason: a case the vendor changes must not
+      // change what somebody is told about their own account.
       //
       // A `BrokerRefusalError` AND NOT A BARE `Error`, which is the difference between being told
       // and being locked out. The mint route keys its three outcomes on what was thrown: an
@@ -1487,7 +1477,13 @@ export function createArcadeClient(apiKey: string): {
       // again at once, with this sentence shown; a bare `Error` normalizes to `null` and is read as
       // "the mint may be live", leaving the attempt standing for its fifteen-minute TTL. Nothing
       // IS live here — the vendor answered, and said this is not a consent to walk through.
-      const status = textOf(answer.status)?.trim().toLowerCase();
+      const read = vendorStatusOf(answer.status);
+      if (read.kind === "unreadable") {
+        throw new BrokerRefusalError(
+          `Arcade answered this account's authorization for ${action} with ${read.shape} where its status belongs, so whether a consent screen is the next step could not be read and nobody was sent anywhere. Press Authorize again to start a fresh one.`,
+        );
+      }
+      const status = read.kind === "text" ? read.text : undefined;
       if (status !== undefined && !MINT_AWAITS_CONSENT_STATUSES.has(status)) {
         throw new BrokerRefusalError(
           status === "completed"
@@ -1595,8 +1591,11 @@ export function createArcadeClient(apiKey: string): {
           ),
         );
         const scopes = answer.scopes;
+        // THE ONE STATUS READING ({@link vendorStatusOf}): folded and trimmed, and an absent or
+        // unreadable status is `"unknown"`, which the return leg refuses as not finished.
+        const settled = vendorStatusOf(answer.status);
         return {
-          status: textOf(answer.status) ?? "unknown",
+          status: settled.kind === "text" ? settled.text : "unknown",
           userId: textOf(answer.user_id) ?? null,
           scopes: Array.isArray(scopes)
             ? scopes.filter((s): s is string => typeof s === "string")
