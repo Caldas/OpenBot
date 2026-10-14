@@ -457,3 +457,37 @@ describe("a migrator racing another migrator with a different journal", () => {
     expect(pausesExercised).toBeGreaterThanOrEqual(4);
   }, 120_000);
 });
+
+describe("a database whose migrations table holds a NULL created_at", () => {
+  test("is refused, rather than migrated from the start again", async () => {
+    /*
+     * drizzle reads `order by created_at desc limit 1`; Postgres sorts NULLs first, so the planted
+     * row is the mark, `Number(null)` is 0, and the unguarded migrator re-runs `0000_first` and dies
+     * on `relation "first" already exists`. The guard must pick the same row and refuse first.
+     */
+    const url = await throwawayDatabase();
+    const client = postgres(url, { max: 1, onnotice: () => {} });
+    try {
+      const folder = await folderOf([first, asShipped]);
+      await applyMigrations(client, folder);
+      await client`
+        insert into drizzle.__drizzle_migrations (hash, created_at)
+        values ('hand-written', null)
+      `;
+
+      const refusal = await applyMigrations(client, folder).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(refusal).toBeInstanceOf(MigrationsOutOfReachError);
+      expect((refusal as Error).message).toContain(
+        "1 applied row has a NULL created_at",
+      );
+      expect((refusal as Error).message).toContain(
+        "0000_first (stamped 1000000)",
+      );
+    } finally {
+      await client.end({ timeout: 5 });
+    }
+  });
+});

@@ -59,7 +59,13 @@ async function appliedMigrations(
   `;
   return rows.map((row) => ({
     hash: row.hash,
-    createdAt: Number(row.created_at ?? 0),
+    /*
+     * A NULL `created_at` is CARRIED, never coerced. `Number(null)` is 0, and 0 is a legitimate
+     * stamp — so coercing here would hand `migratorHighWaterMark` a row indistinguishable from an
+     * early migration and the guard would pass on exactly the database it exists to refuse. The
+     * column is a bare `bigint` drizzle leaves nullable; see `./migration-reach`.
+     */
+    createdAt: row.created_at === null ? null : Number(row.created_at),
   }));
 }
 
