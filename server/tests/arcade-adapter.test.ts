@@ -69,29 +69,36 @@ describe("createArcadeClient", () => {
   });
 
   test("listApps counts actions across the FULL paged listing", async () => {
+    // Pages of 1000 — the directory's page size since the "Browse Arcade" deadline fix (see
+    // `DIRECTORY_PAGE_SIZE`); this pinned [0, 100, 200] at the old size of 100. Pages are served BY
+    // OFFSET, not by call order, because pages two and three are now asked for concurrently.
     const pages: [string, number][][] = [
-      [["GithubApi", 100]],
-      [["GithubApi", 100]],
+      [["GithubApi", 1000]],
+      [["GithubApi", 1000]],
       [
-        ["GithubApi", 40],
-        ["Github", 10],
+        ["GithubApi", 400],
+        ["Github", 100],
       ],
     ];
-    const asked: number[] = [];
+    const asked: { limit: number; offset: number }[] = [];
     stub(toolsProto(), "list", (...args: unknown[]) => {
-      const q = args[0] as { offset: number; toolkit?: string };
-      asked.push(q.offset);
-      const page = pages[asked.length - 1] ?? [];
+      const q = args[0] as { limit: number; offset: number; toolkit?: string };
+      asked.push({ limit: q.limit, offset: q.offset });
+      const page = pages[q.offset / 1000] ?? [];
       const items = page.flatMap(([tk, n]) =>
         Array.from({ length: n }, (_, i) => toolOf(tk, i)),
       );
-      return Promise.resolve({ items, total_count: 250, offset: q.offset });
+      return Promise.resolve({ items, total_count: 2500, offset: q.offset });
     });
     const apps = await createArcadeClient("never-dialled").broker.listApps();
-    expect(asked).toEqual([0, 100, 200]);
-    expect(apps.find((a) => a.slug === "GithubApi")?.actionCount).toBe(240);
-    expect(apps.find((a) => a.slug === "Github")?.actionCount).toBe(10);
-    expect(apps.reduce((n, a) => n + a.actionCount, 0)).toBe(250);
+    expect(asked).toEqual([
+      { limit: 1000, offset: 0 },
+      { limit: 1000, offset: 1000 },
+      { limit: 1000, offset: 2000 },
+    ]);
+    expect(apps.find((a) => a.slug === "GithubApi")?.actionCount).toBe(2400);
+    expect(apps.find((a) => a.slug === "Github")?.actionCount).toBe(100);
+    expect(apps.reduce((n, a) => n + a.actionCount, 0)).toBe(2500);
   });
 
   test("a REAL APIError through execute reaches callTool's authorize sentence", async () => {
