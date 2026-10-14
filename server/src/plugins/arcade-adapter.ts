@@ -601,20 +601,46 @@ async function authProviderInstances(
  * out at this level would answer both at once, and the one it answered wrongly would be the
  * destructive one.
  *
- * AN UNRESOLVED TOOLKIT (`null`) ANSWERS AS NO ROWS and does NOT fall back to the toolkit name: a
- * fallback would silently restore the defect under a different spelling, invisibly against every
- * fixture in the tree. Callers then answer `isConnected` false, `revoke` false (no delete spent),
- * `accountName` null. A listing that could not be read WHOLE is different: `authProviderOf` and
- * {@link authProviderInstances} both THROW on one that is malformed, truncated against its own
- * reported total, or never-ending, and that propagates, onto the Disconnect path included.
+ * AN UNRESOLVED TOOLKIT REFUSES, AND DOES NOT FALL BACK TO THE TOOLKIT NAME. The fallback is
+ * refused for the reason it always was — it would silently restore the instance/type defect under
+ * a different spelling, invisibly against every fixture in the tree. But ANSWERING NO ROWS IS NOT
+ * THE OTHER OPTION, and that is this function's own measured defect. A toolkit whose actions name
+ * ZERO provider ids, or TWO OR MORE of them, is not a toolkit with no connections: it is a listing
+ * this deployment could not read an attribution out of. Answering `[]` for it made `isConnected`
+ * false and `accountName` null for somebody genuinely connected — so Connect minted a SECOND
+ * authorization beside the live one — and made `revoke` answer `false` ("there was nothing to
+ * withdraw") WITHOUT SPENDING A SINGLE DELETE, while `store.ts`'s disconnect path deletes the
+ * local `brokered_connections` row on that answer regardless. The outcome is the one
+ * `broker.ts`'s `revoke` contract forbids outright: a LIVE grant at the vendor that no row this
+ * deployment holds any longer names, and no way back but guessing which app it belonged to.
+ *
+ * So an unattributable toolkit throws a {@link BrokerRefusalError} naming what the listing said,
+ * exactly as a malformed one does — `authProviderOf` and {@link authProviderInstances} THROW on a
+ * listing that is malformed, truncated against its own reported total, or never-ending, and this
+ * joins them. All three lifecycle members refuse together, which is the point: the refusal reaches
+ * the Disconnect path BEFORE any local row is deleted, so the row is still standing on the second
+ * press, and the Connect screen says why rather than offering a second grant.
+ *
+ * THE SEAM'S `authProviderOf` STILL ANSWERS `null`, and that is not the same decision. Its caller
+ * is the sibling resolver in `store.ts`, which counts an unresolved app as `unanswered` and ends
+ * NOTHING for it — fail-closed on a question that spends no delete. Here the question is the
+ * destructive one.
  */
 async function connectionsFor(
   client: Arcade,
   vendorUserId: string,
   toolkit: string,
 ): Promise<ConnectionRow[]> {
-  const authProvider = await authProviderOf(client, toolkit);
-  if (authProvider === null) return [];
+  const named = await authProvidersNamedBy(client, toolkit);
+  if (named.size !== 1) {
+    throw new BrokerRefusalError(
+      named.size === 0
+        ? `Arcade's action listing for ${toolkit} names no auth provider at all, so which of this account's connections belong to ${toolkit} could not be read. Nothing was read as connected and nothing was withdrawn — a connection may still be live at the vendor. Give ${toolkit} an auth provider in the Arcade dashboard and try again.`
+        : `Arcade's action listing for ${toolkit} names ${named.size} different auth providers (${[...named].sort().join(", ")}), so which of this account's connections belong to ${toolkit} could not be read. Nothing was read as connected and nothing was withdrawn — a connection may still be live at the vendor. Settle ${toolkit} on one auth provider in the Arcade dashboard and try again.`,
+    );
+  }
+  // The one id, taken off the set the refusal above has already narrowed to exactly one.
+  const [authProvider] = [...named];
   const instances = await authProviderInstances(client, authProvider);
   const rows: ConnectionRow[] = [];
   for await (const item of pagedItems({
@@ -909,13 +935,19 @@ async function grantsFor(
  * unanswered; whether they are the same provider is the caller's comparison, and
  * `connectionSiblings` folds case for the one caller that makes it.
  *
- * `null` IS WHAT UNANSWERED MEANS, AND IT ALREADY MEANT IT. It is not "no provider": the sole
- * caller, {@link connectionsFor}, answers NO ROWS for it and never falls back to the toolkit name,
- * so `isConnected` reads false, `accountName` null and `revoke` false WITHOUT SPENDING A DELETE.
- * That is fail-closed on all three — nothing is deleted and nothing is claimed connected on a
- * toolkit nobody can attribute — which is exactly what an ambiguous toolkit deserves, so there is
- * no second spelling of "unanswered" to invent. A toolkit with no provider id anywhere lands on the
- * same answer for the same reason.
+ * `null` IS WHAT UNANSWERED MEANS, AND IT IS NOT AN ANSWER ANY CALLER MAY SPEND. It is not "no
+ * provider", and a toolkit with no provider id anywhere lands on it for the same reason an
+ * ambiguous one does. What a caller must do with it depends on what its own answer costs:
+ *
+ * - {@link connectionsFor} — the connection lifecycle, where the answer spends DELETEs and decides
+ *   whether somebody is shown as connected — REFUSES, and reads {@link authProvidersNamedBy}
+ *   directly so its sentence can say whether the listing named none or several. Answering no rows
+ *   there was the live defect: `revoke` said `false` ("nothing to withdraw") with no delete spent
+ *   while the caller deleted the local row anyway, and `isConnected`/`accountName` sent somebody
+ *   who is already connected round a second authorization. Its comment has that in full.
+ * - The SEAM member below hands `null` on unchanged, for `store.ts`'s sibling resolver, which
+ *   counts an unresolved app as `unanswered` and ends nothing for it. That question spends
+ *   nothing, so fail-closed is a real answer there and the seam's `Promise<string | null>` stands.
  *
  * `requirements.met` IS NOT READ HERE EITHER, for `grantStateOf`'s reason: this reads a DIFFERENT
  * field of the same `requirements.authorization` object.
@@ -924,6 +956,23 @@ async function authProviderOf(
   client: Arcade,
   toolkit: string,
 ): Promise<string | null> {
+  const named = await authProvidersNamedBy(client, toolkit);
+  return named.size === 1 ? [...named][0] : null;
+}
+
+/**
+ * The DISTINCT auth provider ids a toolkit's listing names, read to the listing's end.
+ *
+ * SEPARATED FROM {@link authProviderOf} SO THAT THE VERDICT AND THE EVIDENCE ARE TWO THINGS. The
+ * seam's `authProviderOf` answers a provider or `null`, and `null` is a verdict with the evidence
+ * thrown away — zero ids and nine ids arrive at its caller as the same word. {@link connectionsFor}
+ * REFUSES on either, and a refusal has to say which one happened and name what it read, so it reads
+ * the set and `authProviderOf` folds the set to its verdict. There is still ONE reading of the wire.
+ */
+async function authProvidersNamedBy(
+  client: Arcade,
+  toolkit: string,
+): Promise<Set<string>> {
   const named = new Set<string>();
   for await (const item of pagedItems({
     pageSize: CATALOGUE_PAGE_SIZE,
@@ -941,7 +990,7 @@ async function authProviderOf(
     const provider = textOf(record(authorization)?.provider_id);
     if (provider) named.add(provider);
   }
-  return named.size === 1 ? [...named][0] : null;
+  return named;
 }
 
 /**
@@ -1118,6 +1167,12 @@ export function createArcadeClient(apiKey: string): {
     // Answers what was REQUESTED: true when something was found and every delete was accepted,
     // false when there was nothing. Every delete is attempted, then ANY failure throws: a partial
     // ask must not read as `false` ("nothing there") nor as a clean `true`.
+    //
+    // AND `false` IS ONLY EVER SAID OFF A LISTING READ WHOLE, which is {@link connectionsFor}'s
+    // promise rather than this one's: an unreadable, truncated or UNATTRIBUTABLE listing throws out
+    // of it before this line, so `rows.length === 0` here means the vendor said so. `false` with no
+    // delete spent is the live defect's exact signature — the caller deletes the local row on it —
+    // and `arcade-revoke-invariant.test.ts` asserts the outcome rather than any one mechanism.
     //
     // ON EVERY ROW, LIVE OR NOT, WHICH IS WHY THIS DOES NOT ASK {@link connectionIsLive}. A dead row
     // is still a row at the vendor: skipping it would leave it standing while this answered `false`

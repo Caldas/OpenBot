@@ -521,7 +521,7 @@ describe("the action listing's total_count cross-check survives a short final pa
  * vanish into the stub.
  */
 describe("the auth provider is read off the WHOLE action listing", () => {
-  test("a toolkit whose later pages name another provider is left unanswered", async () => {
+  test("a toolkit whose later pages name another provider refuses, naming both", async () => {
     const e = engine({
       connections: 1,
       connectionTotal: false,
@@ -532,11 +532,22 @@ describe("the auth provider is read off the WHOLE action listing", () => {
     });
     const { broker } = createArcadeClient("never-dialled");
 
-    // UNANSWERED, which the three callers already spell fail-closed: no rows, so not connected, no
-    // name, and `revoke` answers false WITHOUT SPENDING A DELETE.
-    expect(await broker.isConnected({ account, toolkit: "Gmail" })).toBe(false);
-    expect(await broker.accountName({ account, toolkit: "Gmail" })).toBe(null);
-    expect(await broker.revoke({ account, toolkit: "Gmail" })).toBe(false);
+    // UNANSWERED, AND THE THREE CALLERS REFUSE RATHER THAN ANSWER IT. They used to spell it as no
+    // rows — not connected, no name, `revoke` false with NO DELETE SPENT — and that reading is the
+    // defect `arcade-revoke-invariant.test.ts` pins: `false` means "there was nothing to withdraw",
+    // a claim about the vendor's side, while `store.ts` deletes the local row on it and a live
+    // grant is left at the vendor that nothing names. A listing naming two providers was not read;
+    // it is refused, in this deployment's own sentence, with both providers in it.
+    const refusal = /names 2 different auth providers \(google, microsoft\)/;
+    await expect(
+      broker.isConnected({ account, toolkit: "Gmail" }),
+    ).rejects.toThrow(refusal);
+    await expect(
+      broker.accountName({ account, toolkit: "Gmail" }),
+    ).rejects.toThrow(refusal);
+    await expect(broker.revoke({ account, toolkit: "Gmail" })).rejects.toThrow(
+      refusal,
+    );
     expect(deletes(e).length).toBe(0);
   });
 
