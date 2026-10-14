@@ -34,6 +34,7 @@ import {
   brokeredAccountPageDescription,
   brokeredConsentTrip,
   brokeredDisconnectNote,
+  brokeredPerActionTrip,
   brokeredProvenance,
   disconnectSiblingsNotice,
 } from "@/lib/plugins/provider-vocabulary";
@@ -243,6 +244,9 @@ function RouteComponent() {
   /* Everything the brokered row below reads and does. See `brokered-account-row.tsx`. */
   const brokeredAccount = useBrokeredAccount({
     authScheme: server?.authScheme ?? null,
+    /* The same capability the grant list below is drawn on, read once above and passed to both, so
+       the row's offer and the list's presence cannot come from different facts. */
+    authorizesPerAction: perActionGrants,
     brokered,
     configured: plugins.data?.composioConfigured ?? false,
     recorded: connection !== undefined,
@@ -437,7 +441,7 @@ function RouteComponent() {
                  Composio, so what it undoes is not the row here but the grant on your own mailbox,
                  and connecting again is a fresh consent. */
               connectedDescription={`A Bot granted its tools reads your ${server.title} as you. ${brokeredDisconnectNote(provider)}`}
-              disconnectedDescription={`${reassurance} ${brokeredConsentTrip(provider)}`}
+              disconnectedDescription={`${reassurance} ${perActionGrants ? brokeredPerActionTrip(provider, "below") : brokeredConsentTrip(provider)}`}
               /* What is true either way. The trip to Composio is not — an app whose key somebody
                  types never leaves this page — but which Bots can read this person's mail is the
                  whole point of the screen and holds for both kinds. */

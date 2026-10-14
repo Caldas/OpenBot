@@ -287,7 +287,13 @@ test("the sibling list is not drawn once there is no account for a Disconnect to
     siblings: { siblings: ["googledocs"], unanswered: 0 },
   });
   const view = renderScreen();
-  await view.findByText("Connect");
+  /*
+   * WAITED ON AS A RENDER SIGNAL AND NOT AS THE SUBJECT: this case is about the sibling list and
+   * the read behind it. It used to wait on "Connect", which this deployment no longer draws —
+   * Arcade authorizes per action, so the row withholds a whole-app Connect that could only reach
+   * the adapter's refusal. The row's disconnected state is what is being waited for either way.
+   */
+  await view.findByText("Approved per action");
   expect(view.container.textContent).not.toContain("googledocs");
   expect(siblingReads.length).toBe(0);
 });

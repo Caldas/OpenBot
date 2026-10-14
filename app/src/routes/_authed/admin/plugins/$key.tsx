@@ -63,6 +63,7 @@ import {
 import {
   brokeredConnectionDescription,
   brokeredDisconnectNote,
+  brokeredPerActionTrip,
   brokeredProvenance,
   brokeredReach,
 } from "@/lib/plugins/provider-vocabulary";
@@ -387,8 +388,16 @@ function RouteComponent() {
    * `connectSelf` above stays: it is the `user-oauth` row's Connect, which is a different row with
    * no Disconnect beside it and nothing brokered to confirm.
    */
+  /*
+   * THE SAME CAPABILITY THE SETTINGS SCREEN READS, and read here for the same reason: this page
+   * draws the brokered row too, so under a per-action broker it offered the one Connect that can
+   * never succeed. Off the declared capability and never off `provider === "arcade"` — see
+   * {@link BrokeredAccount.authorizesPerAction}.
+   */
+  const perActionGrants = plugins.data?.authorizesPerAction ?? false;
   const brokeredAccount = useBrokeredAccount({
     authScheme: server?.authScheme ?? null,
+    authorizesPerAction: perActionGrants,
     brokered: auth === "brokered",
     configured: plugins.data?.composioConfigured ?? false,
     recorded: shared ? (sharedConnection?.connected ?? false) : youConnected,
@@ -814,7 +823,7 @@ function RouteComponent() {
                   <BrokeredAccountRow
                     account={brokeredAccount}
                     connectedDescription={`Connected${sharedConnection?.displayName ? ` as ${sharedConnection.displayName}` : ""}${sharedConnection?.connectedBy ? ` by ${sharedConnection.connectedBy}` : ""}. Every Bot granted these tools acts as this account.`}
-                    disconnectedDescription="No team account is connected, so Bots granted these tools are refused."
+                    disconnectedDescription={`No team account is connected, so Bots granted these tools are refused.${perActionGrants ? ` ${brokeredPerActionTrip(provider, "settings")}` : ""}`}
                     heading="Team account"
                     notice="Sign in as the team account, not your own."
                     provider={provider}
@@ -827,7 +836,11 @@ function RouteComponent() {
                        at Composio, so what it undoes is not the row here but the grant on this
                        person's mailbox, and connecting again is a fresh consent. */
                     connectedDescription={`Connected, so a Bot granted these tools uses your ${title} as you. ${brokeredDisconnectNote(provider)}`}
-                    disconnectedDescription={`Connect your own account to try this connector. ${reassurance}`}
+                    disconnectedDescription={
+                      perActionGrants
+                        ? `${brokeredPerActionTrip(provider, "settings")} ${reassurance}`
+                        : `Connect your own account to try this connector. ${reassurance}`
+                    }
                     /* The half of the line above that is true whichever way this app connects.
                        An app whose key somebody types gets a different first sentence from the
                        row — pressing Connect opens a form rather than leaving for a consent
