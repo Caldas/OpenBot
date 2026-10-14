@@ -18,6 +18,7 @@
     "lint": "bunx biome lint --error-on-warnings .",
     "test": "bun test",
     "typecheck": "bun run --filter '*' typecheck",
+    "typecheck:tests": "bun scripts/typecheck-tests.ts",
     "test:ci": "bun scripts/test-ci.ts",
     "test:server:sharded": "bun scripts/test-server-sharded.ts",
     "pretest": "bun run generate:app-config",
