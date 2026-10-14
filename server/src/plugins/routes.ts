@@ -307,11 +307,22 @@ function withVendorDeadline<T>(
     }, afterMs);
   });
   /*
+   * A CALL THAT THROWS BEFORE IT RETURNS A PROMISE IS A REJECTION, NOT AN ESCAPE. The deadline is
+   * already armed by this line, so invoking `call` bare inside the race would let a synchronous
+   * throw — `brokerReturnUrl` refusing a scheme-less `OPENBOT_APP_URL` while the callback builds its
+   * argument is the one that happens — leave this function before the race and its `.finally`
+   * exist: the timer stays armed, aborts nothing anybody is waiting on and rejects `deadline` with
+   * no one subscribed, and a caller's `.catch(...)` on the returned promise is skipped entirely.
+   * Calling it inside an executor turns that throw into this promise's rejection, still
+   * synchronously and still exactly once.
+   */
+  const answer = new Promise<T>((resolve) => resolve(call(controller.signal)));
+  /*
    * `Promise.race` subscribes to both, so a call that answers AFTER the deadline has its rejection
    * observed here and never surfaces as an unhandled one. Its answer is dropped unread, which is
    * also the D31-safe thing to do with it.
    */
-  return Promise.race([call(controller.signal), deadline]).finally(() => {
+  return Promise.race([answer, deadline]).finally(() => {
     if (timer !== undefined) clearTimeout(timer);
   });
 }
