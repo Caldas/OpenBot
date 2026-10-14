@@ -20,6 +20,7 @@ import type { ConnectedAppBroker } from "../src/plugins/broker";
 import { createPluginRoutes } from "../src/plugins/routes";
 import { createPluginStore, type PluginStore } from "../src/plugins/store";
 import { TEST_POOL, testDatabaseUrl } from "./support/database";
+import { removePeople, seedPeople } from "./support/people";
 
 const database = createDatabase(testDatabaseUrl(), TEST_POOL);
 const suite = randomUUID().slice(0, 8);
@@ -119,10 +120,17 @@ function appAs(
   );
 }
 
+/**
+ * An actor id for this suite, AND THE `users` ROW BEHIND IT.
+ *
+ * `pending_authorizations.actor_id` and `.user_id` key to `users` and cascade, so the attempt a
+ * mint writes cannot name somebody who does not exist.
+ */
 const actors: string[] = [];
-const person = (name: string) => {
+const person = async (name: string) => {
   const id = `${name}-${suite}`;
   actors.push(id);
+  await seedPeople(database, [id]);
   return id;
 };
 
@@ -190,6 +198,7 @@ afterAll(async () => {
       .delete(pendingAuthorizations)
       .where(inArray(pendingAuthorizations.actorId, actors));
   }
+  await removePeople(database, actors);
   await database.$client.close();
 });
 
@@ -201,7 +210,7 @@ beforeEach(() => {
 
 describe("POST /servers/:id/authorize", () => {
   test("mints for the named action and the row records the exact account and the authorization id", async () => {
-    const actor = person("mint");
+    const actor = await person("mint");
     const response = await authorize(appAs("user", actor), personalApp);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ authorizationUrl: SECRET_URL });
@@ -232,7 +241,7 @@ describe("POST /servers/:id/authorize", () => {
   });
 
   test("a null authorization id is recorded as NULL, never collapsed", async () => {
-    const actor = person("nullid");
+    const actor = await person("nullid");
     nextAuthId = null;
     const response = await authorize(appAs("user", actor), personalApp);
     expect(response.status).toBe(200);
@@ -242,7 +251,7 @@ describe("POST /servers/:id/authorize", () => {
   });
 
   test("an action the app does not publish is a 400 with no attempt and no mint", async () => {
-    const actor = person("unpublished");
+    const actor = await person("unpublished");
     const response = await authorize(appAs("user", actor), personalApp, {
       action: "Gmail.DeleteEverything",
     });
@@ -252,7 +261,7 @@ describe("POST /servers/:id/authorize", () => {
   });
 
   test("a differently-cased action is not accepted", async () => {
-    const actor = person("cased");
+    const actor = await person("cased");
     const response = await authorize(appAs("user", actor), personalApp, {
       action: ACTION.toLowerCase(),
     });
@@ -262,7 +271,7 @@ describe("POST /servers/:id/authorize", () => {
   });
 
   test("a non-admin on a Shared app is a 403 with no attempt", async () => {
-    const actor = person("shared-user");
+    const actor = await person("shared-user");
     const response = await authorize(appAs("user", actor), sharedApp);
     expect(response.status).toBe(403);
     expect(mints).toEqual([]);
@@ -270,7 +279,7 @@ describe("POST /servers/:id/authorize", () => {
   });
 
   test("an admin on a Shared app records the deployment's account on the row", async () => {
-    const actor = person("shared-admin");
+    const actor = await person("shared-admin");
     const response = await authorize(appAs("admin", actor), sharedApp);
     expect(response.status).toBe(200);
     const [row] = await attemptsFor(actor);
@@ -283,7 +292,7 @@ describe("POST /servers/:id/authorize", () => {
   });
 
   test("a second authorization while one is live is a 409 naming the first", async () => {
-    const actor = person("live");
+    const actor = await person("live");
     const app = appAs("user", actor);
     expect((await authorize(app, personalApp)).status).toBe(200);
     const [first] = await attemptsFor(actor);
@@ -300,7 +309,7 @@ describe("POST /servers/:id/authorize", () => {
   });
 
   test("an authorization after the first expired succeeds, replacing it", async () => {
-    const actor = person("expired");
+    const actor = await person("expired");
     const app = appAs("user", actor);
     expect((await authorize(app, personalApp)).status).toBe(200);
     await database.execute(
@@ -318,7 +327,7 @@ describe("POST /servers/:id/authorize", () => {
   });
 
   test("the authorization url appears in no audit row", async () => {
-    const actor = person("audit");
+    const actor = await person("audit");
     expect((await authorize(appAs("user", actor), personalApp)).status).toBe(
       200,
     );
@@ -331,7 +340,7 @@ describe("POST /servers/:id/authorize", () => {
   });
 
   test("a deployment whose broker runs no authorization flow answers 503 and writes no attempt", async () => {
-    const actor = person("composio");
+    const actor = await person("composio");
     const response = await authorize(
       appAs("user", actor, "composio"),
       composioApp,
@@ -345,7 +354,7 @@ describe("POST /servers/:id/authorize", () => {
   });
 
   test("the gate answers before whose account it is: a non-admin on a Shared app of such a deployment is a 503, not a 403", async () => {
-    const actor = person("composio-shared");
+    const actor = await person("composio-shared");
     const response = await authorize(
       appAs("user", actor, "composio"),
       sharedApp,
@@ -365,7 +374,7 @@ describe("POST /servers/:id/authorize", () => {
     };
 
     test("a definite vendor refusal deletes the attempt, and a late cleanup can never delete a newer one", async () => {
-      const actor = person("definite");
+      const actor = await person("definite");
       beforeMint = refuse;
       const response = await authorize(appAs("user", actor), personalApp);
       expect(response.status).toBe(502);
@@ -410,7 +419,7 @@ describe("POST /servers/:id/authorize", () => {
     });
 
     test("a definite refusal whose clean-up also fails still answers the refusal, not a bodyless 500", async () => {
-      const actor = person("definite-stuck");
+      const actor = await person("definite-stuck");
       beforeMint = refuse;
       const response = await authorize(
         appAs("user", actor, "arcade", {
@@ -432,7 +441,7 @@ describe("POST /servers/:id/authorize", () => {
     });
 
     test("an authored refusal is definite: nothing reached the vendor, so the attempt is deleted", async () => {
-      const actor = person("authored");
+      const actor = await person("authored");
       const { BrokerRefusalError } = await import("../src/plugins/broker");
       beforeMint = async () => {
         throw new BrokerRefusalError("Arcade needs an action.");
@@ -443,7 +452,7 @@ describe("POST /servers/:id/authorize", () => {
     });
 
     test("an uncertain failure (status undefined) leaves the attempt standing with a null auth_id", async () => {
-      const actor = person("uncertain");
+      const actor = await person("uncertain");
       beforeMint = async () => {
         throw new APIConnectionError({ message: "socket dropped" });
       };
@@ -468,7 +477,7 @@ describe("POST /servers/:id/authorize", () => {
     });
 
     test("a non-SDK throw (the adapter's missing-id Error) is uncertain too: the attempt stands", async () => {
-      const actor = person("noid");
+      const actor = await person("noid");
       beforeMint = async () => {
         throw new Error("Arcade answered an authorization with no id.");
       };
@@ -495,7 +504,7 @@ describe("POST /servers/:id/authorize", () => {
     } as Partial<PluginStore>;
 
     test("the person is told, is not sent to the consent screen, and the url does not travel", async () => {
-      const actor = person("unrecorded");
+      const actor = await person("unrecorded");
       const response = await authorize(
         appAs("user", actor, "arcade", failWrite),
         personalApp,
@@ -515,7 +524,7 @@ describe("POST /servers/:id/authorize", () => {
     });
 
     test("the actor is not blocked: the dead attempt is cleared and a second start mints again", async () => {
-      const actor = person("unrecorded-retry");
+      const actor = await person("unrecorded-retry");
       expect(
         (
           await authorize(
@@ -536,7 +545,7 @@ describe("POST /servers/:id/authorize", () => {
     });
 
     test("a failed clean-up still answers a sentence rather than throwing past the handler", async () => {
-      const actor = person("unrecorded-stuck");
+      const actor = await person("unrecorded-stuck");
       const response = await authorize(
         appAs("user", actor, "arcade", {
           ...failWrite,
@@ -557,7 +566,7 @@ describe("POST /servers/:id/authorize", () => {
   });
 
   test("two concurrent starts by one actor yield exactly one 200 and one 409", async () => {
-    const actor = person("race");
+    const actor = await person("race");
     // Hold the winner's mint open so the loser's claim runs while it is in flight.
     let release: () => void = () => {};
     const held = new Promise<void>((resolve) => {
@@ -582,7 +591,7 @@ describe("POST /servers/:id/authorize", () => {
   });
 
   test("a Shared app is authorized under the SESSION SUBJECT, not the deployment's credential account", async () => {
-    const actor = person("team-bot");
+    const actor = await person("team-bot");
     expect((await authorize(appAs("admin", actor), sharedApp)).status).toBe(
       200,
     );

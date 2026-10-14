@@ -5,10 +5,18 @@ import { sql } from "drizzle-orm";
 import { createDatabase } from "../src/db/client";
 import { mcpServers } from "../src/db/schema/plugins";
 import { TEST_POOL, testDatabaseUrl } from "./support/database";
+import { removePeople, seedPeople } from "./support/people";
 
 const database = createDatabase(testDatabaseUrl(), TEST_POOL);
 const suite = randomUUID().slice(0, 8);
 const serverId = `arcade-attempt-${suite}`;
+
+/*
+ * The three actors the cases below claim under, seeded as real people because `actor_id` and
+ * `user_id` now carry the key to `users` that they always claimed in the docblock. Named up here so
+ * `afterAll` can delete them, and so the cascade takes the attempts with them.
+ */
+const actors = [`live-${suite}`, `expired-${suite}`, `done-${suite}`];
 
 /** The one statement a start-attempt route issues: take the key if free, expired, or completed. */
 const claim = (actorId: string, authId: string) =>
@@ -32,6 +40,7 @@ const claim = (actorId: string, authId: string) =>
   `);
 
 beforeAll(async () => {
+  await seedPeople(database, actors);
   await database.insert(mcpServers).values({
     id: serverId,
     title: "Attempt schema",
@@ -42,12 +51,13 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await database.execute(sql`delete from mcp_servers where id = ${serverId}`);
+  await removePeople(database, actors);
   await database.$client.close();
 });
 
 describe("pending_authorizations", () => {
   test("a second attempt for one actor is refused while the first is live", async () => {
-    const actor = `live-${suite}`;
+    const actor = actors[0]!;
     expect((await claim(actor, "auth-1")).length).toBe(1);
     expect((await claim(actor, "auth-2")).length).toBe(0);
     const rows = await database.execute(
@@ -57,7 +67,7 @@ describe("pending_authorizations", () => {
   });
 
   test("an expired attempt is replaceable in one statement", async () => {
-    const actor = `expired-${suite}`;
+    const actor = actors[1]!;
     expect((await claim(actor, "auth-old")).length).toBe(1);
     await database.execute(
       sql`update pending_authorizations set created_at = now() - interval '16 minutes' where actor_id = ${actor}`,
@@ -68,7 +78,7 @@ describe("pending_authorizations", () => {
   });
 
   test("a completed attempt is replaceable", async () => {
-    const actor = `done-${suite}`;
+    const actor = actors[2]!;
     expect((await claim(actor, "auth-old")).length).toBe(1);
     await database.execute(
       sql`update pending_authorizations set completed_at = now(), outcome = 'completed' where actor_id = ${actor}`,

@@ -40,6 +40,7 @@ import { AUTHORIZATION_REFUSALS } from "../src/plugins/routes";
 import type { AccountRef } from "../src/plugins/shared-accounts";
 import { createPluginStore } from "../src/plugins/store";
 import { testDatabaseUrl } from "./support/database";
+import { removePeople, seedPeople } from "./support/people";
 import { testEnvironment } from "./support/environment";
 
 /*
@@ -425,6 +426,13 @@ async function giveAttempt(options: {
 }
 
 beforeEach(async () => {
+  /*
+   * The people the attempts below belong to. `pending_authorizations.actor_id` and `.user_id` key
+   * to `users` and cascade, so `giveAttempt` cannot write a row for somebody who does not exist.
+   * Seeded per case rather than once, because a case that deletes the person to watch the cascade
+   * would otherwise leave the rest of the file without one.
+   */
+  await seedPeople(database, [ACTOR, STRANGER]);
   confirmCalls = [];
   statusCalls = [];
   revokeCalls = [];
@@ -461,6 +469,7 @@ afterAll(async () => {
     .delete(brokeredConnections)
     .where(like(brokeredConnections.app, `Gmail-${suite}-%`));
   await database.delete(mcpServers).where(eq(mcpServers.id, APP));
+  await removePeople(database, [ACTOR, STRANGER]);
   await database.$client.close();
 });
 

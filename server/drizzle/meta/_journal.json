@@ -421,6 +421,13 @@
       "when": 1791942141206,
       "tag": "0059_pending_authorization_completion_pair",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1791943538845,
+      "tag": "0060_pending_authorization_person_keys",
+      "breakpoints": true
     }
   ]
 }

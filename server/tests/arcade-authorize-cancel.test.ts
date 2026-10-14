@@ -19,6 +19,7 @@ import type { ConnectedAppBroker } from "../src/plugins/broker";
 import { createPluginRoutes } from "../src/plugins/routes";
 import { createPluginStore } from "../src/plugins/store";
 import { TEST_POOL, testDatabaseUrl } from "./support/database";
+import { removePeople, seedPeople } from "./support/people";
 
 const database = createDatabase(testDatabaseUrl(), TEST_POOL);
 const suite = randomUUID().slice(0, 8);
@@ -120,10 +121,17 @@ function appAs(
   );
 }
 
+/**
+ * An actor id for this suite, AND THE `users` ROW BEHIND IT.
+ *
+ * `pending_authorizations.actor_id` and `.user_id` key to `users` and cascade, so the attempt these
+ * cases cancel cannot be minted for somebody who does not exist.
+ */
 const actors: string[] = [];
-const person = (name: string) => {
+const person = async (name: string) => {
   const id = `${name}-${suite}`;
   actors.push(id);
+  await seedPeople(database, [id]);
   return id;
 };
 
@@ -203,6 +211,7 @@ afterAll(async () => {
       .delete(pendingAuthorizations)
       .where(inArray(pendingAuthorizations.actorId, actors));
   }
+  await removePeople(database, actors);
   await database.$client.close();
 });
 
@@ -214,7 +223,7 @@ beforeEach(() => {
 
 describe("DELETE /servers/:id/authorize", () => {
   test("cancelling removes the attempt and a fresh authorization immediately succeeds", async () => {
-    const actor = person("cancel");
+    const actor = await person("cancel");
     const app = appAs("user", actor);
     expect((await authorize(app, personalApp)).status).toBe(200);
     expect(await attemptsFor(actor)).toHaveLength(1);
@@ -242,7 +251,7 @@ describe("DELETE /servers/:id/authorize", () => {
   });
 
   test("cancelling an attempt whose mint never completed (no auth_id) removes it", async () => {
-    const actor = person("noid");
+    const actor = await person("noid");
     nextAuthId = null;
     const app = appAs("user", actor);
     expect((await authorize(app, personalApp)).status).toBe(200);
@@ -253,14 +262,14 @@ describe("DELETE /servers/:id/authorize", () => {
   });
 
   test("cancelling when no attempt exists is not an error", async () => {
-    const actor = person("none");
+    const actor = await person("none");
     const response = await cancel(appAs("user", actor), personalApp);
     expect(response.status).toBeLessThan(300);
     expect(await attemptsFor(actor)).toEqual([]);
   });
 
   test("a cancel naming one app does not cancel this actor's attempt on another", async () => {
-    const actor = person("otherapp");
+    const actor = await person("otherapp");
     const app = appAs("user", actor);
     expect((await authorize(app, personalApp)).status).toBe(200);
     const [before] = await attemptsFor(actor);
@@ -277,7 +286,7 @@ describe("DELETE /servers/:id/authorize", () => {
   });
 
   test("a cancel issued for an OLD created_at does not remove a NEWER attempt by the same actor", async () => {
-    const actor = person("stale");
+    const actor = await person("stale");
     const plain = appAs("user", actor);
     expect((await authorize(plain, personalApp)).status).toBe(200);
     const [old] = await attemptsFor(actor);
