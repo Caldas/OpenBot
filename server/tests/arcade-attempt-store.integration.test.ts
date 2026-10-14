@@ -256,6 +256,45 @@ describe("discardAuthorizationAttempt", () => {
       newer.attempt.createdAt.getTime(),
     );
   });
+
+  /*
+   * B2a. A SETTLED ATTEMPT IS A RECORD, AND A DISCARD AIMED AT IT BY ITS OWN `created_at` MUST NOT
+   * ERASE IT. Every caller reads the attempt first and discards it after, so the `created_at` it
+   * holds still names the row once a completion has committed in between.
+   */
+  for (const outcome of [
+    "completed",
+    "failed",
+    "unreconciled",
+    "withdrawn",
+  ] as const) {
+    test(`leaves a ${outcome} attempt standing and answers false`, async () => {
+      const a = await actor(`discard-settled-${outcome}`);
+      const got = await claim(a);
+      if (!got.claimed) throw new Error("claim failed");
+      await database.execute(
+        sql`update pending_authorizations set completed_at = now(), outcome = ${outcome} where actor_id = ${a}`,
+      );
+
+      const deleted = await store.discardAuthorizationAttempt({
+        actorId: a,
+        createdAt: got.attempt.createdAt,
+      });
+
+      const rows = await database
+        .select()
+        .from(pendingAuthorizations)
+        .where(eq(pendingAuthorizations.actorId, a));
+      expect(rows.map((row) => row.outcome)).toEqual([outcome]);
+      expect(deleted).toBe(false);
+      expect(
+        await store.settledAuthorizationOutcome({
+          actorId: a,
+          createdAt: got.attempt.createdAt,
+        }),
+      ).toBe(outcome);
+    });
+  }
 });
 
 describe("authorizationAttemptFor", () => {

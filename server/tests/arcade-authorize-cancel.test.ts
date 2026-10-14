@@ -13,7 +13,12 @@ import { Hono, type MiddlewareHandler } from "hono";
 import { createAuditStore } from "../src/audit";
 import type { AppVariables } from "../src/auth/guards";
 import { createDatabase } from "../src/db/client";
-import { mcpServers, mcpTools, pendingAuthorizations } from "../src/db/schema";
+import {
+  brokeredConnections,
+  mcpServers,
+  mcpTools,
+  pendingAuthorizations,
+} from "../src/db/schema";
 import type { BrokerProvider } from "../src/plugins/access";
 import type { ConnectedAppBroker } from "../src/plugins/broker";
 import { createPluginRoutes } from "../src/plugins/routes";
@@ -320,6 +325,63 @@ describe("DELETE /servers/:id/authorize", () => {
     expect(after?.authId).toBe("ar_newer");
     expect(after?.completedAt).toBeNull();
     expect(after?.outcome).toBeNull();
+  });
+
+  /*
+   * B2a. A COMPLETION THAT COMMITS BETWEEN THE CANCEL'S READ AND ITS DELETE. The route reads the
+   * live attempt, then discards it by `(actor_id, created_at)`; the read is wrapped here so the
+   * REAL completion runs, against the real row, in exactly that gap. Unguarded, the DELETE erased
+   * the completed attempt and the route answered `{ cancelled: true }` for a consent that had
+   * succeeded — the grant live at the vendor and the connection written.
+   */
+  test("a consent that completes under the cancel survives it, and the cancel says so", async () => {
+    const actor = await person("raced");
+    const toolkit = `race-${suite}`;
+    expect((await authorize(appAs("user", actor), personalApp)).status).toBe(
+      200,
+    );
+    const racing = appAs("user", actor, "arcade", (store) => ({
+      ...store,
+      authorizationAttemptFor: async (actorId: string) => {
+        const live = await store.authorizationAttemptFor(actorId);
+        if (live?.authId) {
+          await store.completeAuthorizationAttempt({
+            actorId,
+            authId: live.authId,
+            toolkit,
+            account: {
+              holder: "person",
+              userId: actorId,
+              vendorUserId: live.vendorUserId,
+            },
+            action: ACTION,
+            scopes: [],
+            authProvider: "google",
+          });
+        }
+        return live;
+      },
+    }));
+    try {
+      const response = await cancel(racing, personalApp);
+      // One comparison, so a failure shows the answer AND what became of the record side by side.
+      expect({
+        status: response.status,
+        body: await response.json(),
+        outcomes: (await attemptsFor(actor)).map((row) => row.outcome),
+      }).toEqual({
+        status: 409,
+        body: {
+          error:
+            "That authorization finished before it could be cancelled, so the account is connected. Disconnect it if you did not mean to connect it.",
+        },
+        outcomes: ["completed"],
+      });
+    } finally {
+      await database
+        .delete(brokeredConnections)
+        .where(eq(brokeredConnections.app, toolkit));
+    }
   });
 
   /*
