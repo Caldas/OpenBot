@@ -841,7 +841,14 @@ async function connectionsFor(
   vendorUserId: string,
   toolkit: string,
 ): Promise<ConnectionRow[]> {
-  const named = await authProvidersNamedBy(client, toolkit);
+  const { named, unreadable } = await authProvidersNamedBy(client, toolkit);
+  // FIRST, because an unreadable action makes both counts below unreliable: it may name none, the
+  // one already read, or another.
+  if (unreadable) {
+    throw new BrokerRefusalError(
+      unreadableProviderSentence(toolkit, unreadable),
+    );
+  }
   if (named.size !== 1) {
     throw new BrokerRefusalError(
       named.size === 0
@@ -1180,7 +1187,9 @@ async function grantsFor(
  * with itself is UNANSWERED rather than silently resolved to whichever action came first. Case is
  * carried through untouched, so two spellings of one provider count as two and are likewise
  * unanswered; whether they are the same provider is the caller's comparison, and
- * `connectionSiblings` folds case for the one caller that makes it.
+ * `connectionSiblings` folds case for the one caller that makes it. A listing carrying ANY action
+ * whose authorization could not be read is unanswered too, however many ids sit beside it — see
+ * {@link authProvidersNamedBy}.
  *
  * `null` IS WHAT UNANSWERED MEANS, AND IT IS NOT AN ANSWER ANY CALLER MAY SPEND. It is not "no
  * provider", and a toolkit with no provider id anywhere lands on it for the same reason an
@@ -1203,24 +1212,77 @@ async function authProviderOf(
   client: Arcade,
   toolkit: string,
 ): Promise<string | null> {
-  const named = await authProvidersNamedBy(client, toolkit);
+  const { named, unreadable } = await authProvidersNamedBy(client, toolkit);
+  // An unreadable block is UNANSWERED, for the reason several ids are: the one id beside it is not
+  // the whole of what the listing says.
+  if (unreadable) return null;
   return named.size === 1 ? [...named][0] : null;
 }
 
 /**
- * The DISTINCT auth provider ids a toolkit's listing names, read to the listing's end.
+ * What a toolkit's listing says about its auth provider: the DISTINCT ids it names, and the first
+ * action whose authorization this deployment could not read, if any.
+ *
+ * `unreadable` IS A THIRD ANSWER, NOT AN EMPTY CONTRIBUTION. An action whose `requirements` or
+ * `requirements.authorization` arrives as a shape this deployment cannot read — or whose
+ * `provider_id` is present and is not a name — might name ANY provider, so the set beside it is
+ * not the whole of what the listing says. {@link authorizationRequirementOf} draws the same line for
+ * the catalogue and the grants screen; this is that line applied to `provider_id`.
+ */
+type AuthProvidersNamed = {
+  named: Set<string>;
+  unreadable: {
+    action: string | undefined;
+    field: "requirements" | "authorization" | "provider_id";
+    shape: string;
+  } | null;
+};
+
+/**
+ * Why a toolkit's provider could not be read off one unreadable action, for a refusal to say.
+ * Names the FIELD and the SHAPE that arrived there, never the value, for {@link shapeOf}'s reason.
+ */
+function unreadableProviderSentence(
+  toolkit: string,
+  unreadable: NonNullable<AuthProvidersNamed["unreadable"]>,
+): string {
+  const where = unreadable.action
+    ? `${toolkit}'s action ${unreadable.action}`
+    : `one of ${toolkit}'s actions`;
+  const field =
+    unreadable.field === "provider_id"
+      ? "auth provider id"
+      : unreadable.field === "authorization"
+        ? "authorization requirement"
+        : "requirements";
+  return `Arcade sent ${unreadable.shape} where ${where} carries its ${field}, so which auth provider ${toolkit}'s connections are held under could not be read — that action may name a provider the rest of the listing does not. Nothing was read as connected and nothing was withdrawn — a connection may still be live at the vendor. That is a change in what Arcade answers rather than a setting an operator can correct, so upgrading this deployment's @arcadeai/arcadejs is what fixes it.`;
+}
+
+/**
+ * The DISTINCT auth provider ids a toolkit's listing names, read to the listing's end — and the
+ * first action whose authorization could not be read.
  *
  * SEPARATED FROM {@link authProviderOf} SO THAT THE VERDICT AND THE EVIDENCE ARE TWO THINGS. The
  * seam's `authProviderOf` answers a provider or `null`, and `null` is a verdict with the evidence
- * thrown away — zero ids and nine ids arrive at its caller as the same word. {@link connectionsFor}
- * REFUSES on either, and a refusal has to say which one happened and name what it read, so it reads
- * the set and `authProviderOf` folds the set to its verdict. There is still ONE reading of the wire.
+ * thrown away — zero ids, nine ids and an unreadable block arrive at its caller as the same word.
+ * {@link connectionsFor} REFUSES on any of them, and a refusal has to say which one happened and
+ * name what it read, so it reads the evidence and `authProviderOf` folds it to its verdict. There is
+ * still ONE reading of the wire.
+ *
+ * AN UNREADABLE BLOCK IS NO LONGER SKIPPED. It once contributed nothing and raised nothing, so a
+ * `Gmail` listing of one `google` action beside one whose authorization arrived as a string
+ * resolved to `google` — a single provider asserted off a listing this deployment did not read
+ * whole, which is the fail-open direction for callers that spend DELETEs on the answer. ABSENCE is
+ * still not unreadability: an action with no authorization block, or a block with no `provider_id`
+ * (the live `Airtable` shape in `fixtures/arcade-catalogue.json`), names no provider and is read as
+ * naming none, exactly as {@link authorizationRequirementOf} reads it.
  */
 async function authProvidersNamedBy(
   client: Arcade,
   toolkit: string,
-): Promise<Set<string>> {
+): Promise<AuthProvidersNamed> {
   const named = new Set<string>();
+  let unreadable: AuthProvidersNamed["unreadable"] = null;
   for await (const item of pagedItems({
     pageSize: CATALOGUE_PAGE_SIZE,
     maxPages: CATALOGUE_MAX_PAGES,
@@ -1235,11 +1297,30 @@ async function authProvidersNamedBy(
     unreadableTotal: (shown) =>
       `Arcade reported the action list for ${toolkit} with a total_count of ${shown}, which is not a count, so whether the auth provider its connections are held under could be read in full is not known.`,
   })) {
-    const authorization = record(record(item)?.requirements)?.authorization;
-    const provider = textOf(record(authorization)?.provider_id);
+    // Read to the END even after an unreadable action, so a truncated or malformed listing still
+    // throws its own sentence rather than being reported as one unreadable row.
+    const read = authorizationRequirementOf(item);
+    if (read.kind === "none") continue;
+    const action = textOf(record(item)?.qualified_name);
+    if (read.kind === "unreadable") {
+      unreadable ??= { action, field: read.field, shape: read.shape };
+      continue;
+    }
+    const providerId = read.authorization.provider_id;
+    if (providerId === undefined || providerId === null) continue;
+    const provider = textOf(providerId);
     if (provider) named.add(provider);
+    else
+      unreadable ??= {
+        action,
+        field: "provider_id",
+        shape:
+          typeof providerId === "string"
+            ? "a blank string"
+            : shapeOf(providerId),
+      };
   }
-  return named;
+  return { named, unreadable };
 }
 
 /**

@@ -535,6 +535,85 @@ describe("arcade adapter connection lifecycle", () => {
     );
   });
 
+  /**
+   * AN AUTHORIZATION BLOCK THIS DEPLOYMENT CANNOT READ IS NOT AN ACTION THAT NAMES NO PROVIDER.
+   *
+   * `authProvidersNamedBy` once skipped it in silence, so a `Gmail` listing of one readable
+   * `google` action beside one whose authorization arrived unreadable resolved to `google`, and
+   * all three members answered — `revoke` spending DELETEs — off a listing that was not read whole.
+   * The unreadable action may name another provider; one id beside it is not an attribution.
+   */
+  const beside = (unreadable: Record<string, unknown>) =>
+    stub(
+      "list",
+      (query) => {
+        const toolkit = (query as { toolkit: string }).toolkit;
+        return Promise.resolve({
+          items: [
+            {
+              qualified_name: `${toolkit}.Readable`,
+              requirements: {
+                authorization: { id: "x", provider_id: "google" },
+              },
+            },
+            { qualified_name: `${toolkit}.Unreadable`, ...unreadable },
+          ],
+        });
+      },
+      toolsProto(),
+    );
+
+  test.each([
+    [
+      "an authorization that is a string",
+      { requirements: { authorization: "oauth2" } },
+      /Arcade sent a string where Gmail's action Gmail\.Unreadable carries its authorization requirement/,
+    ],
+    [
+      "requirements that are a list",
+      { requirements: ["oauth2"] },
+      /Arcade sent a list where Gmail's action Gmail\.Unreadable carries its requirements/,
+    ],
+    [
+      "a provider_id that is a number",
+      { requirements: { authorization: { id: "x", provider_id: 42 } } },
+      /Arcade sent a number where Gmail's action Gmail\.Unreadable carries its auth provider id/,
+    ],
+  ])(
+    "an action carrying %s REFUSES, rather than resolving off the readable one",
+    async (_, unreadable, refusal) => {
+      beside(unreadable);
+      listing([row(1, "google-openbot", { name: "Grace" })]);
+      const deleted: unknown[] = [];
+      stub("delete", (id) => {
+        deleted.push(id);
+        return Promise.resolve();
+      });
+      const { broker } = createArcadeClient("never-dialled");
+      const toolkit = "Gmail";
+      await expect(broker.isConnected({ account, toolkit })).rejects.toThrow(
+        refusal,
+      );
+      await expect(broker.accountName({ account, toolkit })).rejects.toThrow(
+        refusal,
+      );
+      const error = await broker
+        .revoke({ account, toolkit })
+        .then(() => null)
+        .catch((thrown: unknown) => thrown);
+      // AUTHORED, so the Disconnect route shows this sentence rather than vendor-outage advice.
+      expect(brokerSentence(error)).toMatch(refusal);
+      expect(deleted).toEqual([]);
+    },
+  );
+
+  test("an action with NO authorization block beside a readable one still resolves — absence is not unreadability", async () => {
+    beside({ requirements: { authorization: null } });
+    listing([row(1, "google-openbot", { name: "Grace" })]);
+    const { broker } = createArcadeClient("never-dialled");
+    expect(await broker.isConnected({ account, toolkit: "Gmail" })).toBe(true);
+  });
+
   test("each call resolves the provider and its configurations once, however many rows", async () => {
     const asked = providers({ Gmail: "google" });
     const read = configs();
