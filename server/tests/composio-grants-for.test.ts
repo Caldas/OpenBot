@@ -75,10 +75,18 @@ type AccountStatus =
  * row and be read by the adapter as fields the vendor sent.
  */
 type AccountFixture = {
-  row: { id?: unknown; data?: unknown };
+  row: { id?: unknown; data?: unknown; authConfig?: unknown };
   userId: string;
   status: AccountStatus;
   toolkit: string;
+  /**
+   * The id of the auth config this account was minted against, which the listing filters
+   * `authConfigIds` on and which the row carries as `authConfig.id` — as `@composio/core` 0.18.1
+   * builds every row (`src/utils/transformers/connectedAccounts.ts:55-62`). Written once here so
+   * the filter and the row cannot disagree; a row that spells its own `authConfig` keeps it, which
+   * is how a test hands over one Composio described unreadably.
+   */
+  config: string;
 };
 
 /** An auth config as the vendor holds it, beside the app whose listing returns it. */
@@ -143,9 +151,16 @@ function vendorWith(parts: {
               query.toolkitSlugs.includes(account.toolkit) &&
               // `some` rather than `includes` only because the query's element type is the
               // adapter's own private union: the comparison is the same one.
-              query.statuses.some((status) => status === account.status),
+              query.statuses.some((status) => status === account.status) &&
+              // Absent means every config, which is what the vendor does with no filter at all.
+              (query.authConfigIds === undefined ||
+                query.authConfigIds.includes(account.config)),
           )
-          .map((account) => account.row),
+          .map((account) =>
+            "authConfig" in account.row
+              ? account.row
+              : { ...account.row, authConfig: { id: account.config } },
+          ),
         nextCursor: null,
       }),
       link: refuse("connectedAccounts.link"),
@@ -197,6 +212,7 @@ describe("Composio's grantsFor", () => {
             userId: ACCOUNT.vendorUserId,
             status: "ACTIVE",
             toolkit: "gmail",
+            config: "ac_1",
           },
         ],
         configs: [OPERATORS_GMAIL_CONFIG, OUR_GMAIL_CONFIG],
@@ -300,6 +316,7 @@ describe("Composio's grantsFor", () => {
             userId: OTHER_PERSON,
             status: "ACTIVE",
             toolkit: "gmail",
+            config: "ac_1",
           },
         ],
         configs: [OUR_GMAIL_CONFIG, OPERATORS_GMAIL_CONFIG],
@@ -342,6 +359,7 @@ describe("Composio's grantsFor", () => {
               userId: ACCOUNT.vendorUserId,
               status,
               toolkit: "gmail",
+              config: "ac_1",
             },
           ],
           configs: [OUR_GMAIL_CONFIG, OPERATORS_GMAIL_CONFIG],
@@ -376,6 +394,7 @@ describe("Composio's grantsFor", () => {
             userId: ACCOUNT.vendorUserId,
             status: "ACTIVE",
             toolkit: "slack",
+            config: "ac_2",
           },
         ],
         configs: [
@@ -421,6 +440,115 @@ describe("Composio's grantsFor", () => {
   });
 
   /**
+   * THE SCOPES ARE THE CONFIG THE CONNECTION WAS MINTED AGAINST, WHICH NEED NOT BE OURS.
+   *
+   * `isConnected` — the gate `./access` asks before running an action — counts an account on any
+   * config, because the call that runs an action names the person and the toolkit, not the
+   * account. So a person whose only gmail account sits on an operator's hand-made config CAN act,
+   * and `authorized` is the truth about them. What they hold is that config's scope set: answering
+   * `authorized` with THIS deployment's scopes describes a grant they never made. Narrowing the
+   * state to our configs instead would tell them to consent to an app the gate already lets them
+   * use — the two read-only seam members disagreeing about one person.
+   */
+  test("answers authorized with the operator's config's scopes where that is the only config this person is connected on", async () => {
+    const { broker } = buildComposioClient(
+      vendorWith({
+        accounts: [
+          {
+            row: { id: "ca_op" },
+            userId: ACCOUNT.vendorUserId,
+            status: "ACTIVE",
+            toolkit: "gmail",
+            config: "ac_0",
+          },
+        ],
+        configs: [OUR_GMAIL_CONFIG, OPERATORS_GMAIL_CONFIG],
+        actions: [{ row: { slug: "GMAIL_FETCH_EMAILS" }, toolkit: "gmail" }],
+      }),
+    );
+
+    expect(
+      await broker.grantsFor({ toolkit: "gmail", account: ACCOUNT }),
+    ).toEqual([
+      {
+        action: "GMAIL_FETCH_EMAILS",
+        state: "authorized",
+        scopes: ["gmail.modify"],
+      },
+    ]);
+    // And the gate agrees, which is the consistency the state is measured for.
+    expect(
+      await broker.isConnected({ toolkit: "gmail", account: ACCOUNT }),
+    ).toBe(true);
+  });
+
+  test("answers authorized with every scope this person holds where they are connected on both configs", async () => {
+    const { broker } = buildComposioClient(
+      vendorWith({
+        accounts: [
+          {
+            row: { id: "ca_op" },
+            userId: ACCOUNT.vendorUserId,
+            status: "ACTIVE",
+            toolkit: "gmail",
+            config: "ac_0",
+          },
+          {
+            row: { id: "ca_ours" },
+            userId: ACCOUNT.vendorUserId,
+            status: "ACTIVE",
+            toolkit: "gmail",
+            config: "ac_1",
+          },
+        ],
+        configs: [OUR_GMAIL_CONFIG, OPERATORS_GMAIL_CONFIG],
+        actions: [{ row: { slug: "GMAIL_FETCH_EMAILS" }, toolkit: "gmail" }],
+      }),
+    );
+
+    expect(
+      await broker.grantsFor({ toolkit: "gmail", account: ACCOUNT }),
+    ).toEqual([
+      {
+        action: "GMAIL_FETCH_EMAILS",
+        state: "authorized",
+        scopes: ["gmail.modify", "gmail.readonly", "gmail.send"],
+      },
+    ]);
+  });
+
+  /**
+   * A CONFIG NOBODY CAN NAME LENDS NO SCOPES — neither ours nor anybody's. An account whose
+   * `authConfig` Composio described unreadably is still an ACTIVE account, so the state is
+   * `authorized`; what it was minted against is not something this deployment can read, and the
+   * answer says nothing about it rather than borrowing this deployment's scope set. The same
+   * report-not-refuse posture `scopesOf` takes for a config publishing no scopes at all.
+   */
+  test("lends no config's scopes to an account whose config Composio did not name", async () => {
+    const { broker } = buildComposioClient(
+      vendorWith({
+        accounts: [
+          {
+            row: { id: "ca_blank", authConfig: { id: 7 } },
+            userId: ACCOUNT.vendorUserId,
+            status: "ACTIVE",
+            toolkit: "gmail",
+            config: "ac_1",
+          },
+        ],
+        configs: [OUR_GMAIL_CONFIG, OPERATORS_GMAIL_CONFIG],
+        actions: [{ row: { slug: "GMAIL_FETCH_EMAILS" }, toolkit: "gmail" }],
+      }),
+    );
+
+    expect(
+      await broker.grantsFor({ toolkit: "gmail", account: ACCOUNT }),
+    ).toEqual([
+      { action: "GMAIL_FETCH_EMAILS", state: "authorized", scopes: [] },
+    ]);
+  });
+
+  /**
    * A config publishing no scope set is an empty list rather than a refusal, because this method
    * REPORTS rather than acts: Composio publishes no scopes for a key-scheme config at all, and an
    * app whose grant cannot be described scope by scope is still an app this person is connected to.
@@ -434,6 +562,7 @@ describe("Composio's grantsFor", () => {
             userId: ACCOUNT.vendorUserId,
             status: "ACTIVE",
             toolkit: "firecrawl",
+            config: "ac_1",
           },
         ],
         configs: [

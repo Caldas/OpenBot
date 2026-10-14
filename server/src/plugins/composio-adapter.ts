@@ -236,6 +236,31 @@ type VendorAuthConfig = {
 };
 
 /**
+ * One connected account as the listing hands it over, narrowed to the fields this file reads.
+ *
+ * `id` and `data` are read by the withdrawal and by {@link ComposioBroker.accountName}.
+ * `authConfig` is read by {@link ComposioBroker.grantsFor} alone, for the id of the config the
+ * account was minted against, because that config — and no other — fixes the scopes the account
+ * holds. `transformConnectedAccountResponse` builds it on every row from the raw
+ * `auth_config` (`@composio/core` 0.18.1, `src/utils/transformers/connectedAccounts.ts:55-62`), and
+ * it is `unknown` for the reason every other field here is: the transform is warn-only.
+ */
+type AccountRow = { id?: unknown; data?: unknown; authConfig?: unknown };
+
+/**
+ * The id of the auth config one account was minted against, or null where Composio did not name it.
+ *
+ * NULL RATHER THAN A REFUSAL, BECAUSE ITS ONE READER REPORTS RATHER THAN ACTS — the reasoning of
+ * {@link scopesOf}, one field along. An account whose config cannot be named is still an account,
+ * and what is lost is only the description of what it holds.
+ */
+function configIdOf(row: AccountRow): string | null {
+  const config = row.authConfig;
+  if (!config || typeof config !== "object") return null;
+  return textOf((config as { id?: unknown }).id);
+}
+
+/**
  * The connected-account statuses this file knows how to ask for, as the literals the SDK admits.
  *
  * The whole enum is named rather than the two or three in use, because the point of the two lists
@@ -2268,7 +2293,7 @@ export type ComposioVendor = {
        * same function reads `response.auth_config.id` (`:60`) on its way to building each row, so a
        * row that is not an object raises inside the vendor's code and never reaches this listing.
        */
-      items: { id?: unknown; data?: unknown }[];
+      items: AccountRow[];
       /**
        * The same truncation signal as the auth-config listing above, from the same vendor schema.
        *
@@ -2584,8 +2609,8 @@ export function buildComposioClient(
    *
    * AND SO ARE THE OTHER TWO THINGS THE TWO QUESTIONS DO NOT SHARE, for the same reason the
    * statuses are. `configs` is which authorization configs the answer is about — every one of them
-   * for the gate, and only this deployment's for the withdrawal, because the withdrawal ACTS on
-   * what it finds. `enough` is when the rows in hand already settle the question, which is true of
+   * for the three that only READ (the gate, `grantsFor` and `accountName`), and only this
+   * deployment's for the withdrawal, because the withdrawal ACTS on what it finds. `enough` is when the rows in hand already settle the question, which is true of
    * a boolean the moment one row arrives and never true of a set of accounts to end. Both are
    * written at the call sites below, beside the statuses, so that the whole of the difference
    * between the two questions is one argument list a reader can compare.
@@ -2596,9 +2621,9 @@ export function buildComposioClient(
     statuses: VendorAccountStatus[],
     asked: {
       configs?: string[];
-      enough?: (rows: { id?: unknown; data?: unknown }[]) => boolean;
+      enough?: (rows: AccountRow[]) => boolean;
     } = {},
-  ): Promise<{ id?: unknown; data?: unknown }[]> => {
+  ): Promise<AccountRow[]> => {
     /*
      * EVERY PAGE UNLESS THE CALLER SAYS OTHERWISE, READ HERE RATHER THAN AT EITHER CALLER, so that
      * the two questions cannot drift on the one thing they do share. A truncated listing is the
@@ -3094,25 +3119,46 @@ export function buildComposioClient(
      * would make one seam member answer two different questions depending on who implemented it,
      * which is the defect this file already carried at {@link ComposioBroker.accountName}.
      *
-     * THE ACCOUNT LISTING GOES FIRST, AND THE ORDER IS THE CHEAP QUESTION BEFORE THE DEAR ONES. It
-     * is the one call that can settle on a single row — see `accountsFor`'s `enough` — while the
-     * config listing and the action listing both read every page.
+     * THE STATE IS MEASURED OVER EVERY CONFIG, AS {@link ComposioBroker.isConnected}'S IS. The two
+     * are the same read-only question — can this person act through the app — and the call that
+     * runs an action names the person and the toolkit, not the account, so an account on an
+     * operator's hand-made config is one they act through. Measuring this one over our configs
+     * alone would answer `needs-consent` to somebody the gate lets through, and send them to
+     * consent to an app they already use. Only {@link ComposioBroker.revoke}, which ACTS on what it
+     * finds, is scoped to ours.
      *
-     * SCOPES COME FROM THIS DEPLOYMENT'S OWN CONFIGS AND FROM NO OTHER. `configsFor` returns the
-     * operator's hand-made configs beside ours, and a scope set nobody here chose is not what this
-     * person's connection was minted against — the same distinction {@link madeHere} draws for
-     * every destructive caller, drawn here for a descriptive one. The names are deduplicated and
-     * ordered so that two readings of one unchanged deployment are one answer.
+     * SO THE SCOPES ARE THE CONFIGS THIS PERSON'S ACCOUNTS WERE MINTED AGAINST, WHICH NEED NOT BE
+     * OURS. A config fixes its scope set when it is created and every account on it holds exactly
+     * that set, so an `authorized` answer carries the scopes of the configs the counted accounts
+     * sit on — every one of them, which is why the listing is read to the end rather than stopped at
+     * the first row. This used to carry THIS DEPLOYMENT'S scopes whatever the account sat on, which
+     * paired `authorized` with a scope set the person never granted. A `needs-consent` answer
+     * carries our configs' scopes instead, because those are the configs a consent from here is
+     * minted against: it describes what they would be asked for.
+     *
+     * AN ACCOUNT WHOSE CONFIG CANNOT BE NAMED, OR IS NOT AMONG THE CONFIGS THAT COULD BE READ,
+     * LENDS NO SCOPES — neither its own, which nothing here can read, nor ours, which it does not
+     * hold. The names are deduplicated and ordered so that two readings of one unchanged deployment
+     * are one answer.
      */
     async grantsFor({ toolkit, account }): Promise<GrantState[]> {
-      const held = await accountsFor(account.vendorUserId, toolkit, CONNECTED, {
-        enough: (found) => found.length > 0,
-      });
-      const state = held.length > 0 ? "authorized" : "needs-consent";
+      const connected = await accountsFor(
+        account.vendorUserId,
+        toolkit,
+        CONNECTED,
+      );
+      const state = connected.length > 0 ? "authorized" : "needs-consent";
 
-      const { ours } = await configsFor(toolkit);
+      const { held, ours } = await configsFor(toolkit);
+      const mintedOn = new Set(
+        connected.map(configIdOf).filter((id) => id !== null),
+      );
+      const granting =
+        state === "authorized"
+          ? held.filter((config) => mintedOn.has(config.id))
+          : ours;
       const scopes = [
-        ...new Set(ours.flatMap((config) => config.scopes)),
+        ...new Set(granting.flatMap((config) => config.scopes)),
       ].sort();
 
       const published = await actions.listActions(toolkit, {
