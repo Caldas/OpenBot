@@ -3332,10 +3332,10 @@ export function createPluginRoutes(
         if (retiredApp && collateral) {
           try {
             /*
-             * THE BOOLEAN IS READ, NOT DROPPED. `false` used to mean only "nothing there", but the
-             * lifecycle trio filters on the RESOLVED auth provider, so it now also means "we could
-             * not work out what to withdraw". Over a possibly-live grant the safe reading of that
-             * ambiguity is "we do not know": it takes the not-withdrawn branch, as a throw does.
+             * THE BOOLEAN IS READ, NOT DROPPED. `false` means "nothing there" — on Arcade a
+             * toolkit whose auth provider could NOT be resolved now refuses rather than answering
+             * it, so an unattributable app arrives here as the throw below. Both land on the
+             * not-withdrawn branch, which is the safe reading over a possibly-live grant.
              */
             withdrawn = await withVendorDeadline(() =>
               composio.broker.revoke({

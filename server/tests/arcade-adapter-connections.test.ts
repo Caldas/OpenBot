@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import Arcade from "@arcadeai/arcadejs";
 import { useArcadeClient } from "../src/plugins/arcade";
 import { createArcadeClient } from "../src/plugins/arcade-adapter";
+import { brokerSentence } from "../src/plugins/broker";
 import type { AccountRef } from "../src/plugins/shared-accounts";
 
 /** Prototype stubs BEFORE construction; `new Arcade({ apiKey })` opens no socket. */
@@ -368,9 +369,23 @@ describe("arcade adapter connection lifecycle", () => {
     expect(deleted).toEqual(["ac_2"]);
   });
 
-  test("an UNRESOLVED toolkit answers as no rows and never falls back to its name", async () => {
-    // `Gmail` is unresolved, and a row whose provider IS literally `gmail` exists: a fallback to
-    // the toolkit name would find it.
+  /**
+   * AN UNATTRIBUTABLE TOOLKIT REFUSES OUT OF ALL THREE LIFECYCLE MEMBERS, AND NEVER FALLS BACK TO
+   * ITS NAME. Both halves matter and they used to be answered the same wrong way.
+   *
+   * The fallback is still refused: each fixture below serves a row whose instance id IS literally
+   * the toolkit name folded down, so a fallback would find it and delete it — attributing somebody
+   * else's connection to this app on a guess.
+   *
+   * And answering NO ROWS is refused too, which is this pair's reason for existing. `revoke` then
+   * said `false` — "there was nothing to withdraw" — without spending a single DELETE, while
+   * `store.ts`'s disconnect path deletes the local `brokered_connections` row on that answer
+   * regardless: a live grant at the vendor that no row this deployment holds any longer names.
+   * `isConnected` and `accountName` said not-connected for the same person, so Connect offered a
+   * second authorization beside the live one. The listing was not read; refusing is the only
+   * honest answer, and `broker.ts`'s `revoke` contract requires it.
+   */
+  test("a toolkit whose listing names NO provider refuses rather than answering no rows", async () => {
     providers({});
     listing([row(1, "gmail", { name: "Grace" })]);
     const deleted: unknown[] = [];
@@ -380,10 +395,65 @@ describe("arcade adapter connection lifecycle", () => {
     });
     const { broker } = createArcadeClient("never-dialled");
     const toolkit = "Gmail";
-    expect(await broker.isConnected({ account, toolkit })).toBe(false);
-    expect(await broker.accountName({ account, toolkit })).toBeNull();
-    expect(await broker.revoke({ account, toolkit })).toBe(false);
+    const refusal = /names no auth provider at all/;
+    await expect(broker.isConnected({ account, toolkit })).rejects.toThrow(
+      refusal,
+    );
+    await expect(broker.accountName({ account, toolkit })).rejects.toThrow(
+      refusal,
+    );
+    await expect(broker.revoke({ account, toolkit })).rejects.toThrow(refusal);
     expect(deleted).toEqual([]);
+  });
+
+  test("a toolkit whose listing names TWO providers refuses, naming both", async () => {
+    // Two actions of one toolkit under two different provider types: the toolkit disagrees with
+    // itself, so which of this account's connections are its own cannot be read off the listing.
+    stub(
+      "list",
+      (query) => {
+        const toolkit = (query as { toolkit: string }).toolkit;
+        return Promise.resolve({
+          items: ["microsoft", "google"].map((provider, n) => ({
+            qualified_name: `${toolkit}.A${n}`,
+            requirements: { authorization: { id: "x", provider_id: provider } },
+          })),
+        });
+      },
+      toolsProto(),
+    );
+    listing([row(1, "gmail", { name: "Grace" })]);
+    const deleted: unknown[] = [];
+    stub("delete", (id) => {
+      deleted.push(id);
+      return Promise.resolve();
+    });
+    const { broker } = createArcadeClient("never-dialled");
+    const toolkit = "Gmail";
+    // Sorted, so the sentence does not change with the order the listing happened to arrive in.
+    const refusal = /names 2 different auth providers \(google, microsoft\)/;
+    await expect(broker.isConnected({ account, toolkit })).rejects.toThrow(
+      refusal,
+    );
+    await expect(broker.accountName({ account, toolkit })).rejects.toThrow(
+      refusal,
+    );
+    await expect(broker.revoke({ account, toolkit })).rejects.toThrow(refusal);
+    expect(deleted).toEqual([]);
+  });
+
+  test("the unattributable refusal is an AUTHORED one, so the route shows its sentence", async () => {
+    // A `BrokerRefusalError` and not a bare `Error`: `brokerSentence` is what the Disconnect and
+    // Connect routes read, and a bare error would have them say "the vendor said nothing about
+    // why, check the key" about a sentence this deployment wrote itself.
+    providers({});
+    listing([row(1, "google-openbot")]);
+    const { broker } = createArcadeClient("never-dialled");
+    const error = await broker
+      .revoke({ account, toolkit: "Gmail" })
+      .then(() => null)
+      .catch((thrown: unknown) => thrown);
+    expect(brokerSentence(error)).toMatch(/names no auth provider at all/);
   });
 
   test("a malformed listing THROWS out of the lifecycle members rather than answering no rows", async () => {
