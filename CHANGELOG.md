@@ -32,6 +32,43 @@ Newest first. `Unreleased` is what is on `main` and not yet tagged.
   `code_required` (below). A server and a computer must be upgraded together: an older computer has
   no `/sign-in/code`.
 
+### A reply's tool calls fold into one line
+
+A Bot that searched, read two pages and checked Drive before answering drew four lines above its
+answer. Adjacent connector calls and browser steps now fold into one line that says what was done,
+such as "Searched the web and read 2 pages", with an icon for each kind of step. It names the step in
+progress while the Bot works, and counts issues when a step was blocked or failed. Opened, it lists
+each step with its query, page or connector, and each step opens to what it was given and what came
+back. A single connector call keeps its own line, and approvals, connection requests and anything the
+app draws itself stay outside the fold.
+
+### Public-web research works with Exa and Firecrawl, not only Parallel
+
+Four new catalogue entries give a Bot public-web search and page reading without its browser:
+**Exa Search** (free, rate-limited), **Exa Search (API key)**, **Firecrawl** (free) and **Firecrawl
+(API key)**. They sit beside the two Parallel entries, and nothing is granted to any Bot until an administrator does it.
+See [docs/web-research.md](docs/web-research.md).
+
+- **The research guidance follows whichever provider a Bot holds.** It used to switch on only for
+  Parallel's two tools. Now a Bot holding any provider's search and fetch tools is told how to use
+  them, and a Bot holding more than one uses the one the person asks for.
+- **A Bot holding a research provider searches without being asked** when an answer depends on facts
+  that change, such as current figures, rankings or recent events, and stops after a search or two.
+  Before, every Bot was told not to go looking, so one holding a search tool still answered from
+  memory. A Bot with only its browser now says it can open pages but cannot search.
+- **A conversation doesn't say which provider searched.** Research calls show as "Search the web"
+  and "Read web pages" rather than "Web search exa", and the Bot doesn't name the provider unless
+  asked. The Bot's access page still shows which provider it holds.
+- **The shipped `research-public-web` skill declares roles, not Parallel.** Its tools are now
+  `@research/search` and `@research/fetch`, which match the search and fetch tools of every research
+  provider the Bot was granted. A skill written by a person can declare the same roles, and the
+  Skills page offers them under "Public-web research". A role grants nothing.
+- **Exa and Firecrawl list their reads.** Every other tool they advertise counts as a write, so a
+  Firecrawl monitor deletion or an Exa agent run goes through the same policy as any write.
+- **An API key can go in the vendor's own header.** Exa reads `x-api-key`; the deployment key for
+  that entry is sent there. The admin page now says the key is "Sent with every call to this vendor"
+  rather than calling it a bearer token.
+
 ### Bot turns hold their conversation more carefully
 
 Routines, responsibilities, background research, wake-ups, group turns and Bot-to-Bot handoffs keep a
