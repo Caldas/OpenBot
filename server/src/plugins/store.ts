@@ -6915,6 +6915,44 @@ export function createPluginStore(options: PluginStoreOptions) {
      * The live attempt for a session subject (`users.id`, never `credentialActorId`), or null when
      * there is none, it is past the 15-minute TTL, or it has completed.
      */
+    /**
+     * Whether this attempt's completion COMMITTED — asked of the row the transaction serializes on.
+     *
+     * FOR ONE CALLER AND ONE QUESTION: `/arcade/verify`'s completion rejected, and "the call threw"
+     * is not "the work rolled back". A connection lost on the way back from a COMMIT the server had
+     * already applied rejects at the client over a grant that is written down, and the verifier
+     * telling that person `not-recorded` sends them to mint a second consent at the vendor against
+     * a connection they already hold. The attempt row is the one place that can say which happened:
+     * {@link createPluginStore}'s `completeAuthorizationAttempt` stamps `outcome = 'completed'` in
+     * the first statement of the transaction, so the stamp exists exactly when the transaction did.
+     *
+     * NOT {@link authorizationAttemptFor}, which cannot answer this. It filters on `completed_at IS
+     * NULL` AND on the fifteen-minute TTL, so it answers `null` for a completed attempt and for an
+     * expired one alike — and a verifier that read "no live attempt" as "it committed" would
+     * report a grant that is not there for any completion that ran long enough to age out.
+     *
+     * MATCHED ON `(actor_id, auth_id)` like the closers above and never on `created_at`, because
+     * what the caller holds at this point is the `ar_...`. A rival callback having completed the
+     * same attempt first answers `true` here, which is correct: the grant is recorded either way,
+     * and this deployment has never been able or willing to tell the winner from the loser.
+     */
+    async authorizationAttemptCompleted(input: {
+      actorId: string;
+      authId: string;
+    }): Promise<boolean> {
+      const [row] = await database
+        .select({ actorId: pendingAuthorizations.actorId })
+        .from(pendingAuthorizations)
+        .where(
+          and(
+            eq(pendingAuthorizations.actorId, input.actorId),
+            eq(pendingAuthorizations.authId, input.authId),
+            eq(pendingAuthorizations.outcome, "completed"),
+          ),
+        );
+      return row !== undefined;
+    },
+
     async authorizationAttemptFor(
       actorId: string,
     ): Promise<PendingAuthorization | null> {
