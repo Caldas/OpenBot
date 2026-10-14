@@ -889,13 +889,13 @@ const ALLOW: Allowed[] = [
     finding: "NEW (round 2 did not find this)",
     why: "const siblingReads: string[] = [];",
   },
-  {
-    file: "server/tests/arcade-attempt-store.integration.test.ts",
-    line: 81,
-    shape: "e",
-    finding: "NEW (round 2 did not find this)",
-    why: "const actors: string[] = [];",
-  },
+  /*
+   * `server/tests/arcade-attempt-store.integration.test.ts:81` — `const actors: string[] = []`,
+   * written and never read — is GONE rather than renumbered. The list it collects is now read by
+   * the `removePeople` in that file's `afterAll`: `pending_authorizations.actor_id` keys to `users`
+   * and cascades, so the ids the suite invents are people it has to create and then take away, and
+   * the collection that was decorative is now what the cleanup runs on.
+   */
   {
     file: "server/tests/arcade-disconnect-cascade.test.ts",
     line: 36,

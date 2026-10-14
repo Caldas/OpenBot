@@ -78,6 +78,7 @@ import { createSharedUseStore } from "../src/plugins/shared-use-store";
 import { createPluginStore } from "../src/plugins/store";
 import fixture from "./fixtures/arcade-catalogue.json";
 import { TEST_POOL, testDatabaseUrl } from "./support/database";
+import { removePeople, seedPeople } from "./support/people";
 import { testEnvironment } from "./support/environment";
 
 const database = createDatabase(testDatabaseUrl(), TEST_POOL);
@@ -586,6 +587,9 @@ async function consent(serverRowId: string, actionName: string) {
 }
 
 beforeAll(async () => {
+  // The administrator walking this journey is a real `users` row, because the attempt rows minted
+  // along the way key to one on both `actor_id` and `user_id` and cascade from it.
+  await seedPeople(database, [ADMIN]);
   installVendor();
   const client = createArcadeClient("never-dialled");
   broker = client.broker;
@@ -611,6 +615,7 @@ afterAll(async () => {
     .delete(mcpServers)
     .where(inArray(mcpServers.id, [MAIL_ROW, DIARY_ROW]));
   await database.delete(agents).where(eq(agents.id, BOT));
+  await removePeople(database, [ADMIN]);
   await database.$client.close();
 });
 

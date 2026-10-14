@@ -9,6 +9,7 @@ import type { ConnectedAppBroker } from "../src/plugins/broker";
 import type { AccountRef } from "../src/plugins/shared-accounts";
 import { createPluginStore } from "../src/plugins/store";
 import { TEST_POOL, testDatabaseUrl } from "./support/database";
+import { removePeople, seedPeople } from "./support/people";
 
 const database = createDatabase(testDatabaseUrl(), TEST_POOL);
 const suite = randomUUID().slice(0, 8);
@@ -78,10 +79,19 @@ const age = (actorId: string, interval: string) =>
     sql`update pending_authorizations set created_at = created_at - ${interval}::interval where actor_id = ${actorId}`,
   );
 
+/**
+ * An actor id for this suite, AND THE PERSON BEHIND IT.
+ *
+ * `pending_authorizations.actor_id` and `.user_id` both key to `users` and both cascade, so an
+ * attempt cannot be written for somebody who does not exist. Seeding here rather than in each case
+ * keeps the cases about the store: a case that invented its own id would be refused by the foreign
+ * key, and the refusal would read as the store failing to claim.
+ */
 const actors: string[] = [];
-const actor = (name: string) => {
+const actor = async (name: string) => {
   const id = `${name}-${suite}`;
   actors.push(id);
+  await seedPeople(database, [id]);
   return id;
 };
 
@@ -97,12 +107,13 @@ beforeAll(async () => {
 afterAll(async () => {
   // Cascades to the attempts.
   await database.delete(mcpServers).where(eq(mcpServers.id, serverId));
+  await removePeople(database, actors);
   await database.$client.close();
 });
 
 describe("claimAuthorizationAttempt", () => {
   test("succeeds when no attempt exists", async () => {
-    const a = actor("fresh");
+    const a = await actor("fresh");
     const got = await claim(a);
     expect(got.claimed).toBe(true);
     if (!got.claimed) return;
@@ -115,7 +126,7 @@ describe("claimAuthorizationAttempt", () => {
   });
 
   test("a second claim while the first is live returns zero rows and answers the live row", async () => {
-    const a = actor("live");
+    const a = await actor("live");
     const first = await claim(a, "connect");
     const second = await claim(a, "reconnect");
     expect(first.claimed).toBe(true);
@@ -130,7 +141,7 @@ describe("claimAuthorizationAttempt", () => {
   });
 
   test("succeeds after the first expired, replacing it", async () => {
-    const a = actor("expired");
+    const a = await actor("expired");
     await claim(a, "old");
     await age(a, "16 minutes");
     const got = await claim(a, "new");
@@ -144,7 +155,7 @@ describe("claimAuthorizationAttempt", () => {
   });
 
   test("succeeds after the first completed, replacing it", async () => {
-    const a = actor("completed");
+    const a = await actor("completed");
     await claim(a, "old");
     await database.execute(
       sql`update pending_authorizations set completed_at = now(), outcome = 'completed' where actor_id = ${a}`,
@@ -161,7 +172,7 @@ describe("claimAuthorizationAttempt", () => {
   });
 
   test("two concurrent claims by one actor: exactly one wins", async () => {
-    const a = actor("race");
+    const a = await actor("race");
     const results = await Promise.all([claim(a, "one"), claim(a, "two")]);
     expect(results.filter((r) => r.claimed).length).toBe(1);
     expect(results.filter((r) => !r.claimed).length).toBe(1);
@@ -170,8 +181,8 @@ describe("claimAuthorizationAttempt", () => {
 
 describe("recordAuthorizationMint", () => {
   test("writes the ar_ onto the attempt and leaves another actor's alone", async () => {
-    const a = actor("mint");
-    const other = actor("mint-other");
+    const a = await actor("mint");
+    const other = await actor("mint-other");
     const mine = await claim(a);
     await claim(other);
     if (!mine.claimed) throw new Error("claim failed");
@@ -187,7 +198,7 @@ describe("recordAuthorizationMint", () => {
   });
 
   test("a mint against a different created_at writes nothing", async () => {
-    const a = actor("mint-stale");
+    const a = await actor("mint-stale");
     await claim(a);
     const wrote = await store.recordAuthorizationMint({
       actorId: a,
@@ -201,7 +212,7 @@ describe("recordAuthorizationMint", () => {
 
 describe("discardAuthorizationAttempt", () => {
   test("deletes the named attempt, an unminted one included", async () => {
-    const a = actor("discard");
+    const a = await actor("discard");
     const got = await claim(a);
     if (!got.claimed) throw new Error("claim failed");
     const deleted = await store.discardAuthorizationAttempt({
@@ -213,7 +224,7 @@ describe("discardAuthorizationAttempt", () => {
   });
 
   test("leaves a NEWER attempt by the same actor standing", async () => {
-    const a = actor("newer");
+    const a = await actor("newer");
     const older = await claim(a, "older");
     if (!older.claimed) throw new Error("claim failed");
     await age(a, "16 minutes");
@@ -249,17 +260,19 @@ describe("discardAuthorizationAttempt", () => {
 
 describe("authorizationAttemptFor", () => {
   test("answers the live attempt", async () => {
-    const a = actor("for-live");
+    const a = await actor("for-live");
     await claim(a);
     expect((await store.authorizationAttemptFor(a))?.actorId).toBe(a);
   });
 
   test("answers null when there is none", async () => {
-    expect(await store.authorizationAttemptFor(actor("for-none"))).toBeNull();
+    expect(
+      await store.authorizationAttemptFor(await actor("for-none")),
+    ).toBeNull();
   });
 
   test("answers null past the TTL", async () => {
-    const a = actor("for-expired");
+    const a = await actor("for-expired");
     await claim(a);
     await age(a, "16 minutes");
     expect(await store.authorizationAttemptFor(a)).toBeNull();
@@ -296,7 +309,7 @@ describe("naming an attempt by created_at", () => {
   };
 
   test("a mint matches a row written with the column default", async () => {
-    const a = actor("default-mint");
+    const a = await actor("default-mint");
     const row = await insertWithDefaultCreatedAt(a);
     const wrote = await store.recordAuthorizationMint({
       actorId: a,
@@ -308,7 +321,7 @@ describe("naming an attempt by created_at", () => {
   });
 
   test("a discard matches a row written with the column default", async () => {
-    const a = actor("default-discard");
+    const a = await actor("default-discard");
     const row = await insertWithDefaultCreatedAt(a);
     expect(
       await store.discardAuthorizationAttempt({
@@ -320,7 +333,7 @@ describe("naming an attempt by created_at", () => {
   });
 
   test("a created_at that has been through JSON still names its attempt", async () => {
-    const a = actor("json-mint");
+    const a = await actor("json-mint");
     const got = await claim(a);
     if (!got.claimed) throw new Error("claim failed");
     // The declared type says `Date`; a serialised attempt hands back a string.
@@ -337,7 +350,7 @@ describe("naming an attempt by created_at", () => {
   });
 
   test("a created_at that names no instant is refused, not matched", async () => {
-    const a = actor("bad-instant");
+    const a = await actor("bad-instant");
     await claim(a);
     await expect(
       store.recordAuthorizationMint({

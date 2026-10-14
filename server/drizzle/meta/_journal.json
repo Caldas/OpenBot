@@ -414,6 +414,13 @@
       "when": 1791924168752,
       "tag": "0058_pending_authorization_checks",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1791942219457,
+      "tag": "0059_pending_authorization_person_keys",
+      "breakpoints": true
     }
   ]
 }

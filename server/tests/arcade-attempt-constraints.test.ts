@@ -12,6 +12,7 @@ import { createDatabase } from "../src/db/client";
 import { mcpServers, pendingAuthorizations } from "../src/db/schema/plugins";
 import { checkRoster } from "./support/constraints";
 import { TEST_POOL, testDatabaseUrl } from "./support/database";
+import { removePeople, seedPeople } from "./support/people";
 
 const database = createDatabase(testDatabaseUrl(), TEST_POOL);
 const suite = randomUUID().slice(0, 8);
@@ -28,13 +29,34 @@ const attempt = (overrides: Record<string, unknown>) => ({
   ...overrides,
 });
 
+/**
+ * Every person this file invented, so `afterAll` can take them away again.
+ *
+ * `actor_id` and `user_id` both key to `users` and both cascade, so the row a case is about cannot
+ * be written until its person exists — and deleting the person afterwards is also what deletes the
+ * attempt. Seeding happens inside {@link insert} rather than in `beforeAll` because the actor id is
+ * generated per row, and a case that forgot to seed its own would otherwise be refused by the
+ * foreign key and read as a CHECK that did not fire.
+ */
+const seeded = new Set<string>();
+
+const seedFor = async (row: Record<string, unknown>) => {
+  const people = [row.actorId, row.userId].filter(
+    (id): id is string => typeof id === "string" && id.length > 0,
+  );
+  for (const id of people) seeded.add(id);
+  await seedPeople(database, people);
+};
+
 // Awaited rather than handed back as a builder, so a failure says what the database did with the
 // row and not what drizzle's query object looks like.
 const insert = async (overrides: Record<string, unknown>) => {
+  const row = attempt(overrides);
+  await seedFor(row);
   await database
     .insert(pendingAuthorizations)
     // biome-ignore lint/suspicious/noExplicitAny: the point is what the DATABASE refuses, past the declared unions.
-    .values(attempt(overrides) as any);
+    .values(row as any);
 };
 
 /**
@@ -65,6 +87,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await database.execute(sql`delete from mcp_servers where id = ${serverId}`);
+  await removePeople(database, [...seeded]);
   await database.$client.close();
 });
 
@@ -146,5 +169,88 @@ describe("pending_authorizations holds its declared unions", () => {
       sql`select count(*)::int as n from pending_authorizations where action = ${action}`,
     );
     expect(rows[0]?.n).toBe(7);
+  });
+});
+
+/**
+ * The two columns that name `users.id`, and whether the database holds them to it.
+ *
+ * `0057` created both `actor_id` and `user_id` naming `users.id` in the docblock and carrying no
+ * key, which is the shape where the schema is documentation and the data is whatever got written:
+ * a deleted person left attempts pointing at nobody, and an actor id that was never a person at all
+ * was accepted without complaint. `0059` adds both keys, cascading, and these are the cases that
+ * say so — asked of the DATABASE, because a `.references()` in drizzle that no migration carried
+ * into postgres enforces nothing at all.
+ */
+describe("pending_authorizations keys the people it names", () => {
+  test("an actor who is not a person is refused", async () => {
+    const stranger = `ghost-actor-${randomUUID().slice(0, 8)}`;
+    const refusal = await refusedBy(() =>
+      database
+        .insert(pendingAuthorizations)
+        // biome-ignore lint/suspicious/noExplicitAny: an id past the key is exactly what the FK is for.
+        .values(attempt({ actorId: stranger, userId: stranger }) as any),
+    );
+    expect(refusal).toBe("pending_authorizations_actor_id_users_id_fk");
+  });
+
+  test("a user_id that is not a person is refused", async () => {
+    // The actor IS a person here, so only the second column can be what refuses: a case that left
+    // both unseeded would pass on the actor key alone and say nothing about `user_id`.
+    const actorId = `keyed-actor-${randomUUID().slice(0, 8)}`;
+    await seedPeople(database, [actorId]);
+    seeded.add(actorId);
+    const refusal = await refusedBy(() =>
+      database.insert(pendingAuthorizations).values(
+        attempt({
+          actorId,
+          userId: `ghost-owner-${randomUUID().slice(0, 8)}`,
+          // biome-ignore lint/suspicious/noExplicitAny: an id past the key is exactly what the FK is for.
+        }) as any,
+      ),
+    );
+    expect(refusal).toBe("pending_authorizations_user_id_users_id_fk");
+  });
+
+  test("deleting the person takes their in-flight attempt with them", async () => {
+    const actorId = `departing-${randomUUID().slice(0, 8)}`;
+    await insert({ actorId, userId: actorId });
+    const before = await database.execute(
+      sql`select count(*)::int as n from pending_authorizations where actor_id = ${actorId}`,
+    );
+    expect(before[0]?.n).toBe(1);
+
+    await database.execute(sql`delete from users where id = ${actorId}`);
+    seeded.delete(actorId);
+
+    const after = await database.execute(
+      sql`select count(*)::int as n from pending_authorizations where actor_id = ${actorId}`,
+    );
+    expect(after[0]?.n).toBe(0);
+  });
+
+  /**
+   * The index, not merely the key.
+   *
+   * Postgres indexes the REFERENCED side of a foreign key and not the referencing side, so the
+   * `server_id` key `0057` added left every cascade from `mcp_servers` — and every lookup by server
+   * — scanning this table. There is nothing about a missing index a functional test can observe, so
+   * it is asked for by name.
+   */
+  test("every foreign key on the table has an index leading with its column", async () => {
+    const rows = await database.execute(sql`
+      SELECT indexdef FROM pg_indexes
+      WHERE schemaname = 'public' AND tablename = 'pending_authorizations'
+    `);
+    const definitions = rows.map((row) => String(row.indexdef));
+    const led = (column: string) =>
+      definitions.some((definition) =>
+        definition.includes(`USING btree (${column}`),
+      );
+    expect({
+      actor_id: led("actor_id"),
+      server_id: led("server_id"),
+      user_id: led("user_id"),
+    }).toEqual({ actor_id: true, server_id: true, user_id: true });
   });
 });

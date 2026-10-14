@@ -14,6 +14,7 @@ import type { ConnectedAppBroker } from "../src/plugins/broker";
 import type { AccountRef } from "../src/plugins/shared-accounts";
 import { createPluginStore } from "../src/plugins/store";
 import { testDatabaseUrl } from "./support/database";
+import { removePeople, seedPeople } from "./support/people";
 
 /*
  * FOUR CONNECTIONS RATHER THAN THE SHARED `TEST_POOL` OF TWO, because the race below drives two
@@ -119,7 +120,20 @@ const account = (actor: string): AccountRef => ({
   vendorUserId: `v-${actor}`,
 });
 
-const actor = (name: string) => `${name}-${suite}`;
+/**
+ * An actor id for this suite, AND THE PERSON BEHIND IT.
+ *
+ * `pending_authorizations.actor_id` and `.user_id` key to `users` and cascade, so an attempt cannot
+ * exist for somebody who does not. Seeded here so each case stays about the completion transaction
+ * rather than about the foreign key.
+ */
+const people: string[] = [];
+const actor = async (name: string) => {
+  const id = `${name}-${suite}`;
+  people.push(id);
+  await seedPeople(database, [id]);
+  return id;
+};
 const toolkit = (name: string) => `tk-${name}-${suite}`;
 
 /** A claimed attempt carrying a minted `ar_...`, which is what a callback arrives against. */
@@ -187,12 +201,13 @@ afterAll(async () => {
   await database
     .delete(brokeredConnections)
     .where(like(brokeredConnections.app, `%-${suite}`));
+  await removePeople(database, people);
   await database.$client.close();
 });
 
 describe("completeAuthorizationAttempt", () => {
   test("one call writes exactly one connection and one audit event naming the action and scopes", async () => {
-    const a = actor("single");
+    const a = await actor("single");
     const app = toolkit("single");
     await attemptWith(a, "ar_single");
 
@@ -231,7 +246,7 @@ describe("completeAuthorizationAttempt", () => {
   });
 
   test("two CONCURRENT calls write exactly one connection and one audit event, and the loser answers as the winner would", async () => {
-    const a = actor("race");
+    const a = await actor("race");
     const app = toolkit("race");
     await attemptWith(a, "ar_race");
 
@@ -262,7 +277,7 @@ describe("completeAuthorizationAttempt", () => {
   });
 
   test("a failure between the connection write and the audit write persists NEITHER", async () => {
-    const a = actor("rollback");
+    const a = await actor("rollback");
     const app = toolkit("rollback");
     await attemptWith(a, "ar_rollback");
 
@@ -289,7 +304,7 @@ describe("completeAuthorizationAttempt", () => {
   });
 
   test("an auth_id that does not match the row writes nothing and leaves the row UNCHANGED", async () => {
-    const a = actor("mismatch");
+    const a = await actor("mismatch");
     const app = toolkit("mismatch");
     await attemptWith(a, "ar_real");
 
@@ -316,7 +331,7 @@ describe("completeAuthorizationAttempt", () => {
 
 describe("failAuthorizationAttempt / markAuthorizationUnreconciled", () => {
   test("mark an attempt failed, matched on (actor_id, auth_id)", async () => {
-    const a = actor("failed");
+    const a = await actor("failed");
     await attemptWith(a, "ar_failed");
 
     expect(
@@ -338,7 +353,7 @@ describe("failAuthorizationAttempt / markAuthorizationUnreconciled", () => {
   });
 
   test("mark an attempt unreconciled, matched on (actor_id, auth_id)", async () => {
-    const a = actor("unreconciled");
+    const a = await actor("unreconciled");
     await attemptWith(a, "ar_unreconciled");
 
     expect(

@@ -460,11 +460,32 @@ export const brokeredConnections = pgTable(
  * `completed_at` is what makes completion happen exactly once: the verifier claims the row by
  * setting it, and a second return finds it set. `auth_id` is what binds a callback to this attempt;
  * an attempt holding null can never complete.
+ *
+ * BOTH COLUMNS THAT NAME A PERSON CARRY THE FOREIGN KEY, AND BOTH CASCADE. `actor_id` and
+ * `user_id` are `users.id`, and a column that names a table without a key is a column the database
+ * will let drift: a deleted person left attempt rows pointing at nobody, and the verifier's
+ * "find the attempt for this session" would then be matching a key no session can ever present.
+ *
+ * CASCADE RATHER THAN RESTRICT, AND THIS ROW IS NOT THE AUDIT TRAIL. An attempt is in-flight
+ * working state with a fifteen-minute life and at most one row per actor, holding no grant and no
+ * secret; what a person authorized is recorded in `audit_events`, which deliberately carries
+ * NO key to `users` for exactly the reason the trail must outlive them. `RESTRICT` here would make
+ * a person undeletable for fifteen minutes because they happened to have a browser mid-redirect,
+ * which is a legitimate deletion blocked by ephemeral state. Note the contrast with
+ * {@link brokeredConnections}, whose `user_id` is keyless ON PURPOSE: that row IS the record of
+ * which apps somebody held, and `retireConnectionsFor` reads it AFTER the `users` row is gone.
+ * Nothing reads an attempt after its person is gone.
+ *
+ * `server_id`'s key gets an index of its own. A foreign key is not indexed by postgres on the
+ * referencing side, so deleting one `mcp_servers` row made the cascade scan this table, and so did
+ * every lookup by server. `user_id` gets one for the same reason, now that it too is a key.
  */
 export const pendingAuthorizations = pgTable(
   "pending_authorizations",
   {
-    actorId: text("actor_id").primaryKey(),
+    actorId: text("actor_id")
+      .primaryKey()
+      .references(() => users.id, { onDelete: "cascade" }),
     serverId: text("server_id")
       .notNull()
       .references(() => mcpServers.id, { onDelete: "cascade" }),
@@ -475,7 +496,9 @@ export const pendingAuthorizations = pgTable(
      * at runtime and the row this attempt is reconciled into is held to that pair.
      */
     holder: text("holder").$type<"person" | "deployment">().notNull(),
-    userId: text("user_id"),
+    userId: text("user_id").references(() => users.id, {
+      onDelete: "cascade",
+    }),
     vendorUserId: text("vendor_user_id").notNull(),
     authId: text("auth_id"),
     createdAt: createdAt(),
@@ -500,6 +523,8 @@ export const pendingAuthorizations = pgTable(
       "pending_authorizations_outcome_check",
       sql`${table.outcome} IS NULL OR ${table.outcome} IN ('completed', 'failed', 'unreconciled', 'withdrawn')`,
     ),
+    index("pending_authorizations_server_idx").on(table.serverId),
+    index("pending_authorizations_user_idx").on(table.userId),
   ],
 );
 
