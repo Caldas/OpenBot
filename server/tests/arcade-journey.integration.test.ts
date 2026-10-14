@@ -212,15 +212,30 @@ const CATALOGUE: Record<string, unknown>[] = [
   action(DIARY, "DeleteEvent", METADATA.destructive),
 ];
 
-/** The same listed action as the vendor publishes it to an identity that has consented. */
-function granted(item: Record<string, unknown>): Record<string, unknown> {
+/**
+ * The same listed action as the vendor publishes it when asked ABOUT an identity: with that
+ * identity's own `token_status` — `completed` once it has consented, `not_started` before.
+ *
+ * `token_status` AND NOT `status`. The authorization's `status` is the AUTH PROVIDER's standing
+ * (`inactive` / "Provider not found" in `fixtures/arcade-catalogue.json`), the same for everybody;
+ * this fixture once flipped it to `active` to mean "this person consented", and the grants screen
+ * read it that way — which is the K2 (A7c) defect: every action of a configured provider drawn as
+ * held. The catalogue listing (no `user_id`) carries no `token_status`, as the live one does not.
+ */
+function askedAbout(
+  item: Record<string, unknown>,
+  consented: boolean,
+): Record<string, unknown> {
   const requirements = item.requirements as Record<string, unknown>;
   const authorization = requirements.authorization as Record<string, unknown>;
   return {
     ...item,
     requirements: {
       ...requirements,
-      authorization: { ...authorization, status: "active" },
+      authorization: {
+        ...authorization,
+        token_status: consented ? "completed" : "not_started",
+      },
     },
   };
 }
@@ -296,11 +311,13 @@ function installVendor() {
          * A LISTING ASKED ABOUT SOMEBODY ANSWERS ABOUT THEM, which is the only difference the
          * `user_id` makes and the whole of what `grantsFor` is reading. `met` stays true on every
          * item either way (see `action`), so a step reading it instead of the authorization's own
-         * status would report this run as holding every grant before a single consent.
+         * `token_status` would report this run as holding every grant before a single consent.
          */
-        query.user_id &&
-        vendorConnections.some((r) => r.user_id === query.user_id)
-          ? granted(item)
+        query.user_id
+          ? askedAbout(
+              item,
+              vendorConnections.some((r) => r.user_id === query.user_id),
+            )
           : item,
       );
       const offset = query.offset ?? 0;

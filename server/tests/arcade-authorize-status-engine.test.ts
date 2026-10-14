@@ -23,8 +23,13 @@ const account: AccountRef = {
 };
 
 type EngineOptions = {
-  /** The `status` the mint answers with; `null` OMITS the field, as the wire may. */
-  status: string | null;
+  /**
+   * The `status` the mint answers with; `null` OMITS the field, as the wire may. Anything else is
+   * serialized as it stands, so a status that is not text reaches the adapter as the wire sent it.
+   */
+  status: unknown;
+  /** Send `"status": null` explicitly rather than omitting the key. */
+  explicitNull?: true;
   /** Whether the mint answers a consent url beside it. */
   url?: string | null;
 };
@@ -39,6 +44,7 @@ function startEngine(options: EngineOptions): Engine {
       if (url.pathname === "/v1/tools/authorize") {
         const body: Record<string, unknown> = { id: "ar_mint1" };
         if (options.status !== null) body.status = options.status;
+        else if (options.explicitNull) body.status = null;
         const consent =
           options.url === undefined
             ? "https://consent.example/go"
@@ -115,8 +121,81 @@ describe("the mint reads the status Arcade answered with", () => {
     await expect(mint()).rejects.toBeInstanceOf(BrokerRefusalError);
   });
 
+  /*
+   * D6. Every assertion above holds whether or not the status is FOLDED: an unfolded `"  Completed "`
+   * is a spelling outside the allowlist and is refused anyway, so the old single row here could not
+   * fail on a deleted `.trim().toLowerCase()`. The rows below can: a padded or upper-cased member of
+   * the ALLOWLIST is handed on only when the read folds it, and the held-grant SENTENCE ("already")
+   * is reached only by a folded `completed`.
+   */
   test("the status is read case- and space-insensitively, as every other comparison here is", async () => {
     engine({ status: "  Completed " });
     await expect(mint()).rejects.toBeInstanceOf(BrokerRefusalError);
+    await expect(mint()).rejects.toThrow(/already/i);
   });
+
+  test("a padded, re-cased pending is still a consent to walk through", async () => {
+    engine({ status: "  Pending " });
+    expect(await mint()).toEqual({
+      redirectUrl: "https://consent.example/go",
+      authorizationId: "ar_mint1",
+    });
+  });
+
+  test("not_started — the other half of the allowlist, and what a first mint answers — is handed on", async () => {
+    engine({ status: "not_started" });
+    expect(await mint()).toEqual({
+      redirectUrl: "https://consent.example/go",
+      authorizationId: "ar_mint1",
+    });
+  });
+
+  test("a padded, upper-cased not_started is handed on too", async () => {
+    engine({ status: " NOT_STARTED " });
+    expect(await mint()).toEqual({
+      redirectUrl: "https://consent.example/go",
+      authorizationId: "ar_mint1",
+    });
+  });
+
+  test("an explicit null status is silence, exactly like an omitted one", async () => {
+    engine({ status: null, explicitNull: true });
+    expect(await mint()).toEqual({
+      redirectUrl: "https://consent.example/go",
+      authorizationId: "ar_mint1",
+    });
+  });
+});
+
+/**
+ * L2-b. A STATUS THAT IS PRESENT AND IS NOT STATUS TEXT IS NOT SILENCE. It once read as silence —
+ * `textOf` answered `undefined` for it, and "silence is not a no" handed the bearer url beside it
+ * to a browser as a live redirect, after a status the code could not read. It is refused, as a
+ * DEFINITE refusal (a `BrokerRefusalError`), so the attempt is discarded and Authorize can be
+ * pressed again at once.
+ */
+describe("a mint status this deployment cannot read is not handed on", () => {
+  for (const [label, status] of [
+    ["an object", {}],
+    ["false", false],
+    ["a number", 0],
+    ["a list", []],
+    ["a blank string", ""],
+    ["whitespace", "   "],
+  ] as const) {
+    test(`${label} where the status belongs refuses, and the url is not returned`, async () => {
+      engine({ status });
+      const outcome = await mint().then(
+        (minted) => ({ minted }),
+        (error: unknown) => ({ error }),
+      );
+      expect("minted" in outcome).toBe(false);
+      expect((outcome as { error: unknown }).error).toBeInstanceOf(
+        BrokerRefusalError,
+      );
+      expect(String((outcome as { error: Error }).error.message)).not.toContain(
+        "consent.example",
+      );
+    });
+  }
 });

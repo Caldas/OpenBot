@@ -759,7 +759,14 @@ describe("a connection the vendor reports as dead", () => {
     expect([...deleted].sort()).toEqual(["ac_1", "ac_2"]);
   });
 
-  test("a status the vendor did not send, or sent blank, is SILENCE and still reads as live", async () => {
+  /*
+   * K2 SETTLED WHAT "BLANK" MEANS, ONCE, FOR EVERY VENDOR DECISION FIELD: a status the vendor did
+   * not send (or sent as `null`) is SILENCE and the row stands; a status sent BLANK is present and
+   * carries nothing, which is UNREADABLE — the judgement `authProvidersNamedBy` makes of a blank
+   * `provider_id` — and an unreadable status is not "live". This row once asserted the opposite for
+   * blank, which made the two readers disagree about the same wire value.
+   */
+  test("a status the vendor did not send is SILENCE and still reads as live; a blank one does not", async () => {
     listing([
       statusRow(1, "cpk-poc", null, { name: "Ada" }),
       statusRow(2, "google-openbot", "", { name: "Grace" }),
@@ -769,10 +776,8 @@ describe("a connection the vendor reports as dead", () => {
     expect(await broker.accountName({ account, toolkit: "Github" })).toBe(
       "Ada",
     );
-    expect(await broker.isConnected({ account, toolkit: "Gmail" })).toBe(true);
-    expect(await broker.accountName({ account, toolkit: "Gmail" })).toBe(
-      "Grace",
-    );
+    expect(await broker.isConnected({ account, toolkit: "Gmail" })).toBe(false);
+    expect(await broker.accountName({ account, toolkit: "Gmail" })).toBeNull();
   });
 
   test("the status is folded and trimmed, so ` ACTIVE ` is live and `Expired` is not", async () => {

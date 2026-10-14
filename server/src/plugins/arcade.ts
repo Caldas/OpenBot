@@ -131,7 +131,205 @@ function record(value: unknown): Record<string, unknown> | null {
 }
 
 /**
- * The OAuth scopes an action needs: `requirements.authorization.oauth2.scopes`.
+ * WHAT ARRIVED WHERE A SHAPE BELONGED, named without quoting it.
+ *
+ * A listing row carries whatever the vendor chose to put on it, and a refusal from here is read off
+ * an admin page, so the SHAPE is the part that is both safe to say and the part that helps —
+ * `sent` in `composio-adapter.ts` says this at length and this is the same judgement, kept local
+ * because that file is the other vendor's door and neither imports the other.
+ */
+export function shapeOf(value: unknown): string {
+  if (Array.isArray(value)) return "a list";
+  // `typeof null` IS `"object"`, so the bare template would write "a object" — the wrong grammar
+  // and, worse, the wrong fact: a hole is not a shape this deployment read and could not use, it
+  // is the absence of one. The callers that pass a present-but-unreadable field guard both of
+  // these before asking; `connectionsFor`'s unreadable ROW is the one that can carry a `null`.
+  if (value === null || value === undefined) return "nothing";
+  if (typeof value === "string" && value.trim() === "") return "a blank string";
+  return `a ${typeof value}`;
+}
+
+/*
+ * ---------------------------------------------------------------------------------------------
+ * THE ONE READING OF A VENDOR AUTHORIZATION FIELD — absent, unreadable, or read.
+ *
+ * Every Arcade field this deployment draws an AUTHORIZATION conclusion from is read through one of
+ * the three functions below, and all three apply the same rule, stated once here:
+ *
+ *   ABSENT — the key missing, `undefined`, or `null` — is the vendor saying nothing, and answers the
+ *   field's documented default. `null` IS ABSENCE ON EVERY FIELD, NOT ON SOME: the SDK declares
+ *   these fields optional, Arcade sends `metadata: null` and `requirements: null` for "none"
+ *   (`AirtableApi`, `Apollo` in `fixtures/arcade-catalogue.json`), and a serializer that writes an
+ *   unset optional as `null` rather than dropping the key is saying what a missing key says. A rule
+ *   under which `null` meant "absent" on one field and "a value I cannot read" on the next would
+ *   make the same vendor answer mean opposite things one line apart.
+ *
+ *   UNREADABLE — present, but not the field's shape — is NEITHER default. Each caller decides what
+ *   an unreadable field costs it, and every caller fails CLOSED: the catalogue and the transport
+ *   listing refuse, the grants screen says `unknown`, a connection is not live, a mint is refused.
+ *   A BLANK STRING IS UNREADABLE on a field whose value is a decision. It is present (so it is not
+ *   absence) and carries no value (so it is not text); `authProvidersNamedBy` already refuses a
+ *   blank `provider_id` for exactly this reason. `textOf` in `arcade-adapter.ts` reads a blank
+ *   LABEL as absence, which is right for a display name and is not the question asked here.
+ *
+ *   READ — the value in this deployment's vocabulary: a status FOLDED AND TRIMMED (a case or a
+ *   space the vendor changes must not change an answer about somebody's account), a scope list
+ *   whose every element is a scope.
+ *
+ * WHY ONE READING. `authorizationRequirementOf` (C2) answered this tri-state for the authorization
+ * block, and every OTHER reader of a field inside or beside it picked its own default for what it
+ * could not read — the permissive one, each time: a missing `token_status` fell back to the
+ * PROVIDER's `status: "active"` and drew every action as held; an unreadable `oauth2`/`scopes`
+ * became `[]`, which the gate reads as "the connection itself is the grant"; a non-text
+ * `connection_status` read as live; a non-text mint `status` handed a bearer url on as a live
+ * redirect. One reading means a new reader cannot pick a sixth default by accident.
+ * ---------------------------------------------------------------------------------------------
+ */
+
+/**
+ * What one listed action's `requirements.authorization` SAYS, read once for every caller that asks.
+ *
+ * THE ONE READING OF THIS FIELD'S ABSENCE. Two readers once reached opposite answers on the same
+ * row: `requiresAuthorization` read a missing block as "needs nothing" and filed the app as
+ * `no-auth`, while `grantStateOf` read the same silence as "could not be read" and drew every
+ * action of that app as a broker outage on the grants screen, forever. The vendor's own listing
+ * settles which is right — `Apollo` publishes NO authorization block and a deployment secret
+ * instead, verbatim in `fixtures/arcade-catalogue.json` — so `null` and an absent field are
+ * `none`, here and therefore everywhere.
+ *
+ * A PRESENT FIELD THIS DEPLOYMENT CANNOT READ IS NEITHER ANSWER. It is `unreadable`, with WHICH
+ * field and the shape that arrived there, and each caller decides what an unreadable row costs it:
+ * the catalogue refuses, the grants screen says `unknown`.
+ *
+ * HERE, IN THE TRANSPORT, AND NOT IN THE ADAPTER, because the transport's own listing reads the same
+ * block for the scopes the gate checks, and the adapter imports this module, never the reverse.
+ */
+export type AuthorizationRequirement =
+  | { kind: "none" }
+  | {
+      kind: "unreadable";
+      field: "requirements" | "authorization";
+      shape: string;
+    }
+  | { kind: "required"; authorization: Record<string, unknown> };
+
+export function authorizationRequirementOf(
+  item: unknown,
+): AuthorizationRequirement {
+  const requirements = record(item)?.requirements;
+  if (requirements === undefined || requirements === null) {
+    return { kind: "none" };
+  }
+  if (typeof requirements !== "object" || Array.isArray(requirements)) {
+    return {
+      kind: "unreadable",
+      field: "requirements",
+      shape: shapeOf(requirements),
+    };
+  }
+  const authorization = (requirements as Record<string, unknown>).authorization;
+  if (authorization === undefined || authorization === null) {
+    return { kind: "none" };
+  }
+  if (typeof authorization !== "object" || Array.isArray(authorization)) {
+    return {
+      kind: "unreadable",
+      field: "authorization",
+      shape: shapeOf(authorization),
+    };
+  }
+  return {
+    kind: "required",
+    authorization: authorization as Record<string, unknown>,
+  };
+}
+
+/**
+ * The OAuth scopes one listed action asks for — `requirements.authorization.oauth2.scopes` — read
+ * by {@link authorizationRequirementOf}'s rule, one level further in.
+ *
+ * `[]` IS A CLAIM, NOT A SHRUG. An action whose scopes are `[]` is one whose connection IS the
+ * grant (Github's 43 actions publish exactly that), and the gate, the catalogue's counts and the
+ * grants screen all read it so. So `[]` is answered only when the vendor SAID it: no authorization
+ * block, an `oauth2` absent or `{}`, a `scopes` absent or `[]`. An `oauth2` or a `scopes` in any
+ * other shape is `unreadable`, and so is a list holding anything but scope text: `["repo", 5]`
+ * read as `["repo"]` would be a narrower grant than the one the vendor described, which is the same
+ * fail-open answer one element at a time.
+ */
+export type ScopesRequirement =
+  | { kind: "read"; scopes: string[] }
+  | {
+      kind: "unreadable";
+      field: "requirements" | "authorization" | "oauth2" | "scopes";
+      shape: string;
+    };
+
+export function requiredScopesOf(item: unknown): ScopesRequirement {
+  const read = authorizationRequirementOf(item);
+  if (read.kind === "none") return { kind: "read", scopes: [] };
+  if (read.kind === "unreadable") return read;
+  const oauth2 = read.authorization.oauth2;
+  if (oauth2 === undefined || oauth2 === null) {
+    return { kind: "read", scopes: [] };
+  }
+  if (typeof oauth2 !== "object" || Array.isArray(oauth2)) {
+    return { kind: "unreadable", field: "oauth2", shape: shapeOf(oauth2) };
+  }
+  const scopes = (oauth2 as Record<string, unknown>).scopes;
+  if (scopes === undefined || scopes === null) {
+    return { kind: "read", scopes: [] };
+  }
+  if (!Array.isArray(scopes)) {
+    return { kind: "unreadable", field: "scopes", shape: shapeOf(scopes) };
+  }
+  const odd = scopes.findIndex(
+    (scope) => typeof scope !== "string" || scope.trim() === "",
+  );
+  if (odd !== -1) {
+    return {
+      kind: "unreadable",
+      field: "scopes",
+      shape: `a list holding ${shapeOf(scopes[odd])}`,
+    };
+  }
+  return { kind: "read", scopes: scopes as string[] };
+}
+
+/**
+ * One vendor STATUS field — `token_status`, `connection_status`, a mint's or a flow's `status` —
+ * read by the rule above: absent, unreadable, or its text FOLDED AND TRIMMED.
+ *
+ * NOT `textOf`, deliberately: `textOf` answers a blank string as absence, which is right for a
+ * label and wrong for a decision, and it does not fold. Each status reader once spelled its own
+ * `textOf(x)?.trim().toLowerCase()` (or forgot to), and the one that forgot answered a vendor-side
+ * change of case differently from the ones that did.
+ */
+export type VendorStatus =
+  | { kind: "absent" }
+  | { kind: "unreadable"; shape: string }
+  | { kind: "text"; text: string };
+
+export function vendorStatusOf(value: unknown): VendorStatus {
+  if (value === undefined || value === null) return { kind: "absent" };
+  if (typeof value !== "string" || value.trim() === "") {
+    return { kind: "unreadable", shape: shapeOf(value) };
+  }
+  return { kind: "text", text: value.trim().toLowerCase() };
+}
+
+/** Where on the action a {@link ScopesRequirement} could not be read, in words. */
+function scopesFieldOf(
+  field: Extract<ScopesRequirement, { kind: "unreadable" }>["field"],
+): string {
+  return field === "requirements"
+    ? "requirements"
+    : field === "authorization"
+      ? "authorization requirement"
+      : `authorization ${field}`;
+}
+
+/**
+ * The OAuth scopes an action needs, for the tool the gate checks.
  *
  * NEVER `requirements.met`. The two sit in the same object and behave oppositely: `met` is a
  * per-person claim that answers TRUE FOR EVERYBODY when asked without a `user_id` (and this
@@ -139,14 +337,18 @@ function record(value: unknown): Record<string, unknown> | null {
  * Reading `met` here would record every person as connected to everything, and nothing else would
  * go red: the gate would pass, the call would be made, and the first sign would be somebody
  * else's mailbox.
+ *
+ * AN UNREADABLE SCOPES BLOCK REFUSES THE LISTING; IT IS NEVER `[]`. `[]` on a listed tool is what
+ * the gate reads as "the connection is the grant", so answering it for a block this deployment
+ * could not read would let any connection run an action whose real scopes nobody read. See
+ * {@link requiredScopesOf}. The refusal names the shape, never the vendor's value.
  */
-function scopesOf(requirements: unknown): string[] {
-  const scopes = record(
-    record(record(requirements)?.authorization)?.oauth2,
-  )?.scopes;
-  return Array.isArray(scopes)
-    ? scopes.filter((s): s is string => typeof s === "string")
-    : [];
+function scopesOf(tool: Record<string, unknown>, toolkit: string): string[] {
+  const read = requiredScopesOf(tool);
+  if (read.kind === "read") return read.scopes;
+  throw new Error(
+    `Arcade listed one of ${toolkit}'s actions with ${read.shape} where its ${scopesFieldOf(read.field)} belongs, and that is what says which permissions it needs. A shape this deployment cannot read is not "no permissions", so nothing was refreshed and the actions already recorded for this app are kept.`,
+  );
 }
 
 function inputSchemaOf(input: unknown): Record<string, unknown> {
@@ -254,7 +456,7 @@ export async function listTools(connection: {
           typeof tool.description === "string" ? tool.description : "",
         inputSchema: inputSchemaOf(tool.input),
         ...classify(tool.metadata),
-        scopes: scopesOf(tool.requirements),
+        scopes: scopesOf(tool, toolkit),
       },
     ];
   });
