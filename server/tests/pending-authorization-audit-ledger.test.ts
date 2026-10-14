@@ -150,56 +150,58 @@ const CALL_SITES: Record<
   string,
   { anchor: string; transitions: Transition[] }[]
 > = {
-  "server/src/plugins/routes.ts :: claimAuthorizationAttempt": [
-    {
-      anchor: "if (!claim.claimed)",
-      transitions: [
-        {
-          name: "claim (a person starts an authorization)",
-          debt: "B5e",
-          note: "The moment a signed-in person starts a consent leaves no row on the trail, so nothing records who started which attempt.",
-        },
-        {
-          name: "expiry overwrite (re-claim silently replaces an expired or settled attempt)",
-          debt: "B5e",
-          note: "An attempt that expired while still live is never recorded as having ended. The next claim's ON CONFLICT DO UPDATE erases it.",
-        },
-      ],
-    },
-  ],
-  "server/src/plugins/routes.ts :: discardAuthorizationAttempt": [
-    {
-      anchor: "arcade-refused-attempt-not-cleared",
-      transitions: [
-        {
-          name: "discard after the vendor refused the mint",
-          debt: "B5e",
-          note: "A started attempt ends with only a console line on cleanup failure. A refusal on a consent lifecycle should be on the trail, as `mcp.callback_refused` and `session.refused` are elsewhere.",
-        },
-      ],
-    },
-    {
-      anchor: "arcade-mint-not-recorded",
-      transitions: [
-        {
-          name: "discard after the mint succeeded but could not be recorded",
-          debt: "B5e",
-          note: "A flow is LIVE at the vendor and the only record is the `arcade-mint-not-recorded` console line. This is the strongest case for an event in the ledger.",
-        },
-      ],
-    },
-    {
-      anchor: "const cancelled = await store.discardAuthorizationAttempt",
-      transitions: [
-        {
-          name: "withdrawn by the person (cancel)",
-          audited: "mcp.authorization_cancelled",
-          filedBy: "recordAuthorizationCancelled",
-        },
-      ],
-    },
-  ],
-  "server/src/plugins/routes.ts :: recordAuthorizationMint": [
+  "server/src/plugins/route-groups/connections.ts :: claimAuthorizationAttempt":
+    [
+      {
+        anchor: "if (!claim.claimed)",
+        transitions: [
+          {
+            name: "claim (a person starts an authorization)",
+            debt: "B5e",
+            note: "The moment a signed-in person starts a consent leaves no row on the trail, so nothing records who started which attempt.",
+          },
+          {
+            name: "expiry overwrite (re-claim silently replaces an expired or settled attempt)",
+            debt: "B5e",
+            note: "An attempt that expired while still live is never recorded as having ended. The next claim's ON CONFLICT DO UPDATE erases it.",
+          },
+        ],
+      },
+    ],
+  "server/src/plugins/route-groups/connections.ts :: discardAuthorizationAttempt":
+    [
+      {
+        anchor: "arcade-refused-attempt-not-cleared",
+        transitions: [
+          {
+            name: "discard after the vendor refused the mint",
+            debt: "B5e",
+            note: "A started attempt ends with only a console line on cleanup failure. A refusal on a consent lifecycle should be on the trail, as `mcp.callback_refused` and `session.refused` are elsewhere.",
+          },
+        ],
+      },
+      {
+        anchor: "arcade-mint-not-recorded",
+        transitions: [
+          {
+            name: "discard after the mint succeeded but could not be recorded",
+            debt: "B5e",
+            note: "A flow is LIVE at the vendor and the only record is the `arcade-mint-not-recorded` console line. This is the strongest case for an event in the ledger.",
+          },
+        ],
+      },
+      {
+        anchor: "const cancelled = await store.discardAuthorizationAttempt",
+        transitions: [
+          {
+            name: "withdrawn by the person (cancel)",
+            audited: "mcp.authorization_cancelled",
+            filedBy: "recordAuthorizationCancelled",
+          },
+        ],
+      },
+    ],
+  "server/src/plugins/route-groups/connections.ts :: recordAuthorizationMint": [
     {
       anchor: "authId: minted.authorizationId",
       transitions: [
@@ -211,64 +213,68 @@ const CALL_SITES: Record<
       ],
     },
   ],
-  "server/src/plugins/routes.ts :: failAuthorizationAttempt": [
-    {
-      anchor: 'settled.status === "failed"',
-      transitions: [
-        {
-          name: "failed (the vendor reported the consent failed)",
-          debt: "B5e",
-          note: "A terminal verdict on the attempt with no trail row.",
-        },
-      ],
-    },
-    {
-      anchor: "settled.userId !== attempt.vendorUserId",
-      transitions: [
-        {
-          name: "failed (the consent completed for an identity that is not the attempt's)",
-          debt: "B5e",
-          note: "A return leg that came back bound to somebody else is the exact attribution failure this lifecycle exists to refuse, and the refusal leaves no row.",
-        },
-      ],
-    },
-  ],
-  "server/src/plugins/routes.ts :: markAuthorizationWithdrawn": [
-    {
-      anchor: "if (withdrawn)",
-      transitions: [
-        {
-          name: "withdrawn (context changed; the vendor withdrew the retired grant)",
-          debt: "B5e",
-          note: "Only indirectly audited. `clearWithdrawnAccount` files `mcp.account_disconnected` rows for what it cleared, but the verdict on the attempt itself is not filed.",
-        },
-      ],
-    },
-  ],
-  "server/src/plugins/routes.ts :: markAuthorizationUnreconciled": [
-    {
-      anchor: "else await store.markAuthorizationUnreconciled",
-      transitions: [
-        {
-          name: "unreconciled (context changed; withdrawing the retired grant was not confirmed)",
-          debt: "B5e",
-          note: "The case where a grant may still be live at the vendor, and the only record is a console line.",
-        },
-      ],
-    },
-  ],
-  "server/src/plugins/routes.ts :: completeAuthorizationAttempt": [
-    {
-      anchor: "recorded = true",
-      transitions: [
-        {
-          name: "completed",
-          audited: "mcp.account_connected",
-          filedBy: "completeAuthorizationAttempt",
-        },
-      ],
-    },
-  ],
+  "server/src/plugins/route-groups/connections.ts :: failAuthorizationAttempt":
+    [
+      {
+        anchor: 'settled.status === "failed"',
+        transitions: [
+          {
+            name: "failed (the vendor reported the consent failed)",
+            debt: "B5e",
+            note: "A terminal verdict on the attempt with no trail row.",
+          },
+        ],
+      },
+      {
+        anchor: "settled.userId !== attempt.vendorUserId",
+        transitions: [
+          {
+            name: "failed (the consent completed for an identity that is not the attempt's)",
+            debt: "B5e",
+            note: "A return leg that came back bound to somebody else is the exact attribution failure this lifecycle exists to refuse, and the refusal leaves no row.",
+          },
+        ],
+      },
+    ],
+  "server/src/plugins/route-groups/connections.ts :: markAuthorizationWithdrawn":
+    [
+      {
+        anchor: "if (withdrawn)",
+        transitions: [
+          {
+            name: "withdrawn (context changed; the vendor withdrew the retired grant)",
+            debt: "B5e",
+            note: "Only indirectly audited. `clearWithdrawnAccount` files `mcp.account_disconnected` rows for what it cleared, but the verdict on the attempt itself is not filed.",
+          },
+        ],
+      },
+    ],
+  "server/src/plugins/route-groups/connections.ts :: markAuthorizationUnreconciled":
+    [
+      {
+        anchor: "else await store.markAuthorizationUnreconciled",
+        transitions: [
+          {
+            name: "unreconciled (context changed; withdrawing the retired grant was not confirmed)",
+            debt: "B5e",
+            note: "The case where a grant may still be live at the vendor, and the only record is a console line.",
+          },
+        ],
+      },
+    ],
+  "server/src/plugins/route-groups/connections.ts :: completeAuthorizationAttempt":
+    [
+      {
+        anchor: "recorded = true",
+        transitions: [
+          {
+            name: "completed",
+            audited: "mcp.account_connected",
+            filedBy: "completeAuthorizationAttempt",
+          },
+        ],
+      },
+    ],
 };
 
 /** Every foreign key that deletes rows of this table when its parent goes, keyed by constraint. */
@@ -299,7 +305,7 @@ const NON_WRITES: Record<
   { file: string; anchor: string } & Transition
 > = {
   "cancel that lost the race to a completion": {
-    file: "server/src/plugins/routes.ts",
+    file: "server/src/plugins/route-groups/connections.ts",
     anchor: "That authorization finished before it could be cancelled",
     name: "cancel refused because the attempt had already completed",
     debt: "B2c",
