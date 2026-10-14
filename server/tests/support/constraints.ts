@@ -12,7 +12,7 @@
 // whatever spelling the migration used to write it, which also means the comparison survives
 // `IN (...)` being recorded as `= ANY (ARRAY[...])`.
 import { sql } from "drizzle-orm";
-import type { createDatabase } from "../src/db/client";
+import type { createDatabase } from "../../src/db/client";
 
 type Database = ReturnType<typeof createDatabase>;
 

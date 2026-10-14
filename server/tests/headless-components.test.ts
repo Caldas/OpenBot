@@ -138,10 +138,15 @@ describe("headless components mirror the compiled gallery", () => {
 
   test("arguments a headless turn accepts draw the real chart with the app's renderer", async () => {
     const appRequire = createRequire(join(import.meta.dir, "../../app/"));
-    const { createElement } = appRequire("react") as typeof import("react");
+    // The TYPES come from the app's install for the same reason the values do: `server` has no
+    // React. A bare `typeof import("react")` does not resolve from here, and an unresolved type
+    // import is not an error bun can see — it silently makes both casts `any`.
+    const { createElement } = appRequire(
+      "react",
+    ) as typeof import("../../app/node_modules/@types/react");
     const { renderToStaticMarkup } = appRequire(
       "react-dom/server",
-    ) as typeof import("react-dom/server");
+    ) as typeof import("../../app/node_modules/@types/react-dom/server");
     const args = {
       title: "Open issues by team",
       points: [

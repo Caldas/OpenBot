@@ -21,7 +21,7 @@ import {
 } from "../src/db/schema";
 import { BROKERED_PROFILE, type BrokerProvider } from "../src/plugins/access";
 import type { BrokerConnection } from "../src/plugins/broker";
-import type { ComposioBroker } from "../src/plugins/composio";
+import type { ComposioBroker } from "../src/plugins/broker";
 import {
   CustomServerRefusedError,
   createPluginStore,
