@@ -3387,9 +3387,58 @@ export function createPluginRoutes(
                 toolkit: retiredApp,
               }),
             );
-          } catch {
-            // Nothing from the vendor's answer travels with this, here as everywhere on this leg.
+          } catch (error) {
+            /*
+             * A THROW HERE IS NOT AN ANSWER OF `false`, AND IT IS NOT READ AS ONE.
+             *
+             * `false` is the broker saying "there was nothing to withdraw", off a listing it read
+             * whole. A throw says nothing of the kind: the seam deletes EVERY connection it found
+             * and only then throws if any delete failed, so "revoke failed for 1 of 3" arrives
+             * here with two of three already gone; and a deadline that fires is this deployment
+             * giving up on a call the vendor may finish a moment later. Either way the vendor side
+             * may already be withdrawn — the commit-then-throw shape `/arcade/verify`'s completion
+             * catch below was fixed for, one call earlier on the same leg.
+             *
+             * SO THE OUTCOME IS NEITHER CLAIM. `withdrawn` stays false, which is the conservative
+             * half: no local row is cleared and no collateral is put on the trail on the strength
+             * of a withdrawal nobody saw, because the alternative — clearing on a guess — is
+             * this deployment forgetting a grant that may still be live, and that is the
+             * irreversible mistake. The attempt is closed `unreconciled`, which is the existing
+             * verdict for "we do not know what happened" and is exactly true here.
+             *
+             * WHAT `unreconciled` DOES NOT COVER, AND THIS LINE DOES. The row holds an outcome and
+             * a timestamp and nothing else: no reason, nothing reads it back, and it reads the same
+             * for a vendor that said "nothing there" as for a call whose outcome is unknown. It
+             * cannot say the one thing an operator needs here — that the vendor may ALREADY have
+             * ended this connection, so the rows this deployment still holds for the app and for
+             * every sibling on the same connection may be claiming live connections that are gone,
+             * or that the grant is live and needs ending by hand. That is a disagreement between
+             * this deployment and the vendor that nobody would otherwise find out about, and
+             * leaving no trace of it was half of the defect. A third outcome on the row would need
+             * a schema change to say what this line says, and the line is where every sibling on
+             * this route already reports a failure it swallowed.
+             *
+             * WHAT IS IN THE LINE is what `arcade-completion-not-recorded` allows itself and the
+             * names of this deployment's own apps: the authorization id an operator finds the flow
+             * by, the app, the sibling apps whose rows may now be stale, and the reason through
+             * {@link reasonWithoutStatement}. Errors out of the broker seam carry this deployment's
+             * own sentence — `ArcadeFailureError` (`arcade.ts`) drops the vendor's prose by construction
+             * and {@link VendorTimeoutError} is ours — so nothing of the vendor's answer travels
+             * with this, here as everywhere on this leg. No account id, no vendor user id.
+             */
             withdrawn = false;
+            console.error(
+              JSON.stringify({
+                type: "arcade-context-withdrawal-unknown",
+                server: attempt.serverId,
+                app: retiredApp,
+                action: attempt.action,
+                authorizationId: authId,
+                siblings: collateral.siblings,
+                note: "A consent completed at the vendor after this app's account changed, and withdrawing the retired identity's grant raised instead of answering. Whether the vendor withdrew it is unknown: the attempt was closed unreconciled and no row here was cleared, so either the grant is still live at the vendor or this deployment's rows for the app and the siblings named here claim connections the vendor has already ended. Check the connection at the vendor and disconnect the app here to settle it.",
+                error: reasonWithoutStatement(error),
+              }),
+            );
           }
         }
         /*
