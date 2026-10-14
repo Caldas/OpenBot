@@ -115,14 +115,41 @@ const CONFIGS = [
   },
 ];
 
-/** Counts the configuration reads, so a test can pin that a call reads them once. */
+/**
+ * The configuration listing, PAGED BY THE QUERY IT IS HANDED — the sibling of {@link listing}, and
+ * scoped for the same reason.
+ *
+ * `admin.authProviders.list(options)` takes a bare `RequestOptions`, so its paging lives in a
+ * NESTED `{ query: { limit, offset } }` and nowhere else: a flat `{ limit, offset }` is not an error
+ * the SDK reports, it is a request carrying no query at all, answered with whatever page the vendor
+ * defaults to. A stub that served every config to every call made that shape — and the size and
+ * position of the page the adapter asks for — unobservable: asking for nothing, asking flat, or
+ * asking for the wrong offset all passed every test in this file. So a page is served only to a
+ * `query` naming a numeric `limit` and `offset`, sliced exactly as asked, and any other call gets a
+ * real empty page whose `total_count` still counts every config — so the adapter's own
+ * incompleteness cross-check fails loudly rather than answering a silent "not connected".
+ *
+ * Returns the options it was asked, so a test can assert the shape by name as well as by effect,
+ * and pin that a call reads the configurations once.
+ */
+type ConfigsOptions = { query?: { limit?: unknown; offset?: unknown } };
 function configs(items: unknown[] = CONFIGS) {
-  const asked: unknown[] = [];
+  const asked: ConfigsOptions[] = [];
   stub(
     "list",
     (options) => {
-      asked.push(options);
-      return Promise.resolve({ items, total_count: items.length });
+      const o = (options ?? {}) as ConfigsOptions;
+      asked.push(o);
+      const { limit, offset } = o.query ?? {};
+      if (typeof limit !== "number" || typeof offset !== "number") {
+        return Promise.resolve({ items: [], total_count: items.length });
+      }
+      return Promise.resolve({
+        items: items.slice(offset, offset + limit),
+        offset,
+        limit,
+        total_count: items.length,
+      });
     },
     authProvidersProto(),
   );
@@ -548,6 +575,30 @@ describe("arcade adapter connection lifecycle", () => {
     await broker.revoke({ account, toolkit: "Gmail" });
     expect(asked).toHaveLength(1);
     expect(read).toHaveLength(1);
+  });
+
+  /*
+   * THE CONFIGURATION LISTING'S PAGING, ASSERTED BY NAME AND BY EFFECT. The instance a person is
+   * held under sits on PAGE TWO, behind a full page of other configurations, so an adapter that
+   * reads one page, asks flat, or asks for the wrong offset cannot find it; and the options are
+   * pinned verbatim, because `RequestOptions` drops anything outside `query` without a word.
+   */
+  test("the auth-provider listing is paged in the nested query shape, to the page holding the instance", async () => {
+    const filler = Array.from({ length: 100 }, (_, n) => ({
+      id: `filler-${n}`,
+      provider_id: "github",
+    }));
+    const read = configs([
+      ...filler,
+      { id: "google-openbot", provider_id: "google" },
+    ]);
+    listing([row(1, "google-openbot", { name: "Grace" })]);
+    const { broker } = createArcadeClient("never-dialled");
+    expect(await broker.isConnected({ account, toolkit: "Gmail" })).toBe(true);
+    expect(read).toEqual([
+      { query: { limit: 100, offset: 0 } },
+      { query: { limit: 100, offset: 100 } },
+    ]);
   });
 });
 
