@@ -214,6 +214,11 @@ describe("completeAuthorizationAttempt", () => {
     expect(connections[0]?.verified).toBe(true);
     expect(connections[0]?.verifiedAt).not.toBeNull();
     expect(connections[0]?.probeAction).toBeNull();
+    // A PERSON'S ROW IS ATTRIBUTED BY `user_id` AND NEVER BY `connected_by`, which is the
+    // deployment-held column: `deploymentConnectionFor` is the only reader and it reads only
+    // `holder = 'deployment'`. Writing the actor here would put an id in a column no reader of a
+    // person's row consults, on the row that already names them.
+    expect(connections[0]?.connectedBy).toBeNull();
 
     const events = await connectedEventsFor(app);
     expect(events.length).toBe(1);
@@ -228,6 +233,69 @@ describe("completeAuthorizationAttempt", () => {
     const attempt = await attemptRow(a);
     expect(attempt.outcome).toBe("completed");
     expect(attempt.completedAt).not.toBeNull();
+  });
+
+  /*
+   * WHO CONNECTED THE TEAM ACCOUNT. A Shared app's row is the one place an administrator can read
+   * that from, and a consent completed through Arcade used to leave it permanently null — so
+   * `deploymentConnectionFor` answered that nobody connected an account the whole deployment acts
+   * as. The actor is the session subject (`users.id`) the attempt is keyed on, which is the id the
+   * admin read joins `users` on for an email.
+   */
+  test("a DEPLOYMENT-held completion records the administrator who consented, and a later one supersedes", async () => {
+    const first = actor("shared-first");
+    const second = actor("shared-second");
+    const app = toolkit("shared");
+    const deployment: AccountRef = {
+      holder: "deployment",
+      vendorUserId: `v-${app}`,
+    };
+
+    const claimFor = async (actorId: string, authId: string) => {
+      const claimed = await store.claimAuthorizationAttempt({
+        actorId,
+        serverId,
+        action: "Google.SendEmail",
+        account: deployment,
+      });
+      if (!claimed.claimed) throw new Error("claim failed");
+      const minted = await store.recordAuthorizationMint({
+        actorId,
+        createdAt: claimed.attempt.createdAt,
+        authId,
+      });
+      if (!minted) throw new Error("mint failed");
+    };
+    const complete = (actorId: string, authId: string) =>
+      store.completeAuthorizationAttempt({
+        actorId,
+        authId,
+        toolkit: app,
+        account: deployment,
+        action: "Google.SendEmail",
+        scopes: ["gmail.send"],
+        authProvider: "google",
+      });
+
+    await claimFor(first, "ar_shared_first");
+    await complete(first, "ar_shared_first");
+
+    let connections = await connectionsFor(app);
+    expect(connections.length).toBe(1);
+    expect(connections[0]?.holder).toBe("deployment");
+    expect(connections[0]?.userId).toBeNull();
+    expect(connections[0]?.connectedBy).toBe(first);
+
+    // AND THE SECOND ADMINISTRATOR SUPERSEDES THE FIRST, because a deployment account is shared
+    // and the row credits whoever most recently consented for it. The insert takes the conflict
+    // branch here, which is the half that used to keep an attribution standing while rewriting
+    // everything around it.
+    await claimFor(second, "ar_shared_second");
+    await complete(second, "ar_shared_second");
+
+    connections = await connectionsFor(app);
+    expect(connections.length).toBe(1);
+    expect(connections[0]?.connectedBy).toBe(second);
   });
 
   test("two CONCURRENT calls write exactly one connection and one audit event, and the loser answers as the winner would", async () => {
