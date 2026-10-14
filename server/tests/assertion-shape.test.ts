@@ -625,7 +625,7 @@ const ALLOW: Allowed[] = [
   },
   {
     file: "server/tests/agent-handoff.test.ts",
-    line: 368,
+    line: 366,
     shape: "b",
     finding: "NEW (round 2 did not find this)",
     why: "expect(plain.events[0]?.initiator).toBe(undefined);",
@@ -723,7 +723,7 @@ const ALLOW: Allowed[] = [
   },
   {
     file: "server/tests/headless-components.test.ts",
-    line: 192,
+    line: 197,
     shape: "b",
     finding: "NEW (round 2 did not find this)",
     why: "expect(bar?.hidden).toBeUndefined();",
@@ -814,7 +814,7 @@ const ALLOW: Allowed[] = [
   },
   {
     file: "server/tests/agent-handoff.test.ts",
-    line: 622,
+    line: 620,
     shape: "c",
     finding: "NEW (round 2 did not find this)",
     why: ').toEqual([ { eventType: "agent.handoff_offered", reason: undefined }, { eventType: "agent.handoff_refused", r',

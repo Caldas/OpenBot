@@ -33,7 +33,6 @@ server/tests/agent-handoff-tool.test.ts:107: error TS2345: Argument of type '{ d
 server/tests/agent-handoff-tool.test.ts:78: error TS2345: Argument of type '{ desk: HandoffDesk; from: { depth: number; botId: string; actorId: string; runId: string; threadId: string; }; hasSomebodyToAsk: true; maxDepth: number; }' is not assignable to parameter of type '{ desk: HandoffDesk; from: RunAssertion; hasSomebodyToAsk: boolean; maxDepth: number; maxPerRun: number; approvalGate?: ApprovalGate | undefined; privateShare?: PrivateShareGate | undefined; }'.
 server/tests/agent-handoff.integration.test.ts:34: error TS2554: Expected 2-3 arguments, but got 1.
 server/tests/agent-handoff.integration.test.ts:80: error TS2769: No overload matches this call.
-server/tests/agent-handoff.test.ts:8: error TS2459: Module '"../src/agents/profile-store"' declares 'AgentProfile' locally, but it is not exported.
 server/tests/agent-profile-policy.test.ts:14: error TS2322: Type '{ id: string; name: string; title: string; roleDescription: string; avatarSeed: string; visibility: AgentVisibility; ownerUserId: string | null; ... 7 more ...; hasCallbackToken?: boolean | undefined; }' is not assignable to type 'AgentProfile'.
 server/tests/agent-routes.test.ts:36: error TS2322: Type '{ id: string; name: string; title: string; roleDescription: string; avatarSeed: string; visibility: AgentVisibility; ownerUserId: string | null; ... 7 more ...; hasCallbackToken?: boolean | undefined; }' is not assignable to type 'AgentProfile'.
 server/tests/agent-routes.test.ts:563: error TS2769: No overload matches this call.
@@ -70,7 +69,7 @@ server/tests/bot-lifecycle-audit.test.ts:301: error TS2345: Argument of type '{ 
 server/tests/bot-lifecycle-audit.test.ts:315: error TS2345: Argument of type '{ revoke: (id: string) => Promise<undefined>; }' is not assignable to parameter of type 'Pick<CredentialStore, "revoke">'.
 server/tests/bot-lifecycle-audit.test.ts:326: error TS2345: Argument of type '{ revoke: (id: string) => Promise<undefined>; }' is not assignable to parameter of type 'Pick<CredentialStore, "revoke">'.
 server/tests/bot-lifecycle-audit.test.ts:335: error TS2345: Argument of type '{ revoke: (id: string) => Promise<undefined>; }' is not assignable to parameter of type 'Pick<CredentialStore, "revoke">'.
-server/tests/brokered-app-provider.integration.test.ts:15: error TS2305: Module '"../src/plugins/composio"' has no exported member 'ComposioBroker'.
+server/tests/brokered-app-provider.integration.test.ts:51: error TS2739: Type '{ grantIsLocal: true; authProviderOf: () => Promise<null>; authorizations: null; grantsFor: () => Promise<never>; listApps: () => Promise<never>; ensureAuthConfig: () => Promise<...>; ... 4 more ...; accountName: () => Promise<...>; }' is missing the following properties from type 'ConnectedAppBroker': connectionFields, connectWithFields, revokeAccount
 server/tests/brokered-app-provider.integration.test.ts:72: error TS2322: Type '{ readSecret: () => Promise<null>; create: () => Promise<never>; updateSecret: () => Promise<never>; revoke: () => Promise<never>; }' is not assignable to type 'CredentialSecretReader & CredentialStore'.
 server/tests/channel-routes.test.ts:385: error TS2769: No overload matches this call.
 server/tests/channel-routes.test.ts:86: error TS2322: Type '(receivedActor: AgentActor, id: string) => Promise<void>' is not assignable to type '(actor: AgentActor, channelId: string) => Promise<boolean>'.
@@ -80,7 +79,6 @@ server/tests/component-catalogue-entries.test.ts:22: error TS2769: No overload m
 server/tests/component-catalogue.test.ts:21: error TS2769: No overload matches this call.
 server/tests/component-decision-functions.test.ts:32: error TS2769: No overload matches this call.
 server/tests/component-decision.test.ts:30: error TS2769: No overload matches this call.
-server/tests/component-grants-skills-validation.test.ts:5: error TS2459: Module '"../src/plugins/routes"' declares 'BotAccessCheck' locally, but it is not exported.
 server/tests/composio-connection-kinds.test.ts:1908: error TS2769: No overload matches this call.
 server/tests/composio-connection-kinds.test.ts:1910: error TS7053: Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'Record<"key" | "none" | "consent" | "unreadable", Cell>'.
 server/tests/composio-connection-kinds.test.ts:1924: error TS2769: No overload matches this call.
@@ -158,8 +156,6 @@ server/tests/headless-components.integration.test.ts:54: error TS7031: Binding e
 server/tests/headless-components.test.ts:104: error TS7006: Parameter 'entry' implicitly has an 'any' type.
 server/tests/headless-components.test.ts:10: error TS6142: Module '../../app/src/components/gallery/quote' was resolved to 'app/src/components/gallery/quote.tsx', but '--jsx' is not set.
 server/tests/headless-components.test.ts:11: error TS6142: Module '../../app/src/components/gallery/table' was resolved to 'app/src/components/gallery/table.tsx', but '--jsx' is not set.
-server/tests/headless-components.test.ts:141: error TS2307: Cannot find module 'react' or its corresponding type declarations.
-server/tests/headless-components.test.ts:144: error TS2307: Cannot find module 'react-dom/server' or its corresponding type declarations.
 server/tests/headless-components.test.ts:5: error TS6142: Module '../../app/src/components/gallery/activity' was resolved to 'app/src/components/gallery/activity.tsx', but '--jsx' is not set.
 server/tests/headless-components.test.ts:6: error TS6142: Module '../../app/src/components/gallery/cards' was resolved to 'app/src/components/gallery/cards.tsx', but '--jsx' is not set.
 server/tests/headless-components.test.ts:7: error TS6142: Module '../../app/src/components/gallery/charts' was resolved to 'app/src/components/gallery/charts.tsx', but '--jsx' is not set.
@@ -184,17 +180,14 @@ server/tests/passwords-sign-in.test.ts:864: error TS2353: Object literal may onl
 server/tests/people-routes.test.ts:84: error TS2322: Type 'Response | Promise<Response>' is not assignable to type 'Promise<Response>'.
 server/tests/plan-model.test.ts:156: error TS2769: No overload matches this call.
 server/tests/plan-model.test.ts:271: error TS2345: Argument of type '(id: string) => Promise<{ name: string; description: string; parameters: ZodObject<{ query: ZodString; }, $strip>; ref: { kind: string; serverId: string; toolName: string; }; execute: (args: unknown) => Promise<...>; }[]>' is not assignable to parameter of type 'LoadToolsForBot'.
-server/tests/plugin-call-args-validation.test.ts:5: error TS2459: Module '"../src/plugins/routes"' declares 'BotAccessCheck' locally, but it is not exported.
 server/tests/plugin-catalogue.test.ts:92: error TS2531: Object is possibly 'null'.
 server/tests/plugin-curated-credential.integration.test.ts:37: error TS2322: Type '{ readSecret: () => Promise<null>; create: () => Promise<never>; revoke: () => Promise<never>; }' is not assignable to type 'CredentialSecretReader & CredentialStore'.
-server/tests/plugin-grants-validation.test.ts:4: error TS2459: Module '"../src/plugins/routes"' declares 'BotAccessCheck' locally, but it is not exported.
 server/tests/plugin-oauth-callback.test.ts:157: error TS2769: No overload matches this call.
 server/tests/plugin-routes.integration.test.ts:32: error TS2322: Type '{ readSecret: () => Promise<never>; create: () => Promise<never>; revoke: () => Promise<never>; }' is not assignable to type 'CredentialSecretReader & CredentialStore'.
 server/tests/plugin-routes.test.ts:1071: error TS2769: No overload matches this call.
 server/tests/plugin-routes.test.ts:125: error TS2739: Type '{ id: string; title: string; vendor: string; url: string; summary: string; docsUrl: string; provenance: string; hasCredential: false; toolsRefreshedAt: null; lastError: null; addedBy: null; dynamicClient: false; authScheme: null; tools: never[]; withdrawn: never[]; }' is missing the following properties from type 'ServerRecord': logo, accountMode, sharedVendorConnected
 server/tests/plugin-routes.test.ts:1775: error TS2322: Type '(serverId: string) => Promise<{ id: string; title: string; url: string; authScheme: string | null; accountMode?: "shared"; } | undefined>' is not assignable to type '(serverId: string) => Promise<ServerAddress | undefined>'.
 server/tests/plugin-routes.test.ts:1784: error TS2322: Type '(serverId: string, actorId: string) => Promise<{ refusal: string; readonly ref?: undefined; title?: undefined; mode?: undefined; } | { ref: { holder: "deployment"; vendorUserId: string; userId?: undefined; }; title: string; mode: "shared"; refusal?: undefined; } | { ...; }>' is not assignable to type '(serverId: string, actorId: string) => Promise<{ ref: AccountRef; title: string; mode: "personal" | "shared"; appId: string; } | { refusal: string; }>'.
-server/tests/plugin-servers-validation.test.ts:4: error TS2459: Module '"../src/plugins/routes"' declares 'BotAccessCheck' locally, but it is not exported.
 server/tests/plugin-store.integration.test.ts:165: error TS2322: Type '{ readSecret: () => Promise<null>; create: () => Promise<never>; updateSecret: () => Promise<never>; revoke: (id: string) => Promise<Date>; }' is not assignable to type 'CredentialSecretReader & CredentialStore'.
 server/tests/plugin-store.integration.test.ts:4072: error TS2322: Type '{ readSecret: () => Promise<null>; create: () => Promise<never>; updateSecret: () => Promise<never>; revoke: (id: string) => Promise<Date>; }' is not assignable to type 'CredentialSecretReader & CredentialStore'.
 server/tests/plugin-store.integration.test.ts:4979: error TS2339: Property 'payload' does not exist on type '{ eventType: string; targetId?: string | undefined; }'.
@@ -252,7 +245,6 @@ server/tests/schema.test.ts:202: error TS2345: Argument of type '<T extends Tabl
 server/tests/schema.test.ts:203: error TS2345: Argument of type '<T extends Table>(table: T) => T["_"]["name"]' is not assignable to parameter of type '(value: PgTableWithColumns<{ name: "capability_settings"; schema: undefined; columns: { scopeKind: PgColumn<{ name: "scope_kind"; tableName: "capability_settings"; dataType: "string"; columnType: "PgText"; data: "organization" | "role" | "group"; ... 9 more ...; generated: undefined; }, {}, { ...; }>; ... 4 more ......'.
 server/tests/schema.test.ts:206: error TS2345: Argument of type 'PgTableWithColumns<{ name: "capability_settings"; schema: undefined; columns: { scopeKind: PgColumn<{ name: "scope_kind"; tableName: "capability_settings"; dataType: "string"; columnType: "PgText"; data: "organization" | "role" | "group"; ... 9 more ...; generated: undefined; }, {}, { ...; }>; ... 4 more ...; update...' is not assignable to parameter of type 'PgTable<TableConfig>'.
 server/tests/schema.test.ts:208: error TS2345: Argument of type 'PgTableWithColumns<{ name: "capability_settings"; schema: undefined; columns: { scopeKind: PgColumn<{ name: "scope_kind"; tableName: "capability_settings"; dataType: "string"; columnType: "PgText"; data: "organization" | "role" | "group"; ... 9 more ...; generated: undefined; }, {}, { ...; }>; ... 4 more ...; update...' is not assignable to parameter of type 'Table<TableConfig<Column<any, object, object>>>'.
-server/tests/server-side-tools.integration.test.ts:16: error TS2307: Cannot find module '../src/policy/engine' or its corresponding type declarations.
 server/tests/server-side-tools.integration.test.ts:47: error TS2322: Type '{ readSecret: () => Promise<null>; }' is not assignable to type 'CredentialSecretReader & CredentialStore'.
 server/tests/settings-instructions-routes.test.ts:236: error TS2339: Property 'then' does not exist on type 'Response | Promise<Response>'.
 server/tests/settings-instructions-routes.test.ts:236: error TS7006: Parameter 'response' implicitly has an 'any' type.
@@ -265,9 +257,8 @@ server/tests/settings-instructions-routes.test.ts:314: error TS7006: Parameter '
 server/tests/skill-ownership.integration.test.ts:29: error TS2322: Type '{ readSecret: () => Promise<null>; }' is not assignable to type 'CredentialSecretReader & CredentialStore'.
 server/tests/skill-tools.integration.test.ts:35: error TS2322: Type '{ readSecret: () => Promise<null>; }' is not assignable to type 'CredentialSecretReader & CredentialStore'.
 server/tests/skill-uninstall-grants.integration.test.ts:26: error TS2322: Type '{ readSecret: () => Promise<null>; }' is not assignable to type 'CredentialSecretReader & CredentialStore'.
-server/tests/store-scheme-sites.test.ts:24: error TS2305: Module '"../src/plugins/composio"' has no exported member 'ComposioBroker'.
+server/tests/store-scheme-sites.test.ts:62: error TS2739: Type '{ grantIsLocal: true; authProviderOf: () => Promise<null>; authorizations: null; grantsFor: () => Promise<never>; listApps: () => Promise<never>; ensureAuthConfig: () => Promise<...>; ... 4 more ...; accountName: () => Promise<...>; }' is missing the following properties from type 'ConnectedAppBroker': connectionFields, connectWithFields, revokeAccount
 server/tests/store-scheme-sites.test.ts:82: error TS2322: Type '{ readSecret: () => Promise<null>; create: () => Promise<never>; updateSecret: () => Promise<never>; revoke: () => Promise<never>; }' is not assignable to type 'CredentialSecretReader & CredentialStore'.
-server/tests/support/constraints.ts:15: error TS2307: Cannot find module '../src/db/client' or its corresponding type declarations.
 server/tests/tenant-package.test.ts:1440: error TS2698: Spread types may only be created from object types.
 server/tests/tenant-package.test.ts:1518: error TS2698: Spread types may only be created from object types.
 server/tests/thread-routes.test.ts:22: error TS2769: No overload matches this call.
