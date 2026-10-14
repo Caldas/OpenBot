@@ -6631,6 +6631,24 @@ export function createPluginStore(options: PluginStoreOptions) {
           probeAction: null,
           updatedAt: verifiedAt,
         };
+        /*
+         * WHO CONNECTED THE TEAM ACCOUNT, WRITTEN HERE FOR THE SAME REASON EVERY OTHER WRITER
+         * WRITES IT. `connectedBy` is only ever a deployment-held row's column — a person's row is
+         * attributed by `user_id` already — and for a Shared app it is the attribution an
+         * administrator reads off `deploymentConnectionFor` to decide whether a team connection is
+         * legitimate and who to ask about it. This writer held `actorId`, the session subject
+         * (`users.id`) the attempt is keyed on and the id the admin read joins `users` on, and
+         * recorded none of it: an Arcade-consented Shared app's row was permanently null, and the
+         * page then said nobody connected it. The null is a real state for rows written before
+         * this, which is why both readers keep answering `null` rather than inventing a name.
+         *
+         * AND THE RE-CONSENT SUPERSEDES, which is `recordBrokeredConnection`'s rule spelled the
+         * same way: a deployment account is shared, so the administrator who most recently
+         * completed a consent for it is the one the row credits. Unconditional here, unlike there,
+         * because this path always holds an actor — there is no caller that passes none.
+         */
+        const connectedBy =
+          input.account.holder === "deployment" ? input.actorId : null;
         await transaction
           .insert(brokeredConnections)
           .values({
@@ -6642,6 +6660,7 @@ export function createPluginStore(options: PluginStoreOptions) {
             userId:
               input.account.holder === "person" ? input.account.userId : null,
             vendorUserId: input.account.vendorUserId,
+            connectedBy,
             ...set,
           })
           .onConflictDoUpdate(
@@ -6661,7 +6680,7 @@ export function createPluginStore(options: PluginStoreOptions) {
                     brokeredConnections.app,
                   ],
                   targetWhere: sql`${brokeredConnections.holder} = 'deployment'`,
-                  set,
+                  set: { ...set, connectedBy },
                 },
           );
 
