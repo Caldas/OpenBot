@@ -54,9 +54,23 @@ afterAll(async () => {
   await database.$client.close();
 });
 
+/**
+ * Every broker member this file does not expect production to reach, by the name it was asked as.
+ *
+ * EACH ONE THROWS AND RECORDS, because a throw is only as loud as the path that receives it: a
+ * `catch` around the call swallows it and the test passes on a broker that was never there. That is
+ * how three members of `ConnectedAppBroker` — `revokeAccount` among them — were absent from this
+ * stub without a single test noticing. The check below reads the record after every test, so a
+ * reach is a red whether or not production let the throw out.
+ */
+const reached: string[] = [];
 const unasked = (what: string) => async (): Promise<never> => {
+  reached.push(what);
   throw new Error(`asked the broker to ${what}`);
 };
+afterEach(() => {
+  expect(reached.splice(0)).toEqual([]);
+});
 
 function storeFor(provider: BrokerProvider) {
   const broker: ComposioBroker = {
@@ -73,6 +87,12 @@ function storeFor(provider: BrokerProvider) {
     authorize: unasked("authorize"),
     isConnected: unasked("check"),
     revoke: unasked("revoke"),
+    // Nothing here draws a connect form, connects with typed fields or undoes one account. All three
+    // are declared so the stub is a `ConnectedAppBroker` rather than a partial one, and all three
+    // fail if reached.
+    connectionFields: unasked("read connection fields"),
+    connectWithFields: unasked("connect with typed fields"),
+    revokeAccount: unasked("revoke one account"),
     accountName: async () => null,
   };
   return createPluginStore({
