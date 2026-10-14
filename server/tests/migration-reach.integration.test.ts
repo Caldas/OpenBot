@@ -204,3 +204,193 @@ describe("an ordinary database", () => {
     }
   });
 });
+
+/**
+ * Two migrators against one database, interleaved at every point one of them talks to it.
+ *
+ * The reach check is a read, and the migrator's own decision is a second, later read of the same
+ * table. If anything can commit between them, the check's verdict is about a database that no
+ * longer exists by the time the migrator acts on it. The case that matters is a rival running a
+ * DIFFERENT journal — an operator's `db:migrate` from a checkout, a second release's Job, a Job pod
+ * the controller started twice while an older one is still running — that records a stamp above a
+ * migration this run still has pending. The check passed before that stamp existed; the migrator
+ * reads it afterwards and walks past the migration, and the run reports success over a table that is
+ * not there. That is the exact outcome the reach check exists to prevent, arrived at through the gap
+ * between the two reads.
+ *
+ * So the rival is started at the k-th database call this run makes, for every k, through a client
+ * that pauses there. The pause ends when the rival has either finished or is visibly waiting on a
+ * lock — waiting for it to FINISH would deadlock against a migrator that correctly holds one.
+ * Whatever order results, a run that resolves must have applied everything in its folder: being
+ * refused, or failing loudly, is an acceptable outcome; reporting success over a skipped migration
+ * is not.
+ */
+describe("a migrator racing another migrator with a different journal", () => {
+  const fromMain: Entry = {
+    tag: "0001_from_main",
+    when: 2_000_000,
+    sql: 'CREATE TABLE "from_main" ("id" text PRIMARY KEY);\n',
+  };
+  const rivalOnly: Entry = {
+    tag: "0001_rival",
+    when: 3_000_000,
+    sql: 'CREATE TABLE "rival" ("id" text PRIMARY KEY);\n',
+  };
+
+  type Gate = { count: number; at: number; hit: Promise<void> | undefined };
+
+  /**
+   * `client`, except that its `at`-th call into the database first waits for `pause()`.
+   *
+   * Every way a caller reaches the server is counted — a tagged query, `unsafe`, `begin`,
+   * `savepoint`, and the connection a `begin` or `savepoint` hands to its callback — so a pause can
+   * land between ANY two statements, including those issued inside a transaction.
+   */
+  function pausing<T extends object>(
+    client: T,
+    gate: Gate,
+    pause: () => Promise<void>,
+  ): T {
+    const before = (): Promise<void> => {
+      gate.count += 1;
+      if (gate.count !== gate.at) return Promise.resolve();
+      gate.hit = pause();
+      return gate.hit;
+    };
+    /*
+     * A lazy thenable: the query is built, and so sent, only once the pause is over, and only in
+     * the form — awaited, or `.values()` — that the caller actually asked for.
+     */
+    const deferred = (build: () => unknown) => {
+      const waited = before();
+      return {
+        // biome-ignore lint/suspicious/noThenProperty: it stands in for a query, which is awaitable
+        then: (
+          resolve: (value: unknown) => unknown,
+          reject: (error: unknown) => unknown,
+        ) => waited.then(() => build()).then(resolve, reject),
+        values: () =>
+          waited.then(() =>
+            (build() as { values: () => Promise<unknown> }).values(),
+          ),
+      };
+    };
+    return new Proxy(client, {
+      apply: (target, _this, args) =>
+        deferred(() =>
+          Reflect.apply(
+            target as (...a: unknown[]) => unknown,
+            undefined,
+            args,
+          ),
+        ),
+      get: (target, property, receiver) => {
+        const value = Reflect.get(target, property, receiver) as unknown;
+        if (typeof value !== "function") return value;
+        const method = value as (...args: unknown[]) => unknown;
+        if (property === "unsafe") {
+          return (...args: unknown[]) => deferred(() => method(...args));
+        }
+        if (property === "begin" || property === "savepoint") {
+          return (...args: unknown[]) => {
+            const fn = args.pop() as (sql: unknown) => unknown;
+            return before().then(() =>
+              method(...args, (inner: object) =>
+                fn(pausing(inner, gate, pause)),
+              ),
+            );
+          };
+        }
+        return value;
+      },
+    });
+  }
+
+  test("never reports success over a migration a rival's stamp put out of its reach", async () => {
+    let pausesExercised = 0;
+    for (let at = 1; ; at += 1) {
+      const url = await throwawayDatabase();
+      const setup = postgres(url, { max: 1, onnotice: () => {} });
+      const ours = postgres(url, { max: 1, onnotice: () => {} });
+      const rival = postgres(url, {
+        max: 1,
+        onnotice: () => {},
+        connection: { application_name: "migration-rival" },
+      });
+      try {
+        await applyMigrations(setup, await folderOf([first]));
+        const ourFolder = await folderOf([first, fromMain]);
+        const rivalFolder = await folderOf([first, rivalOnly]);
+
+        let rivalRun: Promise<unknown> | undefined;
+        let rivalSettled = false;
+        const gate: Gate = { count: 0, at, hit: undefined };
+        const pause = async () => {
+          rivalRun = applyMigrations(rival, rivalFolder).then(
+            () => {
+              rivalSettled = true;
+              return "applied" as const;
+            },
+            (error: unknown) => {
+              rivalSettled = true;
+              return error;
+            },
+          );
+          // Finished, or parked behind a lock: either way it has had every chance to get in first.
+          const deadline = Date.now() + 10_000;
+          while (!rivalSettled) {
+            const [row] = await setup<{ waiting: boolean }[]>`
+              select exists (
+                select 1 from pg_stat_activity
+                where application_name = 'migration-rival'
+                  and wait_event_type = 'Lock'
+              ) as waiting
+            `;
+            if (row?.waiting) break;
+            if (Date.now() > deadline) {
+              throw new Error(
+                `the rival migrator neither finished nor waited on a lock (paused at call ${at})`,
+              );
+            }
+            await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+        };
+
+        const outcome = await applyMigrations(
+          pausing(ours, gate, pause),
+          ourFolder,
+        ).then(
+          () => "applied" as const,
+          (error: unknown) => error,
+        );
+        if (gate.hit === undefined) break; // every call this run makes has had a rival in front of it
+        await gate.hit;
+        const rivalOutcome = await rivalRun;
+        pausesExercised += 1;
+
+        // Refused or failed is acceptable. Applied means applied.
+        if (outcome === "applied") {
+          expect({
+            pausedAtCall: at,
+            fromMainExists: await exists(setup, "from_main"),
+          }).toEqual({ pausedAtCall: at, fromMainExists: true });
+        }
+        if (rivalOutcome === "applied") {
+          expect({
+            pausedAtCall: at,
+            rivalExists: await exists(setup, "rival"),
+          }).toEqual({ pausedAtCall: at, rivalExists: true });
+        }
+      } finally {
+        await ours.end({ timeout: 5 });
+        await rival.end({ timeout: 5 });
+        await setup.end({ timeout: 5 });
+      }
+    }
+    /*
+     * A harness whose pause never landed would pass vacuously. Every run makes at least the two
+     * reads of the check and the migrator's own statements; each of them must have been tried.
+     */
+    expect(pausesExercised).toBeGreaterThanOrEqual(4);
+  }, 120_000);
+});
