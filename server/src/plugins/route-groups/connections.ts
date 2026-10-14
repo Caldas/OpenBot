@@ -1517,6 +1517,55 @@ export function mountConnectionRoutes({
           refusal.status,
         );
       }
+      /*
+       * THE UNCERTAIN MINT: THE CLAIM STANDS, AND IT DOES NOT STAND IN SILENCE.
+       *
+       * WHY THE CLAIM STANDS. Nobody can read the vendor's answer here, so nobody knows whether a
+       * flow exists at the vendor. Ending the attempt on that guess is the irreversible mistake in
+       * one direction: a deleted claim frees this actor to start a second flow beside one that may
+       * be live. A settled verdict is no better: `closeAuthorizationAttempt` matches on `auth_id`,
+       * which is NULL here, so there is no verdict this row could take, and a settled row frees the
+       * actor just as a deleted one does. Left standing with a NULL `auth_id`, the row can never
+       * complete and holds the actor until it is fifteen minutes old. That cost is bounded. A
+       * second live flow is not.
+       *
+       * WHY IT IS NOT LEFT SILENT. Before this line the branch wrote nothing anywhere. The row says
+       * "a claim with no mint", which is also what a mint still in flight looks like. The person got
+       * a 502 sentence and the deployment kept no trace. So a flow this deployment may have
+       * started, and will never see completed, was invisible to everybody who could end it. This
+       * is B6a's shape one seam earlier: `arcade-context-withdrawal-unknown` is the same unknown
+       * on the revoke, and it is answered the same way.
+       *
+       * WHAT AN OPERATOR CAN NOW SEE, AND DO WITH IT. One line, `arcade-mint-outcome-unknown`,
+       * naming the server, the action and `attemptStartedAt`. The attempt row is
+       * `pending_authorizations` at that `(server_id, action, created_at)`, holding NULL `auth_id`.
+       * The vendor-side flow, if one exists, is a pending authorization for this action on this
+       * account started at that instant. Nobody was given its url, so nobody can complete it. An
+       * operator who needs it gone ends it at the vendor; otherwise it lapses there and the claim
+       * lapses here. A run of these lines is the vendor not answering, not one person's problem.
+       *
+       * WHAT IS NOT IN THE LINE. No authorization id: none was read, and that is the point. No
+       * redirect url, the bearer capability; on the "answered with no id" path it existed and was
+       * dropped inside the adapter. No account or vendor user id, as on every sibling line. The
+       * reason goes through {@link reasonWithoutStatement}. Every error that reaches this branch
+       * carries this deployment's own sentence: `ArcadeFailureError` drops the vendor's prose by
+       * construction, the adapter's own refusals are ours, and {@link VendorTimeoutError} is ours.
+       *
+       * NOT AN AUDIT ROW. Nothing here writes to `pending_authorizations`, and the attempt's
+       * missing trail rows are already debt in `pending-authorization-audit-ledger.test.ts`, under
+       * the claim and the expiry overwrite (B5e). Filing an event for this one branch while the
+       * claim it follows files none would put half a lifecycle on the trail.
+       */
+      console.error(
+        JSON.stringify({
+          type: "arcade-mint-outcome-unknown",
+          server: serverId,
+          action,
+          attemptStartedAt: claim.attempt.createdAt,
+          note: "The vendor did not answer an authorization clearly, so whether it started a flow is unknown. The attempt was left standing with no authorization id: it cannot complete, it holds this person until it is fifteen minutes old, and nobody was sent to a consent screen. If the vendor shows a pending authorization for this action begun at attemptStartedAt, nobody here can finish it; end it there if it must not linger.",
+          error: reasonWithoutStatement(error),
+        }),
+      );
       return context.json(
         {
           error:

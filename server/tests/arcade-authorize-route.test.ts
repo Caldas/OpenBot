@@ -145,6 +145,31 @@ const authorize = (
     body: JSON.stringify(body),
   });
 
+/**
+ * Every line the deployment wrote while `work` ran, each as the text it would have printed. The
+ * arguments are joined rather than mapped through one `String()`, so an object logged beside a
+ * string still shows up as `[object Object]`, which is the shape a leak hides in.
+ */
+async function heard<T>(work: () => T | Promise<T>): Promise<[T, string[]]> {
+  const said: string[] = [];
+  const before = globalThis.console;
+  const hear = (...args: unknown[]) =>
+    said.push(args.map((arg) => String(arg)).join(" "));
+  globalThis.console = {
+    ...before,
+    log: hear,
+    info: hear,
+    warn: hear,
+    error: hear,
+    debug: hear,
+  } as typeof console;
+  try {
+    return [await work(), said];
+  } finally {
+    globalThis.console = before;
+  }
+}
+
 const attemptsFor = (actorId: string) =>
   database
     .select()
@@ -474,6 +499,77 @@ describe("POST /servers/:id/authorize", () => {
       expect((await authorize(appAs("user", actor), personalApp)).status).toBe(
         409,
       );
+    });
+
+    /*
+     * L4-a: THE UNCERTAIN BRANCH LEAVES THE CLAIM STANDING, AND IT USED TO LEAVE NOTHING ELSE.
+     *
+     * The outcome assertions here already passed before the fix: the row stands with a NULL
+     * `auth_id` and holds the actor. What was missing is the trace. A flow the vendor may have
+     * started went unrecorded everywhere, so nobody who could end it at the vendor could find it.
+     */
+    test("an uncertain mint leaves the claim standing AND leaves an operator a line naming it", async () => {
+      const actor = await person("uncertain-line");
+      beforeMint = async () => {
+        throw new APIConnectionError({ message: "socket dropped" });
+      };
+      const [response, said] = await heard(() =>
+        authorize(appAs("user", actor), personalApp),
+      );
+      expect(response.status).toBe(502);
+
+      // NOT ENDED ON A GUESS: the claim stands, with no id, holding the actor.
+      const [row] = await attemptsFor(actor);
+      expect(row).toMatchObject({
+        authId: null,
+        completedAt: null,
+        outcome: null,
+      });
+
+      // AND SAID OUT LOUD, with what an operator needs to find the attempt and the flow.
+      const line = said.find((text) =>
+        text.includes("arcade-mint-outcome-unknown"),
+      );
+      expect(line).toBeDefined();
+      const logged = JSON.parse(line ?? "{}") as Record<string, unknown>;
+      expect(logged.server).toBe(personalApp);
+      expect(logged.action).toBe(ACTION);
+      expect(logged.attemptStartedAt).toBe(row?.createdAt.toISOString());
+      expect(logged.error).toBe("socket dropped");
+      // Nothing that is not ours: no bearer url, no vendor user id, no authorization id field.
+      expect(line).not.toContain("bearer-capability");
+      expect(line).not.toContain(actor);
+      expect(Object.keys(logged)).not.toContain("authorizationId");
+    });
+
+    test("the missing-id mint is uncertain and leaves the same line, carrying the adapter's sentence", async () => {
+      const actor = await person("noid-line");
+      beforeMint = async () => {
+        throw new Error("Arcade answered an authorization with no id.");
+      };
+      const [response, said] = await heard(() =>
+        authorize(appAs("user", actor), personalApp),
+      );
+      expect(response.status).toBe(502);
+      const line = said.find((text) =>
+        text.includes("arcade-mint-outcome-unknown"),
+      );
+      expect(line).toBeDefined();
+      expect(line).toContain("Arcade answered an authorization with no id.");
+      expect(line).not.toContain("bearer-capability");
+    });
+
+    test("a definite refusal is not an unknown outcome, so it leaves no such line", async () => {
+      const actor = await person("definite-no-line");
+      beforeMint = refuse;
+      const [response, said] = await heard(() =>
+        authorize(appAs("user", actor), personalApp),
+      );
+      expect(response.status).toBe(502);
+      expect(await attemptsFor(actor)).toEqual([]);
+      expect(
+        said.filter((text) => text.includes("arcade-mint-outcome-unknown")),
+      ).toEqual([]);
     });
 
     test("a non-SDK throw (the adapter's missing-id Error) is uncertain too: the attempt stands", async () => {
