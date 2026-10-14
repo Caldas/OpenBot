@@ -6640,6 +6640,12 @@ test("enabling an app writes a brokered row, and asks for its auth config first"
     authorize: unasked("begin somebody's connection"),
     isConnected: unasked("check somebody's connection"),
     revoke: unasked("withdraw somebody's grant"),
+    // Enabling an app draws no connect form, connects nobody and undoes no account. All three are
+    // declared so the stub is a `ConnectedAppBroker` rather than a partial one, and all three fail
+    // if reached.
+    connectionFields: unasked("read an app's connection fields"),
+    connectWithFields: unasked("connect somebody with typed fields"),
+    revokeAccount: unasked("undo one account"),
     accountName: async () => null,
   };
 
