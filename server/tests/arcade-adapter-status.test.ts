@@ -94,7 +94,9 @@ describe("grantsFor maps a toolkit listing to this deployment's vocabulary", () 
           { key: "GITHUB_SERVER_URL", met: false, status_reason: "unset" },
         ],
       }),
-      tool("Github.CountStargazers", { met: false }),
+      // An authorization block in a shape this deployment cannot read. NOT a row with no block at
+      // all: that is the vendor saying the action needs none, and is `authorized` — see below.
+      tool("Github.CountStargazers", { met: false, authorization: "oauth2" }),
     ]);
 
     const { broker } = createArcadeClient("never-dialled");
@@ -152,6 +154,61 @@ describe("grantsFor maps a toolkit listing to this deployment's vocabulary", () 
       state: "unknown",
       reason: expect.any(String),
     });
+  });
+});
+
+/**
+ * ONE READING OF A MISSING AUTHORIZATION BLOCK, ASKED OF BOTH QUESTIONS ON THE SAME ROW.
+ *
+ * The catalogue files an app whose actions publish no `requirements.authorization` as `no-auth`;
+ * the grants screen once read that same silence as "could not be read" and drew every action of
+ * such an app as `unknown` — the broker-outage state — forever, with nothing anybody could do about
+ * it. `Apollo` is the live shape (one deployment secret, no authorization block), here with its
+ * secret SET, which is the state that used to stick.
+ */
+describe("an action that publishes no authorization needs none, on every screen", () => {
+  const silent = [
+    tool("Apollo.EnrichOrganization", {
+      met: true,
+      secrets: [{ key: "APOLLO_API_KEY", met: true }],
+    }),
+    tool("Apollo.SearchPeople", null),
+    {
+      qualified_name: "Apollo.SearchOrganizations",
+      toolkit: { name: "Github" },
+    },
+  ];
+
+  test("the catalogue says no-auth and the grants screen says usable, never unknown", async () => {
+    listing(silent);
+    const { broker } = createArcadeClient("never-dialled");
+
+    const apps = await broker.listApps();
+    expect(apps.map((app) => app.connection)).toEqual([{ kind: "no-auth" }]);
+
+    expect(await broker.grantsFor({ toolkit: "Github", account })).toEqual([
+      { action: "Apollo.EnrichOrganization", state: "authorized", scopes: [] },
+      { action: "Apollo.SearchPeople", state: "authorized", scopes: [] },
+      { action: "Apollo.SearchOrganizations", state: "authorized", scopes: [] },
+    ]);
+  });
+
+  test("an UNSET secret on such an action is still the operator's, not authorized", async () => {
+    listing([
+      tool("Apollo.EnrichOrganization", {
+        met: false,
+        secrets: [{ key: "APOLLO_API_KEY", met: false }],
+      }),
+    ]);
+    const { broker } = createArcadeClient("never-dialled");
+
+    expect(await broker.grantsFor({ toolkit: "Apollo", account })).toEqual([
+      {
+        action: "Apollo.EnrichOrganization",
+        state: "needs-operator",
+        missing: ["APOLLO_API_KEY"],
+      },
+    ]);
   });
 });
 
