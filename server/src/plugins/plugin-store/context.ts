@@ -32,6 +32,7 @@ import {
   type AccountMode,
   type AccountRef,
   accountFor,
+  personAccount,
 } from "../shared-accounts";
 import {
   type BrokeredDisconnectReason,
@@ -316,8 +317,12 @@ export function createStoreContext(options: PluginStoreOptions) {
         return {
           refusal: `${row.title} runs in the account of the person asking, and this run is not attributed to anybody.`,
         };
+      /*
+       * The actor's id is both the local id and the vendor id, deliberately and for both
+       * providers. See {@link personAccount} for why, before changing it.
+       */
       return {
-        ref: { holder: "person", userId: actorId, vendorUserId: actorId },
+        ref: personAccount(actorId),
         title: row.title,
         mode: "personal",
         appId,

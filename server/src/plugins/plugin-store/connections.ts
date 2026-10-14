@@ -23,7 +23,7 @@ import {
   askAction as composioAskAction,
   VERSION_ARG,
 } from "../composio";
-import type { AccountRef } from "../shared-accounts";
+import { type AccountRef, personAccount } from "../shared-accounts";
 import type { StoreContext } from "./context";
 import {
   attemptNamed,
@@ -3223,11 +3223,7 @@ export function connectionMethods(context: StoreContext) {
        * DISTINCT TOOLKITS this person holds rather than that number squared. Empty with no broker
        * configured, where nothing is asked of anybody and the `false` below is the whole truth.
        */
-      const account: AccountRef = {
-        holder: "person",
-        userId,
-        vendorUserId: userId,
-      };
+      const account = personAccount(userId);
       const authProviders = new Map<string, Promise<string | null>>();
       const endedBesides = new Map<
         string,
