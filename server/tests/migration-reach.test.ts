@@ -7,6 +7,7 @@ import {
   type AppliedMigration,
   type FolderMigration,
   migrationsOutOfReach,
+  migratorHighWaterMark,
   outOfReachRefusal,
   readMigrationFolder,
 } from "../src/db/migration-reach";
@@ -34,7 +35,7 @@ const migration = (
   hash: string,
 ): FolderMigration => ({ tag, when, hash });
 
-const applied = (hash: string, createdAt: number): AppliedMigration => ({
+const applied = (hash: string, createdAt: number | null): AppliedMigration => ({
   hash,
   createdAt,
 });
@@ -131,6 +132,78 @@ describe("migrations out of reach", () => {
     expect(migrationsOutOfReach(folder, [applied("original", 1000)])).toEqual([
       migration("0000_first", 1000, "rewritten"),
     ]);
+  });
+});
+
+describe("the row the migrator reads", () => {
+  /*
+   * The guard is only as good as its agreement with the migrator about WHICH applied row is the
+   * mark. drizzle reads `order by created_at desc limit 1`, and Postgres sorts NULLs first in a
+   * descending order: one NULL `created_at` is the row it reads, `Number(null)` is 0, and every
+   * migration in the folder looks unapplied. `Math.max` over the stamps picks the newest real one
+   * instead, finds nothing out of reach, and waves through a run that dies re-creating the first
+   * type the database already has (`type "agent_type" already exists`).
+   */
+  test("is a NULL created_at, however many real stamps sit below it", () => {
+    const folder = [
+      migration("0000_first", 1000, "a"),
+      migration("0001_second", 2000, "b"),
+    ];
+    const database = [
+      applied("a", 1000),
+      applied("b", 2000),
+      applied("hand-written", null),
+    ];
+
+    expect(migratorHighWaterMark(database)).toBe(0);
+    expect(migrationsOutOfReach(folder, database)).toEqual(folder);
+  });
+
+  test("is the newest stamp when no created_at is NULL", () => {
+    expect(
+      migratorHighWaterMark([applied("a", 1000), applied("b", 2000)]),
+    ).toBe(2000);
+  });
+
+  test("does not exist on a database the migrator has never touched", () => {
+    expect(migratorHighWaterMark([])).toBeUndefined();
+  });
+
+  test("refuses every applied migration the shipped folder would run a second time", async () => {
+    const folder = await readMigrationFolder(
+      new URL("../drizzle/", import.meta.url).pathname,
+    );
+    const database = [
+      ...folder.map((entry) => applied(entry.hash, entry.when)),
+      applied("hand-written", null),
+    ];
+
+    expect(
+      migrationsOutOfReach(folder, database).map((entry) => entry.tag),
+    ).toEqual(folder.map((entry) => entry.tag));
+  });
+
+  test("says that a NULL created_at is the mark, and names what would run twice", () => {
+    const folder = [
+      migration("0000_first", 1000, "a"),
+      migration("0001_second", 2000, "b"),
+    ];
+    const database = [
+      applied("a", 1000),
+      applied("b", 2000),
+      applied("hand-written", null),
+    ];
+    const text = outOfReachRefusal(
+      migrationsOutOfReach(folder, database),
+      folder,
+      database,
+    );
+
+    expect(text).toContain("1 applied row has a NULL created_at");
+    expect(text).toContain("would run them a second time");
+    expect(text).toContain("0000_first (stamped 1000)");
+    expect(text).toContain("0001_second (stamped 2000)");
+    expect(text).not.toContain("would skip");
   });
 });
 
