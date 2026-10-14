@@ -208,6 +208,107 @@ describe("recordAuthorizationMint", () => {
     expect(wrote).toBe(false);
     expect((await store.authorizationAttemptFor(a))?.authId).toBeNull();
   });
+
+  /**
+   * The attempt's `auth_id` as the TABLE holds it. Not `authorizationAttemptFor`, which answers
+   * null for a settled attempt and so could not see a settled row being rewritten.
+   */
+  const storedAuthId = async (actorId: string) => {
+    const [row] = await database
+      .select({ authId: pendingAuthorizations.authId })
+      .from(pendingAuthorizations)
+      .where(eq(pendingAuthorizations.actorId, actorId));
+    if (!row) throw new Error(`no attempt for ${actorId}`);
+    return row.authId;
+  };
+
+  /** Claim and mint one attempt, answering the `created_at` it is named by. */
+  const minted = async (actorId: string, authId: string) => {
+    const got = await claim(actorId);
+    if (!got.claimed) throw new Error("claim failed");
+    const wrote = await store.recordAuthorizationMint({
+      actorId,
+      createdAt: got.attempt.createdAt,
+      authId,
+    });
+    if (!wrote) throw new Error("first mint failed");
+    return got.attempt.createdAt;
+  };
+
+  test("a late mint cannot rewrite a COMPLETED attempt's auth_id to null", async () => {
+    const a = await actor("mint-late-null");
+    const createdAt = await minted(a, "ar_consented");
+    await database.execute(
+      sql`update pending_authorizations set completed_at = now(), outcome = 'completed' where actor_id = ${a}`,
+    );
+    const wrote = await store.recordAuthorizationMint({
+      actorId: a,
+      createdAt,
+      authId: null,
+    });
+    expect(await storedAuthId(a)).toBe("ar_consented");
+    expect(wrote).toBe(false);
+  });
+
+  test("a late mint cannot rebind a FAILED attempt to a different ar_", async () => {
+    const a = await actor("mint-late-other");
+    const createdAt = await minted(a, "ar_consented");
+    expect(
+      await store.failAuthorizationAttempt({
+        actorId: a,
+        authId: "ar_consented",
+      }),
+    ).toBe(true);
+    const wrote = await store.recordAuthorizationMint({
+      actorId: a,
+      createdAt,
+      authId: "ar_other",
+    });
+    expect(await storedAuthId(a)).toBe("ar_consented");
+    expect(wrote).toBe(false);
+  });
+
+  test("a duplicated mint cannot rebind a LIVE attempt that already holds an ar_", async () => {
+    const a = await actor("mint-dup");
+    const createdAt = await minted(a, "ar_first");
+    const wrote = await store.recordAuthorizationMint({
+      actorId: a,
+      createdAt,
+      authId: "ar_second",
+    });
+    expect(await storedAuthId(a)).toBe("ar_first");
+    expect(wrote).toBe(false);
+  });
+
+  test("a mint cannot bind an attempt settled with no auth_id by a writer outside the store", async () => {
+    const a = await actor("mint-late-settled-null");
+    const got = await claim(a);
+    if (!got.claimed) throw new Error("claim failed");
+    await database.execute(
+      sql`update pending_authorizations set completed_at = now(), outcome = 'failed' where actor_id = ${a}`,
+    );
+    const wrote = await store.recordAuthorizationMint({
+      actorId: a,
+      createdAt: got.attempt.createdAt,
+      authId: "ar_late",
+    });
+    expect(await storedAuthId(a)).toBeNull();
+    expect(wrote).toBe(false);
+  });
+
+  test("a mint still writes onto a live attempt whose vendor answered no id", async () => {
+    const a = await actor("mint-after-null");
+    const got = await claim(a);
+    if (!got.claimed) throw new Error("claim failed");
+    expect(
+      await store.recordAuthorizationMint({
+        actorId: a,
+        createdAt: got.attempt.createdAt,
+        authId: null,
+      }),
+    ).toBe(true);
+    expect(await storedAuthId(a)).toBeNull();
+  });
 });
 
 describe("discardAuthorizationAttempt", () => {
