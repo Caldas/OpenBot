@@ -104,10 +104,10 @@ server/tests/computer-policy.test.ts:662: error TS2345: Argument of type '{ tool
 server/tests/computer-provider.test.ts:418: error TS2345: Argument of type '{ provider: "sandbox"; namespace: string; idleAfterMs: number; templateFile: string; }' is not assignable to parameter of type 'ComputerConfig'.
 server/tests/copilot.test.ts:1090: error TS2339: Property 'prompt' does not exist on type 'BuiltInAgentConfiguration'.
 server/tests/copilot.test.ts:1128: error TS2339: Property 'prompt' does not exist on type 'BuiltInAgentConfiguration'.
-server/tests/copilot.test.ts:1201: error TS2339: Property 'prompt' does not exist on type 'BuiltInAgentConfiguration'.
-server/tests/copilot.test.ts:1229: error TS2339: Property 'prompt' does not exist on type 'BuiltInAgentConfiguration'.
-server/tests/copilot.test.ts:1287: error TS2322: Type '{ id: string; name: string; type: "remote_ag_ui"; endpoint: string; }' is not assignable to type 'RegisteredAgent'.
-server/tests/copilot.test.ts:1331: error TS2353: Object literal may only specify known properties, and 'type' does not exist in type 'FixtureFileResponse | ResponseFactory'.
+server/tests/copilot.test.ts:1208: error TS2339: Property 'prompt' does not exist on type 'BuiltInAgentConfiguration'.
+server/tests/copilot.test.ts:1236: error TS2339: Property 'prompt' does not exist on type 'BuiltInAgentConfiguration'.
+server/tests/copilot.test.ts:1294: error TS2322: Type '{ id: string; name: string; type: "remote_ag_ui"; endpoint: string; }' is not assignable to type 'RegisteredAgent'.
+server/tests/copilot.test.ts:1338: error TS2353: Object literal may only specify known properties, and 'type' does not exist in type 'FixtureFileResponse | ResponseFactory'.
 server/tests/copilot.test.ts:154: error TS2353: Object literal may only specify known properties, and 'type' does not exist in type 'FixtureFileResponse | ResponseFactory'.
 server/tests/copilot.test.ts:158: error TS2739: Type '{ id: string; name: string; type: "built_in"; systemPrompt: string; }[]' is missing the following properties from type 'Promise<RegisteredAgent[]>': then, catch, finally, [Symbol.toStringTag]
 server/tests/copilot.test.ts:371: error TS2322: Type '{ id: string; name: string; type: "remote_ag_ui"; endpoint: string; }' is not assignable to type 'RegisteredAgent'.
@@ -139,8 +139,8 @@ server/tests/encrypt-sso-config.test.ts:139: error TS2554: Expected 0 arguments,
 server/tests/encrypt-sso-config.test.ts:74: error TS2554: Expected 0 arguments, but got 1.
 server/tests/encrypt-sso-config.test.ts:85: error TS2554: Expected 0 arguments, but got 1.
 server/tests/enterprise-controls.integration.test.ts:144: error TS2769: No overload matches this call.
-server/tests/enterprise-controls.integration.test.ts:148: error TS2345: Argument of type '(context: Parameters<Parameters<MiddlewareHandlerInterface<{ Variables: AppVariables; }, BlankSchema, "/">>[1]>[0], next: () => Promise<void>) => Promise<...>' is not assignable to parameter of type 'MiddlewareHandler<{ Variables: AppVariables; }>'.
 server/tests/enterprise-controls.integration.test.ts:147: error TS2345: Argument of type '(context: Parameters<Parameters<MiddlewareHandlerInterface<{ Variables: AppVariables; }, BlankSchema, "/">>[1]>[0], next: () => Promise<void>) => Promise<...>' is not assignable to parameter of type 'MiddlewareHandler<{ Variables: AppVariables; }>'.
+server/tests/enterprise-controls.integration.test.ts:148: error TS2345: Argument of type '(context: Parameters<Parameters<MiddlewareHandlerInterface<{ Variables: AppVariables; }, BlankSchema, "/">>[1]>[0], next: () => Promise<void>) => Promise<...>' is not assignable to parameter of type 'MiddlewareHandler<{ Variables: AppVariables; }>'.
 server/tests/google-drive-rest.test.ts:108: error TS2345: Argument of type '{ provenance: string; url: string; }' is not assignable to parameter of type '{ provenance: string; url: string; authScheme: string | null; accountMode?: string | null | undefined; }'.
 server/tests/google-drive-rest.test.ts:122: error TS2345: Argument of type '{ provenance: string; url: string; }' is not assignable to parameter of type '{ provenance: string; url: string; authScheme: string | null; accountMode?: string | null | undefined; }'.
 server/tests/group-conversations.integration.test.ts:361: error TS2339: Property 'serverId' does not exist on type 'object'.
@@ -275,3 +275,6 @@ server/tests/voice-session-routes.test.ts:162: error TS2739: Type 'Response & Ty
 server/tests/voice-session-store.integration.test.ts:123: error TS2345: Argument of type '`page-${string}`' is not assignable to parameter of type '`${string}-${string}-${string}-${string}-${string}`'.
 server/tests/voice-sessions.test.ts:43: error TS2741: Property 'preconnect' is missing in type '(_url: URL | RequestInfo, init: RequestInit | BunFetchRequestInit | undefined) => Promise<Response>' but required in type 'typeof fetch'.
 server/tests/voice-sessions.test.ts:85: error TS2741: Property 'preconnect' is missing in type '() => Promise<Response>' but required in type 'typeof fetch'.
+server/tests/web-research.test.ts:281: error TS2339: Property 'get' does not exist on type 'never'.
+server/tests/web-research.test.ts:289: error TS2339: Property 'get' does not exist on type 'never'.
+server/tests/web-research.test.ts:290: error TS2339: Property 'get' does not exist on type 'never'.
