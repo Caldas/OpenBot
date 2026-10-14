@@ -41,8 +41,9 @@
  * still matches are the definitions themselves, in the three exempt modules it does not scan.
  */
 import { expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
+import { basename, join } from "node:path";
+import { logicalLines, sourceFiles } from "./support/source-scan";
 
 const PLUGINS_DIR = join(import.meta.dir, "../src/plugins");
 
@@ -77,17 +78,21 @@ function isComment(line: string): boolean {
 
 test("no plugin module hard-codes a brokered vendor name outside the vocabulary modules", () => {
   const offenders: string[] = [];
-  const files = readdirSync(PLUGINS_DIR)
-    .filter((f) => f.endsWith(".ts") && !VOCABULARY.has(f))
-    .sort();
+  // The shared scanner's walk and line-splitting. RECURSIVE: a `src/plugins/<dir>/x.ts` was
+  // unscanned before, and the exemption is by FILE NAME, so a `plugins/<dir>/access.ts` is not
+  // quietly exempt either. LOGICAL lines: a scheme prettier wrapped off its own `=` is one
+  // decision, and reading it per physical line saw half of it. The comment skip is unchanged and
+  // still narrow — only a line that STARTS as prose is spared.
+  const files = sourceFiles(PLUGINS_DIR, [".ts"]).filter(
+    (f) => !VOCABULARY.has(basename(f)),
+  );
   for (const file of files) {
-    const lines = readFileSync(join(PLUGINS_DIR, file), "utf8").split("\n");
-    lines.forEach((line, i) => {
-      if (isComment(line)) return;
-      if (PATTERNS.some((re) => re.test(line))) {
-        offenders.push(`${file}:${i + 1}`);
+    for (const { line, text } of logicalLines(readFileSync(file, "utf8"))) {
+      if (isComment(text)) continue;
+      if (PATTERNS.some((re) => re.test(text))) {
+        offenders.push(`${file.slice(PLUGINS_DIR.length + 1)}:${line}`);
       }
-    });
+    }
   }
   expect(offenders).toEqual([]);
 });

@@ -45,25 +45,28 @@
  * passing vacuously.
  */
 import { expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  logicalLines,
+  sourceFiles,
+  stripComments,
+} from "../../server/tests/support/source-scan";
 
 const DIR = join(import.meta.dir, "../src/routes/_authed/admin/plugins");
-
-function stripComments(src: string): string {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/(^|[^:"'`\w])\/\/.*$/gm, "$1");
-}
 
 function load(name: string): string {
   return stripComments(readFileSync(join(DIR, name), "utf8"));
 }
 
-/** Every route file in the directory, so a new one is scanned the day it lands. */
-const ALL_ROUTES = readdirSync(DIR)
-  .filter((name) => name.endsWith(".tsx"))
-  .sort();
+/**
+ * Every route file under the directory, so a new one is scanned the day it lands — and a new one
+ * in a SUBdirectory too, which a `readdirSync` of the top level would have walked straight past.
+ * Names are relative to `DIR`, so a top-level route still reads as `arcade.tsx`.
+ */
+const ALL_ROUTES = sourceFiles(DIR, [".tsx"]).map((p) =>
+  p.slice(DIR.length + 1),
+);
 
 const VOCAB_CALLERS: Record<string, string[]> = {
   "index.tsx": [
@@ -96,7 +99,7 @@ test("the plugins routes carry no Composio literal", () => {
   for (const name of NO_VENDOR_LITERAL) {
     const text = load(name);
     expect(text.length).toBeGreaterThan(500);
-    text.split("\n").forEach((line, i) => {
+    for (const { line: at, text: line } of logicalLines(text)) {
       // Capitalised AND all-caps. `COMPOSIO_API_KEY` is a user-visible string 1.8 moved
       // into the vocabulary (`envVar`), rendered as "Set COMPOSIO_API_KEY on this
       // deployment." — it must read ARCADE_API_KEY on an Arcade deployment, and an
@@ -104,8 +107,8 @@ test("the plugins routes carry no Composio literal", () => {
       // case-insensitive: `composioConfigured` and the `/_authed/admin/plugins/composio`
       // route id are legitimate and must stay legal.
       if (/Composio|COMPOSIO/.test(line))
-        offenders.push(`${name}:${i + 1}: ${line.trim()}`);
-    });
+        offenders.push(`${name}:${at}: ${line.trim()}`);
+    }
   }
   expect(offenders).toEqual([]);
 });
@@ -118,11 +121,11 @@ test("no plugins route hard-codes a directory path", () => {
   for (const name of ALL_ROUTES) {
     const text = load(name);
     expect(text.length).toBeGreaterThan(500);
-    text.split("\n").forEach((line, i) => {
+    for (const { line: at, text: line } of logicalLines(text)) {
       // The route's own file id carries `_authed` and is not somewhere anybody navigates.
       if (/(?<!_authed)\/admin\/plugins\/(composio|arcade)/.test(line))
-        offenders.push(`${name}:${i + 1}: ${line.trim()}`);
-    });
+        offenders.push(`${name}:${at}: ${line.trim()}`);
+    }
   }
   expect(offenders).toEqual([]);
 });
