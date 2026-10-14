@@ -3051,8 +3051,23 @@ export function createPluginRoutes(
         actorId,
         createdAt: attempt.createdAt,
       });
-      if (
-        !cancelled &&
+      /*
+       * A RETRACTION IS ON THE TRAIL, AND ONLY ONE THAT HAPPENED. The person withdrawing their own
+       * pending consent is the other deliberate ending of this lifecycle besides completing it, and
+       * it is filed for the same reason `mcp.account_connected` is. Only when the deletion removed
+       * a row: a cancel that lost a race to a newer attempt removed nothing and withdrew nothing.
+       * After the deletion and not around it, as the disconnect route files its row, so a failed
+       * audit write fails the request rather than passing silently.
+       */
+      if (cancelled) {
+        await store.recordAuthorizationCancelled({ actorId, attempt });
+      } else if (
+        /*
+         * AND A CANCEL THAT LOST TO THE COMPLETION SAYS SO. The discard refuses a settled attempt,
+         * so `cancelled` is false here for two different reasons; only one of them is "nothing was
+         * standing". Answering `{ cancelled: false }` to a person whose consent completed would
+         * leave them believing they had retracted an account that is now connected.
+         */
         (await store.settledAuthorizationOutcome({
           actorId,
           createdAt: attempt.createdAt,

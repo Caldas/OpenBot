@@ -234,6 +234,19 @@ export const auditEventTypes = [
    * while the grant at Google stood untouched.
    */
   "mcp.account_disconnected",
+  /*
+   * One person retracted their own pending per-action authorization before it completed.
+   *
+   * The counterpart of `mcp.account_connected` on the same lifecycle: that row is the attempt
+   * ending in a yes, this one is the person deliberately ending it themselves. Without it, pressing
+   * Cancel deleted the attempt and nothing recorded who withdrew what — on a lifecycle whose whole
+   * point is that consent is attributable. Filed under the app's slug, as its two siblings are.
+   *
+   * NEVER THE CONSENT URL AND NEVER THE VENDOR'S HANDLE FOR THE FLOW: the first is a bearer
+   * capability, and neither is in the payload. `minted` says only whether a flow had been started at
+   * the vendor at all, which is the one fact about it a reader of the trail needs.
+   */
+  "mcp.authorization_cancelled",
   // An administrator switched a brokered app between each person's account and one shared account.
   "mcp.account_mode_changed",
   // A Bot's use of a Shared app needs an administrator's approval: filed by a refused call or by the

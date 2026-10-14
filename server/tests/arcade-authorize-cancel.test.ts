@@ -14,6 +14,7 @@ import { createAuditStore } from "../src/audit";
 import type { AppVariables } from "../src/auth/guards";
 import { createDatabase } from "../src/db/client";
 import {
+  auditEvents,
   brokeredConnections,
   mcpServers,
   mcpTools,
@@ -577,5 +578,77 @@ describe("DELETE /servers/:id/authorize on a deployment whose broker runs no aut
     expect(await response.json()).toEqual({
       error: "An administrator connects shared apps.",
     });
+  });
+});
+
+/*
+ * B5b. A RETRACTION IS ON THE TRAIL. The mint/claim/complete lifecycle exists to make a person's
+ * consent attributable, and `mcp.account_connected` records the one ending where they said yes. A
+ * person pressing Cancel on their own pending authorization is the other deliberate ending, and it
+ * used to leave nothing at all: the row was deleted and no record said who withdrew what.
+ *
+ * Read by the ACTOR in the payload, which is where every writer on this lifecycle puts who did it,
+ * so another test's rows on the same app can neither satisfy nor spoil these.
+ */
+describe("DELETE /servers/:id/authorize — the audit row", () => {
+  const cancellationsBy = (actorId: string) =>
+    database
+      .select()
+      .from(auditEvents)
+      .where(
+        sql`${auditEvents.eventType} = 'mcp.authorization_cancelled' and ${auditEvents.payload}->>'actor' = ${actorId}`,
+      );
+
+  test("cancelling a live attempt files one mcp.authorization_cancelled row against the app", async () => {
+    const actor = await person("audited");
+    const app = appAs("user", actor);
+    expect((await authorize(app, personalApp)).status).toBe(200);
+
+    const response = await cancel(app, personalApp);
+    expect(await response.json()).toEqual({ cancelled: true });
+
+    const rows = await cancellationsBy(actor);
+    expect(rows).toHaveLength(1);
+    const [row] = rows;
+    // The app's slug, which is what `mcp.account_connected` and `mcp.account_disconnected` file a
+    // brokered app under — so one query on the target answers every ending of one app's consent.
+    expect(row?.targetType).toBe("mcp_server");
+    expect(row?.targetId).toBe(`P${suite}`);
+    expect(row?.initiatorKind).toBe("person");
+    expect(row?.payload).toEqual({
+      actor,
+      server: `P${suite}`,
+      serverId: personalApp,
+      action: ACTION,
+      holder: "person",
+      minted: true,
+    });
+    // THE CONFIDENTIALITY PROMISE: neither the bearer consent url nor the vendor's handle for the
+    // flow reaches the trail.
+    const written = JSON.stringify(row);
+    expect(written).not.toContain(SECRET_URL);
+    expect(written).not.toContain("ar_minted_1");
+  });
+
+  test("a cancel that loses the race to a newer attempt removes nothing and files no row", async () => {
+    const actor = await person("unaudited");
+    const app = appAs("user", actor);
+    expect((await authorize(app, personalApp)).status).toBe(200);
+    const [old] = await attemptsFor(actor);
+    if (!old) throw new Error("no first attempt");
+    // The cancel resolved an attempt that a newer one has since replaced: its delete matches nothing.
+    const stale = {
+      ...old,
+      createdAt: new Date(old.createdAt.getTime() - 16 * 60 * 1000),
+    };
+    const racing = appAs("user", actor, "arcade", (store) => ({
+      ...store,
+      authorizationAttemptFor: async () => stale,
+    }));
+    expect(await (await cancel(racing, personalApp)).json()).toEqual({
+      cancelled: false,
+    });
+    expect(await attemptsFor(actor)).toHaveLength(1);
+    expect(await cancellationsBy(actor)).toEqual([]);
   });
 });
