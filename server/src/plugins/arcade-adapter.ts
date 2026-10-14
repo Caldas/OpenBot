@@ -150,11 +150,33 @@ const CATALOGUE_MAX_PAGES = 1000;
  * there. The answer's own properties are the fallback for an answer that has NO `body` at all,
  * which is what `admin.authProviders.list` (a plain `APIPromise`, not a page) and every hand-built
  * stub return — those were never passed through a page constructor, so nothing was manufactured.
+ *
+ * AND THE PRESENCE OF `body` IS WHAT DECIDES WHICH OF THE TWO THIS IS — never whether the body
+ * happens to be readable. `AbstractPage`'s constructor always assigns `body`, so the property
+ * existing is the answer saying "I went through a page constructor, and my own `items` and
+ * `total_count` are that constructor's inventions". From there the body is the ONLY honest
+ * reading, and a body that is not a record means THE ANSWER COULD NOT BE READ — it does not mean
+ * the answer was empty.
+ *
+ * MEASURED, because this is the hole the fallback left and it is the live defect again: a 200
+ * carrying `content-type: text/html` — a proxy's courtesy page — parses to a STRING
+ * (`internal/parse.js` returns `response.text()` for anything that is not JSON), so no record
+ * exists anywhere and a `?? page` fallback hands back the page's manufactured `items: []`.
+ * `listApps` then answered `[]`, `isConnected` answered false, and `revoke` answered `false` WITH
+ * NO DELETE SPENT while the caller deleted the local row — `broker.ts:712-717`'s forbidden
+ * outcome, reached by a route neither contributing guard could see, because both were written
+ * against MALFORMED JSON and this is the branch where the JSON was never parsed at all.
+ *
+ * ANSWERING `null` IS THE REFUSAL, and deliberately not a throw from here: every caller already
+ * has this deployment's own sentence for an unreadable listing — {@link pagedItems}' per-listing
+ * `malformed`, and the transport's own `Array.isArray` guard for `listTools` — and routing through
+ * them is what keeps one vocabulary on this seam instead of a second error shape invented here.
  */
 function sentBody(answer: unknown): Record<string, unknown> | null {
   const page = record(answer);
   if (!page) return null;
-  return record(page.body) ?? page;
+  if ("body" in page) return record(page.body);
+  return page;
 }
 
 /** The `total_count` Arcade itself sent, or nothing. Read through {@link sentBody}, for its reason. */
