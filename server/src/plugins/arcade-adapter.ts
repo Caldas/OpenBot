@@ -458,6 +458,59 @@ function shapeOf(value: unknown): string {
 }
 
 /**
+ * What one listed action's `requirements.authorization` SAYS, read once for every caller that asks.
+ *
+ * THE ONE READING OF THIS FIELD'S ABSENCE. Two readers once reached opposite answers on the same
+ * row: {@link requiresAuthorization} read a missing block as "needs nothing" and filed the app as
+ * `no-auth`, while {@link grantStateOf} read the same silence as "could not be read" and drew every
+ * action of that app as a broker outage on the grants screen, forever. The vendor's own listing
+ * settles which is right — `Apollo` publishes NO authorization block and a deployment secret
+ * instead, verbatim in `fixtures/arcade-catalogue.json` — so `null` and an absent field are
+ * `none`, here and therefore everywhere.
+ *
+ * A PRESENT FIELD THIS DEPLOYMENT CANNOT READ IS NEITHER ANSWER. It is `unreadable`, with WHICH
+ * field and the shape that arrived there, and each caller decides what an unreadable row costs it:
+ * the catalogue refuses, the grants screen says `unknown`.
+ */
+type AuthorizationRequirement =
+  | { kind: "none" }
+  | {
+      kind: "unreadable";
+      field: "requirements" | "authorization";
+      shape: string;
+    }
+  | { kind: "required"; authorization: Record<string, unknown> };
+
+function authorizationRequirementOf(item: unknown): AuthorizationRequirement {
+  const requirements = record(item)?.requirements;
+  if (requirements === undefined || requirements === null) {
+    return { kind: "none" };
+  }
+  if (typeof requirements !== "object" || Array.isArray(requirements)) {
+    return {
+      kind: "unreadable",
+      field: "requirements",
+      shape: shapeOf(requirements),
+    };
+  }
+  const authorization = (requirements as Record<string, unknown>).authorization;
+  if (authorization === undefined || authorization === null) {
+    return { kind: "none" };
+  }
+  if (typeof authorization !== "object" || Array.isArray(authorization)) {
+    return {
+      kind: "unreadable",
+      field: "authorization",
+      shape: shapeOf(authorization),
+    };
+  }
+  return {
+    kind: "required",
+    authorization: authorization as Record<string, unknown>,
+  };
+}
+
+/**
  * Whether ARCADE SAYS this action needs a person to authorize it — read, never assumed.
  *
  * THIS REPLACES A HARDCODED `{ kind: "consent" }` THAT WAS A CLAIM ABOUT THE VENDOR MADE WITHOUT
@@ -493,21 +546,18 @@ function shapeOf(value: unknown): string {
  * `metadata: null` shows Arcade does say.
  */
 function requiresAuthorization(item: unknown, toolkit: string): boolean {
-  const requirements = record(item)?.requirements;
-  if (requirements === undefined || requirements === null) return false;
-  if (typeof requirements !== "object" || Array.isArray(requirements)) {
+  const read = authorizationRequirementOf(item);
+  if (read.kind === "unreadable" && read.field === "requirements") {
     throw new BrokerRefusalError(
-      `Arcade sent ${shapeOf(requirements)} where ${toolkit}'s requirements belong, and that field is what says whether somebody has to authorize this app at all. A shape this deployment cannot read is not the vendor saying "nothing to authorize", so it is not read as one — the catalogue stops here rather than offer ${toolkit} under a flow nobody established it has. That is a change in what Arcade answers rather than a setting an operator can correct, so upgrading this deployment's @arcadeai/arcadejs is what fixes it.`,
+      `Arcade sent ${read.shape} where ${toolkit}'s requirements belong, and that field is what says whether somebody has to authorize this app at all. A shape this deployment cannot read is not the vendor saying "nothing to authorize", so it is not read as one — the catalogue stops here rather than offer ${toolkit} under a flow nobody established it has. That is a change in what Arcade answers rather than a setting an operator can correct, so upgrading this deployment's @arcadeai/arcadejs is what fixes it.`,
     );
   }
-  const authorization = (requirements as Record<string, unknown>).authorization;
-  if (authorization === undefined || authorization === null) return false;
-  if (typeof authorization !== "object" || Array.isArray(authorization)) {
+  if (read.kind === "unreadable") {
     throw new BrokerRefusalError(
-      `Arcade sent ${shapeOf(authorization)} where ${toolkit}'s authorization requirement belongs, and this deployment reads that object to decide whether connecting ${toolkit} means sending somebody to a consent screen. A shape this deployment cannot read decides neither way, so the catalogue stops here rather than guess. That is a change in what Arcade answers rather than a setting an operator can correct, so upgrading this deployment's @arcadeai/arcadejs is what fixes it.`,
+      `Arcade sent ${read.shape} where ${toolkit}'s authorization requirement belongs, and this deployment reads that object to decide whether connecting ${toolkit} means sending somebody to a consent screen. A shape this deployment cannot read decides neither way, so the catalogue stops here rather than guess. That is a change in what Arcade answers rather than a setting an operator can correct, so upgrading this deployment's @arcadeai/arcadejs is what fixes it.`,
     );
   }
-  return true;
+  return read.kind === "required";
 }
 
 /**
@@ -1007,17 +1057,25 @@ function grantStateOf(item: unknown): GrantState[] {
     ];
   }
 
-  const authorization = record(requirements?.authorization);
-  if (!authorization) {
+  // NO AUTHORIZATION BLOCK IS THE VENDOR SAYING THIS ACTION NEEDS NONE, with every secret it does
+  // need already read as set above — so it is usable, and `authorized` with no scopes is the state
+  // that says so. See {@link authorizationRequirementOf} for why this is the one reading.
+  const read = authorizationRequirementOf(item);
+  if (read.kind === "none")
+    return [{ action, state: "authorized", scopes: [] }];
+  if (read.kind === "unreadable") {
     return [
       {
         action,
         state: "unknown",
         reason:
-          "Arcade's listing named no authorization for this action, so what this account holds could not be read.",
+          read.field === "requirements"
+            ? `Arcade listed this action's requirements as ${read.shape}, so what this account holds could not be read.`
+            : `Arcade listed this action's authorization as ${read.shape}, so what this account holds could not be read.`,
       },
     ];
   }
+  const { authorization } = read;
   const oauth2 = record(authorization.oauth2)?.scopes;
   const scopes = Array.isArray(oauth2)
     ? oauth2.filter((s): s is string => typeof s === "string")
