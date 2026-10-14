@@ -3041,6 +3041,17 @@ export function createPluginRoutes(
         actorId,
         createdAt: attempt.createdAt,
       });
+      /*
+       * A RETRACTION IS ON THE TRAIL, AND ONLY ONE THAT HAPPENED. The person withdrawing their own
+       * pending consent is the other deliberate ending of this lifecycle besides completing it, and
+       * it is filed for the same reason `mcp.account_connected` is. Only when the deletion removed
+       * a row: a cancel that lost a race to a newer attempt removed nothing and withdrew nothing.
+       * After the deletion and not around it, as the disconnect route files its row, so a failed
+       * audit write fails the request rather than passing silently.
+       */
+      if (cancelled) {
+        await store.recordAuthorizationCancelled({ actorId, attempt });
+      }
       return context.json({ cancelled });
     }
     const resolved = await brokeredAccountFor(context, serverId);

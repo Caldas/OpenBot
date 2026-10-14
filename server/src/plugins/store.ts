@@ -7012,6 +7012,52 @@ export function createPluginStore(options: PluginStoreOptions) {
     },
 
     /**
+     * File `mcp.authorization_cancelled` for an attempt its own person has just retracted.
+     *
+     * CALLED ONLY AFTER {@link discardAuthorizationAttempt} ANSWERED TRUE, by the cancel route and by
+     * nothing else. The same deletion also tidies up after a refused or unrecorded mint, and those
+     * are this deployment cleaning up after itself, not a person withdrawing consent — so the row is
+     * filed here, for the one caller whose act it describes, and not inside the deletion.
+     *
+     * TARGETED AT THE APP'S SLUG, read off the attempt's server row with {@link toolkitOfFor}, which
+     * is the id `mcp.account_connected` and `mcp.account_disconnected` file a brokered app under, so
+     * one query on the target answers every ending of one app's consent. An attempt OUTLIVES what
+     * its row's url says — an administrator can re-point the row while a consent is in flight, and
+     * the cancel route deliberately still lets the person retract it — and once the url names no
+     * app the row's own id is the only name left for what was cancelled, so that is what the row is
+     * filed under; `serverId` is in the payload either way.
+     *
+     * WHO DID IT GOES IN THE PAYLOAD, as on every writer here, never in `actorUserId`. And the
+     * payload carries NEITHER the consent url NOR the attempt's `auth_id`: the attempt row never held
+     * the url, and the vendor's handle is not needed to say what a person withdrew. `minted` is
+     * whether a flow had been started at the vendor at all.
+     */
+    async recordAuthorizationCancelled(input: {
+      actorId: string;
+      attempt: PendingAuthorization;
+    }): Promise<void> {
+      const [row] = await database
+        .select({ url: mcpServers.url })
+        .from(mcpServers)
+        .where(eq(mcpServers.id, input.attempt.serverId))
+        .limit(1);
+      const toolkit = row ? toolkitOfFor(brokerProvider, row.url) : null;
+      await recordAuditEvent(auditStore, {
+        eventType: "mcp.authorization_cancelled",
+        targetType: "mcp_server",
+        targetId: toolkit ?? input.attempt.serverId,
+        payload: {
+          actor: input.actorId,
+          server: toolkit,
+          serverId: input.attempt.serverId,
+          action: input.attempt.action,
+          holder: input.attempt.holder,
+          minted: input.attempt.authId !== null,
+        },
+      });
+    },
+
+    /**
      * Spend one call on this person's key, and say what the vendor made of it.
      *
      * ONE PROBE, TWO CALLERS, AND THE ANSWER TO "WHAT DOES A FAILED PROBE MEAN" LIVES HERE ONCE.
