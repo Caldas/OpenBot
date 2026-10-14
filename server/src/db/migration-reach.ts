@@ -1,8 +1,8 @@
 /**
  * Whether every migration in the folder can still be reached by the migrator, on THIS database.
  *
- * WHAT THE MIGRATOR ACTUALLY DOES. `PgDialect.migrate` reads one row of
- * `drizzle.__drizzle_migrations` — `order by created_at desc limit 1` — and then runs a migration
+ * WHAT THE MIGRATOR ACTUALLY DOES. `PgDialect.migrate` reads one row of its journal table (see
+ * `MigrationsJournal`) — `order by created_at desc limit 1` — and then runs a migration
  * if, and only if, its journal `when` is greater than `Number(created_at)` of that row. That row is
  * not always the newest stamp: Postgres sorts NULLs FIRST in a descending order, so a single row
  * with a NULL `created_at` is the row it reads, and `Number(null)` is 0. See `migratorHighWaterMark`. It never looks at hashes, never looks at tags, and never notices that a
@@ -42,20 +42,50 @@ export type FolderMigration = {
    *
    * Computed exactly as `drizzle-orm/migrator`'s `readMigrationFiles` computes it — the whole file
    * as read, before any statement splitting — because this is matched against the hashes that the
-   * migrator itself wrote into `drizzle.__drizzle_migrations`. A different recipe here would make
+   * migrator itself wrote into its journal table. A different recipe here would make
    * every applied migration look unapplied.
    */
   hash: string;
 };
 
 /**
- * One row of `drizzle.__drizzle_migrations`.
+ * One row of the migrator's journal table (see `MigrationsJournal`).
  *
  * `createdAt` is nullable because the column is: drizzle creates it as a bare `bigint`, and a NULL
  * there is not noise to be defaulted away — it is the row the migrator compares against. A reader
  * that turns NULL into a number before it gets here hides exactly the case that matters.
  */
 export type AppliedMigration = { hash: string; createdAt: number | null };
+
+/**
+ * Where the migrator keeps its bookkeeping: the table it reads its high-water mark from and records
+ * each applied migration in.
+ *
+ * The SHAPE lives here, in the module with no database in it, and the VALUE does not:
+ * `MIGRATIONS_JOURNAL` in `./apply-migrations` is the one place the name is chosen, and it is handed
+ * to everything that needs it — the reach check's read, `migrate()`, and `outOfReachRefusal`'s repair
+ * instructions. The value cannot move here without this module deciding deployment configuration,
+ * and it cannot be imported from there without a cycle (`./apply-migrations` imports this module),
+ * so it is passed in. Nothing in this file may spell the table's name.
+ */
+export type MigrationsJournal = {
+  migrationsSchema: string;
+  migrationsTable: string;
+};
+
+/**
+ * The journal table as an operator would type it into `psql`: schema-qualified, each part quoted.
+ *
+ * Quoted always rather than when needed, because "when needed" is a reserved-word list this file
+ * has no business keeping; a quoted lower-case identifier means exactly what the bare one does.
+ */
+function journalTable({
+  migrationsSchema,
+  migrationsTable,
+}: MigrationsJournal): string {
+  const quote = (identifier: string) => `"${identifier.replaceAll('"', '""')}"`;
+  return `${quote(migrationsSchema)}.${quote(migrationsTable)}`;
+}
 
 type Journal = { entries: { idx: number; tag: string; when: number }[] };
 
@@ -145,12 +175,19 @@ export function migrationsOutOfReach(
  * It names the mark and what set it, every migration that cannot be reached, and the two ways out,
  * because the one thing an operator cannot work out from a stack trace is that the database is
  * *ahead* of the folder rather than behind it.
+ *
+ * `journal` is required, not defaulted: the repair instructions are SQL an operator will paste, and
+ * they must name the table the check actually read. A default here would be a second spelling of the
+ * name, and the first configuration that moved the journal would make this message send someone to
+ * repair a table that is not the one refusing them.
  */
 export function outOfReachRefusal(
   outOfReach: readonly FolderMigration[],
   folder: readonly FolderMigration[],
   applied: readonly AppliedMigration[],
+  journal: MigrationsJournal,
 ): string {
+  const table = journalTable(journal);
   const highWaterMark = migratorHighWaterMark(applied) ?? 0;
   const appliedHashes = new Set(applied.map((row) => row.hash));
   const skipped = outOfReach.filter(
@@ -178,7 +215,7 @@ export function outOfReachRefusal(
     );
 
   return [
-    `This database has already recorded a migration stamped ${highWaterMark} (${mark}), and the migrator only runs migrations stamped after the row it reads: the first one ordered by created_at descending.`,
+    `This database's migration journal, ${table}, has already recorded a migration stamped ${highWaterMark} (${mark}), and the migrator only runs migrations stamped after the row it reads: the first one ordered by created_at descending.`,
     ...(nulls === 0
       ? []
       : [
@@ -200,7 +237,7 @@ export function outOfReachRefusal(
       ? "Every applied migration is still present in this folder."
       : `${unknown} applied ${unknown === 1 ? "migration is" : "migrations are"} not in this folder at all, which is what a renumbered or rewritten migration history looks like from here: this database ran a journal that no longer exists.`,
     nulls > 0
-      ? "Nothing has been applied. Give every row with a NULL created_at the journal `when` of the migration whose hash it records (`update drizzle.__drizzle_migrations set created_at = <its journal when> where hash = <sha256 of the file>`), or delete a row that matches no migration, and run again."
-      : "Nothing has been applied. Recreate the database from empty if it is disposable (a development, preview or CI database usually is); otherwise apply the SQL above by hand and record each one with `insert into drizzle.__drizzle_migrations (hash, created_at) values (<sha256 of the file>, <its journal when>)`, which leaves the high-water mark where it is.",
+      ? `Nothing has been applied. Give every row with a NULL created_at the journal \`when\` of the migration whose hash it records (\`update ${table} set created_at = <its journal when> where hash = <sha256 of the file>\`), or delete a row that matches no migration, and run again.`
+      : `Nothing has been applied. Recreate the database from empty if it is disposable (a development, preview or CI database usually is); otherwise apply the SQL above by hand and record each one with \`insert into ${table} (hash, created_at) values (<sha256 of the file>, <its journal when>)\`, which leaves the high-water mark where it is.`,
   ].join("\n");
 }

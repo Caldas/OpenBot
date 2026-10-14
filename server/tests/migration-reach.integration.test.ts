@@ -227,6 +227,13 @@ describe("a journal kept somewhere other than the default", () => {
       expect(refusal).toBeInstanceOf(MigrationsOutOfReachError);
       expect(await exists(client, "from_main")).toBe(false);
 
+      // And the repair the refusal prescribes is SQL against the table it actually read.
+      const message = (refusal as Error).message;
+      expect(message).toContain(
+        'insert into "c4_journal"."applied_migrations" (hash, created_at)',
+      );
+      expect(message).not.toContain(MIGRATIONS_JOURNAL.migrationsTable);
+
       // And the bookkeeping is where it was configured to be, and nowhere else.
       const [row] = await client<{ count: string }[]>`
         select count(*)::text as count
@@ -471,7 +478,7 @@ describe("a database whose migrations table holds a NULL created_at", () => {
       const folder = await folderOf([first, asShipped]);
       await applyMigrations(client, folder);
       await client`
-        insert into drizzle.__drizzle_migrations (hash, created_at)
+        insert into ${client(MIGRATIONS_JOURNAL.migrationsSchema)}.${client(MIGRATIONS_JOURNAL.migrationsTable)} (hash, created_at)
         values ('hand-written', null)
       `;
 

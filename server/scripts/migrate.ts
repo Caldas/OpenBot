@@ -9,8 +9,10 @@
  *
  * The migrator underneath it is part of `drizzle-orm`, which is a runtime dependency because the
  * server imports it anyway. It needs a connection and the folder of SQL files, both of which are in
- * the image, and it keeps the same `drizzle.__drizzle_migrations` journal the CLI does, so the two
- * are interchangeable and a database migrated by either is migrated.
+ * the image, and it keeps its journal where `MIGRATIONS_JOURNAL` in `src/db/apply-migrations` says.
+ * That is drizzle's default table, the one the CLI uses when `drizzle.config.ts` names none, so a
+ * database migrated by the CLI before this script existed is read here without translation, and
+ * the two were interchangeable — for exactly as long as those two names stay in step.
  *
  * It is now what every path runs — the image, the Helm Job, the compose stack, CI, and `db:migrate`
  * — because the two stopped being interchangeable in the direction that matters: only this one
