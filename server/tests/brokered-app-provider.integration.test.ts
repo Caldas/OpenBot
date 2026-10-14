@@ -207,3 +207,107 @@ for (const provider of ["composio", "arcade"] as const) {
     });
   }
 }
+
+/**
+ * WHOSE ACCOUNT AN ENABLED APP IS REACHED THROUGH, WHICH IS A QUESTION A ROW IS NEVER ALLOWED TO
+ * LEAVE THIS METHOD WITHOUT AN ANSWER TO.
+ *
+ * `accountFor` refuses a call against a brokered row whose `account_mode` is null as `ambiguous` —
+ * the app is enabled, listed and connectable, and every call it is asked for is declined. So the
+ * state these three tests are about is not a tidiness one: it is an app that cannot be used.
+ *
+ * The two that would fail without the fix are the two the writer used to miss. `addBrokeredApp`
+ * settles the column on its INSERT only; its CONFLICT arm converts a row that was NOT brokered
+ * into one that is, and the guard that followed asked `schemeKind(recorded) === "none"` — "was
+ * this a no-auth app a moment ago" — which a row that was not brokered at all answers `null` to,
+ * and a null is `unreadable`, not `none`. The whole block was additionally gated on the auth
+ * config having just been CREATED, so a second press of Add could never repair what the first
+ * left.
+ */
+test("converting a row that was not brokered settles whose account the app is", async () => {
+  await database.insert(mcpServers).values({
+    id: "composio-bapconv",
+    title: "Typed",
+    vendor: "typed.example",
+    url: "https://typed.example/mcp",
+    provenance: "custom",
+    addedBy: "admin@example.com",
+  });
+
+  await storeFor("composio", "created").addBrokeredApp({
+    slug: "bapconv",
+    title: "Converted",
+    by: "admin@example.com",
+    connection: consent,
+  });
+
+  const stored = await row("composio-bapconv");
+  // The conversion itself, so a failure below is read as the mode and not as the upsert.
+  expect(stored?.provenance).toBe("composio");
+  expect(stored?.url).toBe("composio://bapconv");
+  expect(stored?.accountMode).toBe("personal");
+});
+
+test("re-enabling an app that never said whose account it is settles it", async () => {
+  // The state a deployment is already in, written down: brokered, scheme recorded, mode null.
+  await database.insert(mcpServers).values({
+    id: "composio-bapstuck",
+    title: "Stuck",
+    vendor: "Composio",
+    url: "composio://bapstuck",
+    provenance: "composio",
+    authScheme: "OAUTH2",
+    addedBy: "admin@example.com",
+  });
+
+  // `standing`: the auth config is already there, which is what every press of Add after the first
+  // one meets, and what used to skip the whole block.
+  await storeFor("composio", "standing").addBrokeredApp({
+    slug: "bapstuck",
+    title: "Stuck",
+    by: "admin@example.com",
+    connection: consent,
+  });
+
+  expect((await row("composio-bapstuck"))?.accountMode).toBe("personal");
+});
+
+test("re-enabling leaves an administrator's Shared choice alone", async () => {
+  await database.insert(mcpServers).values({
+    id: "composio-bapshared",
+    title: "Shared",
+    vendor: "Composio",
+    url: "composio://bapshared",
+    provenance: "composio",
+    authScheme: "OAUTH2",
+    accountMode: "shared",
+    sharedVendorUserId: "openbot-deployment:test:abc",
+    addedBy: "admin@example.com",
+  });
+
+  await storeFor("composio", "standing").addBrokeredApp({
+    slug: "bapshared",
+    title: "Shared",
+    by: "admin@example.com",
+    connection: consent,
+  });
+
+  const stored = await row("composio-bapshared");
+  expect(stored?.accountMode).toBe("shared");
+  expect(stored?.sharedVendorUserId).toBe("openbot-deployment:test:abc");
+});
+
+test("an app with no account to hold is left saying so", async () => {
+  await storeFor("composio", "created").addBrokeredApp({
+    slug: "bapnoauth",
+    title: "Hacker News",
+    by: "admin@example.com",
+    connection: { kind: "no-auth" },
+  });
+
+  const stored = await row("composio-bapnoauth");
+  expect(stored?.authScheme).toBe("NO_AUTH");
+  // `schemeKind` `none`: there is no account, so there is no mode, and the column says that rather
+  // than claiming one.
+  expect(stored?.accountMode).toBeNull();
+});
