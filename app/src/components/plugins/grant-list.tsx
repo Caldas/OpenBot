@@ -286,7 +286,10 @@ function ConsentNotice({
 function describe(grant: GrantState, canAuthorize: boolean): string {
   switch (grant.state) {
     case "authorized":
-      return "Authorized.";
+      // Nobody authorized an action that needs no authorization, so the row does not say they did.
+      return grant.authorization === "not-required"
+        ? "Needs no authorization."
+        : "Authorized.";
     case "needs-consent":
       return canAuthorize
         ? "Not authorized yet."

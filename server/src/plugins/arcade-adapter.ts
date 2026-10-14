@@ -1060,9 +1060,19 @@ function grantStateOf(item: unknown): GrantState[] {
   // NO AUTHORIZATION BLOCK IS THE VENDOR SAYING THIS ACTION NEEDS NONE, with every secret it does
   // need already read as set above — so it is usable, and `authorized` with no scopes is the state
   // that says so. See {@link authorizationRequirementOf} for why this is the one reading.
+  // `not-required`, NEVER `held`: nobody approved it and no approval reaches it, so the consent
+  // copy must not count it among what an approval approves. See {@link GrantState}.
   const read = authorizationRequirementOf(item);
-  if (read.kind === "none")
-    return [{ action, state: "authorized", scopes: [] }];
+  if (read.kind === "none") {
+    return [
+      {
+        action,
+        state: "authorized",
+        scopes: [],
+        authorization: "not-required",
+      },
+    ];
+  }
   if (read.kind === "unreadable") {
     return [
       {
@@ -1083,7 +1093,7 @@ function grantStateOf(item: unknown): GrantState[] {
   const tokenStatus = textOf(authorization.token_status);
   const status = textOf(authorization.status);
   if (tokenStatus === "completed" || (!tokenStatus && status === "active")) {
-    return [{ action, state: "authorized", scopes }];
+    return [{ action, state: "authorized", scopes, authorization: "held" }];
   }
   if (
     tokenStatus === "not_started" ||

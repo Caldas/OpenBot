@@ -113,6 +113,7 @@ describe("grantsFor maps a toolkit listing to this deployment's vocabulary", () 
         action: "Github.SetStarred",
         state: "authorized",
         scopes: ["repo", "user"],
+        authorization: "held",
       },
       {
         action: "Github.ListStargazers",
@@ -187,9 +188,24 @@ describe("an action that publishes no authorization needs none, on every screen"
     expect(apps.map((app) => app.connection)).toEqual([{ kind: "no-auth" }]);
 
     expect(await broker.grantsFor({ toolkit: "Github", account })).toEqual([
-      { action: "Apollo.EnrichOrganization", state: "authorized", scopes: [] },
-      { action: "Apollo.SearchPeople", state: "authorized", scopes: [] },
-      { action: "Apollo.SearchOrganizations", state: "authorized", scopes: [] },
+      {
+        action: "Apollo.EnrichOrganization",
+        state: "authorized",
+        scopes: [],
+        authorization: "not-required",
+      },
+      {
+        action: "Apollo.SearchPeople",
+        state: "authorized",
+        scopes: [],
+        authorization: "not-required",
+      },
+      {
+        action: "Apollo.SearchOrganizations",
+        state: "authorized",
+        scopes: [],
+        authorization: "not-required",
+      },
     ]);
   });
 

@@ -218,16 +218,19 @@ describe("Composio's grantsFor", () => {
         action: "GMAIL_FETCH_EMAILS",
         state: "authorized",
         scopes: ["gmail.readonly", "gmail.send"],
+        authorization: "held",
       },
       {
         action: "GMAIL_SEND_EMAIL",
         state: "authorized",
         scopes: ["gmail.readonly", "gmail.send"],
+        authorization: "held",
       },
       {
         action: "GMAIL_CREATE_LABEL",
         state: "authorized",
         scopes: ["gmail.readonly", "gmail.send"],
+        authorization: "held",
       },
     ]);
     // The sameness is the claim, asserted on its own so that a per-action answer invented here
@@ -416,6 +419,7 @@ describe("Composio's grantsFor", () => {
         action: "SLACK_SEND_MESSAGE",
         state: "authorized",
         scopes: ["slack.chat.write"],
+        authorization: "held",
       },
     ]);
   });
@@ -458,7 +462,12 @@ describe("Composio's grantsFor", () => {
     expect(
       await broker.grantsFor({ toolkit: "firecrawl", account: ACCOUNT }),
     ).toEqual([
-      { action: "FIRECRAWL_SCRAPE", state: "authorized", scopes: [] },
+      {
+        action: "FIRECRAWL_SCRAPE",
+        state: "authorized",
+        scopes: [],
+        authorization: "held",
+      },
     ]);
   });
 });
