@@ -115,7 +115,12 @@ const broker: ConnectedAppBroker = {
    * on ANOTHER provider, held by the same identity and not ended by this revoke, is the control
    * for the sibling cases below.
    */
-  authProviderOf: async (toolkit) => authProviderAnswer(toolkit),
+  /*
+   * NOT `async`, so a case below can make this throw SYNCHRONOUSLY — the shape a broker method
+   * that validates its argument before it returns a promise has. Every other case hands back a
+   * promise exactly as before.
+   */
+  authProviderOf: (toolkit) => authProviderAnswer(toolkit),
   authorizations: {
     status: async (id) => {
       statusCalls.push(id);
@@ -1348,6 +1353,29 @@ describe("a return leg that completes", () => {
     const { connections, events } = await written();
     expect(connections.length).toBe(1);
     expect(events[0]?.payload).toMatchObject({ authProvider: "" });
+  });
+
+  /**
+   * AND ONE THAT THROWS BEFORE IT EVEN ANSWERS IS THE SAME ANSWER. The route reads the provider as
+   * `withVendorDeadline(...).catch(() => null)`, and a synchronous throw used to leave the helper
+   * before its promise existed — so the `.catch` was never reached, the throw took the whole
+   * completion down with it, and the deadline's timer was left armed behind it. An audit label is
+   * no more worth refusing a live consent over when the vendor fails fast than when it fails slow.
+   */
+  test("an auth provider lookup that throws synchronously is recorded as unnamed, and still completes", async () => {
+    await giveAttempt({ authId: MINTED, ageMinutes: 1 });
+    authProviderAnswer = () => {
+      throw new Error("refused before it asked");
+    };
+
+    const response = await verify(ACTOR, "?flow_id=flow-abc");
+    expect(response.headers.get("location")).toBe(LANDING);
+
+    const { connections, events } = await written();
+    expect(connections.length).toBe(1);
+    expect(events.length).toBe(1);
+    expect(events[0]?.payload).toMatchObject({ authProvider: "" });
+    expect((await attemptRow())?.outcome).toBe("completed");
   });
 
   /**
