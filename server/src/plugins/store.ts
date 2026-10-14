@@ -6694,7 +6694,29 @@ export function createPluginStore(options: PluginStoreOptions) {
     /**
      * Write the `ar_...` the vendor minted onto the attempt, matched on `(actor_id, created_at)`
      * through {@link attemptNamed}, which is where the precision of that match is argued.
-     * Answers whether it wrote: false is an attempt that was discarded or replaced meanwhile.
+     *
+     * WRITE-ONCE, AND NEVER AFTER SETTLEMENT: the UPDATE also requires `auth_id IS NULL` and
+     * `completed_at IS NULL`. `auth_id` is what binds the attempt to the authorization the person
+     * was actually sent to consent to, and both conditions are needed to keep that binding fixed.
+     *
+     * `completed_at IS NULL` is {@link closeAuthorizationAttempt}'s rule, for the same reason: a
+     * settled attempt is a record, not a draft. Without it, a late or duplicated mint rewrote a
+     * completed attempt's `ar_...`, even to NULL, and the row no longer named the authorization
+     * the person consented to.
+     *
+     * `auth_id IS NULL` is needed because `completed_at IS NULL` alone still lets a duplicated mint
+     * rebind a LIVE attempt. Once the person has the first id's consent URL, writing a second id
+     * (or NULL) makes their return leg match nothing. A NULL `auth_id` is never valid after
+     * settlement: every settling write (`completeAuthorizationAttempt` and the three verdicts
+     * through `closeAuthorizationAttempt`) matches `auth_id = $1`, which NULL never satisfies.
+     * So `auth_id IS NULL` alone would already rule out any row the store settled. `completed_at
+     * IS NULL` is kept anyway, so the guard does not depend on every future writer settling
+     * through those paths.
+     *
+     * The first write is the only one, and it can be NULL: a vendor that answered with no id
+     * leaves the attempt null, and it expires. Answers whether it wrote. False means the attempt
+     * was discarded, replaced, already minted or already settled. The route does not act on the
+     * answer.
      */
     async recordAuthorizationMint(input: {
       actorId: string;
@@ -6706,7 +6728,13 @@ export function createPluginStore(options: PluginStoreOptions) {
       const written = await database
         .update(pendingAuthorizations)
         .set({ authId: input.authId })
-        .where(attemptNamed(input.actorId, input.createdAt))
+        .where(
+          and(
+            attemptNamed(input.actorId, input.createdAt),
+            isNull(pendingAuthorizations.authId),
+            isNull(pendingAuthorizations.completedAt),
+          ),
+        )
         .returning({ actorId: pendingAuthorizations.actorId });
       return written.length > 0;
     },
