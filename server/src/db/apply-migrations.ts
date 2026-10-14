@@ -20,20 +20,42 @@ import {
 } from "./migration-reach";
 
 /**
+ * Where the migrator keeps its bookkeeping, named once.
+ *
+ * `migrate()` writes to whatever `migrationsSchema` / `migrationsTable` it is handed, and the
+ * reach check below reads the same table to decide whether migrating is safe. If the two ever named
+ * different tables the check would read an absent table, see nothing applied, and wave every
+ * migration through — the refusal silently switched off. So both are handed this one object, and
+ * nothing else in the server spells the name.
+ */
+export type MigrationsJournal = {
+  migrationsSchema: string;
+  migrationsTable: string;
+};
+
+export const MIGRATIONS_JOURNAL: MigrationsJournal = {
+  migrationsSchema: "drizzle",
+  migrationsTable: "__drizzle_migrations",
+};
+
+/**
  * What the migrator has already recorded here, or nothing at all.
  *
  * `to_regclass` rather than a query that may fail: a database the migrator has never touched has no
- * `drizzle` schema, and selecting from a table that is not there would be an error indistinguishable
+ * journal schema, and selecting from a table that is not there would be an error indistinguishable
  * from a database that cannot be read.
  */
-async function appliedMigrations(client: Sql): Promise<AppliedMigration[]> {
+async function appliedMigrations(
+  client: Sql,
+  { migrationsSchema, migrationsTable }: MigrationsJournal,
+): Promise<AppliedMigration[]> {
   const [present] = await client<{ table: string | null }[]>`
-    select to_regclass('drizzle.__drizzle_migrations')::text as table
+    select to_regclass(format('%I.%I', ${migrationsSchema}::text, ${migrationsTable}::text))::text as table
   `;
   if (!present?.table) return [];
 
   const rows = await client<{ hash: string; created_at: string | null }[]>`
-    select hash, created_at from drizzle.__drizzle_migrations
+    select hash, created_at from ${client(migrationsSchema)}.${client(migrationsTable)}
   `;
   return rows.map((row) => ({
     hash: row.hash,
@@ -52,9 +74,10 @@ export class MigrationsOutOfReachError extends Error {
 export async function applyMigrations(
   client: Sql,
   migrationsFolder: string,
+  journal: MigrationsJournal = MIGRATIONS_JOURNAL,
 ): Promise<void> {
   const folder = await readMigrationFolder(migrationsFolder);
-  const applied = await appliedMigrations(client);
+  const applied = await appliedMigrations(client, journal);
 
   const outOfReach = migrationsOutOfReach(folder, applied);
   if (outOfReach.length > 0) {
@@ -63,5 +86,5 @@ export async function applyMigrations(
     );
   }
 
-  await migrate(drizzle(client), { migrationsFolder });
+  await migrate(drizzle(client), { migrationsFolder, ...journal });
 }
