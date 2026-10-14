@@ -337,7 +337,7 @@ describe("DELETE /servers/:id/authorize", () => {
    * ordinary.
    */
   test("an attempt on an app whose url no longer parses as brokered can still be cancelled", async () => {
-    const actor = person("moved");
+    const actor = await person("moved");
     const app = appAs("user", actor);
     expect((await authorize(app, movedApp)).status).toBe(200);
     expect(await attemptsFor(actor)).toHaveLength(1);
@@ -361,7 +361,7 @@ describe("DELETE /servers/:id/authorize", () => {
   });
 
   test("an administrator demoted mid-consent can still cancel their own Shared-app attempt", async () => {
-    const actor = person("demoted");
+    const actor = await person("demoted");
     expect((await authorize(appAs("admin", actor), sharedApp)).status).toBe(
       200,
     );
@@ -382,7 +382,7 @@ describe("DELETE /servers/:id/authorize", () => {
    * `{ cancelled: false }` that claims the request was understood.
    */
   test("with no attempt of this actor's, a non-brokered app is still refused in so many words", async () => {
-    const actor = person("refused");
+    const actor = await person("refused");
     const app = appAs("user", actor);
     await database
       .update(mcpServers)

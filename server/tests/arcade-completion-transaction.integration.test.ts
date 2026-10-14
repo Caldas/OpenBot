@@ -258,8 +258,8 @@ describe("completeAuthorizationAttempt", () => {
    * admin read joins `users` on for an email.
    */
   test("a DEPLOYMENT-held completion records the administrator who consented, and a later one supersedes", async () => {
-    const first = actor("shared-first");
-    const second = actor("shared-second");
+    const first = await actor("shared-first");
+    const second = await actor("shared-second");
     const app = toolkit("shared");
     const deployment: AccountRef = {
       holder: "deployment",
@@ -455,7 +455,7 @@ describe("failAuthorizationAttempt / markAuthorizationUnreconciled", () => {
    * not a lock ordering. Concurrency is what `completeAuthorizationAttempt`'s own race test proves.
    */
   test("a late failure callback does NOT reopen an attempt that already completed", async () => {
-    const a = actor("late-fail");
+    const a = await actor("late-fail");
     const app = toolkit("late-fail");
     await attemptWith(a, "ar_late_fail");
 
@@ -493,7 +493,7 @@ describe("failAuthorizationAttempt / markAuthorizationUnreconciled", () => {
 
   /* The same rule among the three non-completion verdicts: the first one to settle the row wins. */
   test("a second verdict does not overwrite the first one an attempt settled on", async () => {
-    const a = actor("settled");
+    const a = await actor("settled");
     await attemptWith(a, "ar_settled");
 
     expect(
