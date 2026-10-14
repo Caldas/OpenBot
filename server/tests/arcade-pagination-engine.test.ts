@@ -458,35 +458,40 @@ describe("the action listing's total_count cross-check survives a short final pa
     expect((await listTools({ url: "arcade://Gmail" })).length).toBe(250);
   });
 
+  // THE CATALOGUE'S TWO CASES ARE SCALED ×10 FROM THE TRANSPORT'S: `listApps` reads the directory in
+  // pages of 1000 (`DIRECTORY_PAGE_SIZE`), so 250-of-300 would be ONE short page with the total
+  // dropped from it — no second page and nothing to cross-check, which is not the case under test.
+  // At 2500-of-3000 page one carries the claim and the rest are fetched AHEAD, concurrently, so
+  // these also hold that fetching ahead did not weaken the incompleteness check.
   test("the catalogue refuses a truncated listing too", async () => {
     engine({
       connections: 0,
       connectionTotal: true,
-      toolsClaimed: 300,
-      toolsServed: 250,
+      toolsClaimed: 3000,
+      toolsServed: 2500,
     });
     const { broker } = createArcadeClient("never-dialled");
 
     await expect(broker.listApps()).rejects.toThrow(
-      /listed 250 of 300 actions, so its app catalogue is incomplete/,
+      /listed 2500 of 3000 actions, so its app catalogue is incomplete/,
     );
   });
 
   test("a later page revising the count DOWN does not erase the first page's claim", async () => {
-    // Page one claims 300, page two revises it to 250, and 250 is all the engine serves. Keeping
+    // Page one claims 3000, page two revises it to 2500, and 2500 is all the engine serves. Keeping
     // the LAST total any page reported — rather than the highest — makes the truncation agree with
     // itself and the listing commits as a complete one.
     engine({
       connections: 0,
       connectionTotal: true,
-      toolsClaimed: 300,
-      toolsServed: 250,
-      toolsLaterTotal: 250,
+      toolsClaimed: 3000,
+      toolsServed: 2500,
+      toolsLaterTotal: 2500,
     });
     const { broker } = createArcadeClient("never-dialled");
 
     await expect(broker.listApps()).rejects.toThrow(
-      /listed 250 of 300 actions, so its app catalogue is incomplete/,
+      /listed 2500 of 3000 actions, so its app catalogue is incomplete/,
     );
   });
 

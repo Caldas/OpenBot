@@ -189,10 +189,40 @@ async function vendorCall<T>(step: string, run: () => Promise<T>): Promise<T> {
   }
 }
 
-/** Page size for the catalogue listing. A short page ends it, never `total_count`. */
+/**
+ * Page size for the PER-TOOLKIT action listings, `grantsFor` and `authProvidersNamedBy`. A short page ends it, never `total_count`. The whole-directory listing behind
+ * `listApps` does NOT use this: see {@link DIRECTORY_PAGE_SIZE}.
+ */
 const CATALOGUE_PAGE_SIZE = 100;
 /** A runaway guard, not a bound. */
 const CATALOGUE_MAX_PAGES = 1000;
+
+/**
+ * Page size for the WHOLE-DIRECTORY listing `listApps` reads, which is the "Browse Arcade" screen.
+ *
+ * THE ARITHMETIC, MEASURED AGAINST THE LIVE API so the next person changing this does not re-probe:
+ * - Arcade's directory reported `total_count` **8,320** tools.
+ * - `limit=1000` is accepted (1,000 items in ~1.77 s); `limit=5000` is REJECTED (empty answer in
+ *   ~0.17 s), so **1000 is at or near the vendor's ceiling** — do not raise this past it.
+ * - A page costs **~1.8 s** at limit 1000 (~1.2 s at 100, ~1.8 s at 250): latency, not size,
+ *   dominates, so fewer larger pages are nearly free.
+ *
+ * At the old page size of 100 that was 84 SEQUENTIAL pages, ~100 s, against a 10 s
+ * `VENDOR_CALL_TIMEOUT_MS` that wraps the WHOLE `listApps` — so the directory could never load. At
+ * 1000 it is 9 pages: one, then the remaining 8 at once under {@link DIRECTORY_CONCURRENCY}, ~3.6 s.
+ */
+const DIRECTORY_PAGE_SIZE = 1000;
+
+/**
+ * How many directory pages are in flight at once after page one has said how many there are.
+ *
+ * EIGHT, because it covers today's directory in ONE wave (8,320 tools → 8 pages after the first)
+ * while still being a bound: a `total_count` of a million fires eight requests at a time, never a
+ * thousand. The deadline arithmetic is `~1.8 s × (1 + ⌈remaining / 8⌉)`, which stays under the 10 s
+ * `VENDOR_CALL_TIMEOUT_MS` up to 32 remaining pages — a directory of roughly 33,000 tools, four times
+ * today's. Past that the listing will time out again, and that is the number to revisit.
+ */
+const DIRECTORY_CONCURRENCY = 8;
 
 /**
  * WHAT ARCADE ITSELF SENT: the parsed response body, and never the SDK's page object.
@@ -347,7 +377,47 @@ type Listing = {
    * LENGTH was not, and a reader sent looking for a broken list would find a well-formed one.
    */
   unreadableTotal: (shown: string) => string;
+  /**
+   * How many pages may be in flight at once AFTER PAGE ONE. Absent or 1 is the strictly sequential
+   * read every listing but `listApps` uses. Above 1, page one's `total_count` decides which further
+   * offsets are fetched ahead, at most this many at a time; see {@link pagedItems}.
+   */
+  concurrency?: number;
 };
+
+/**
+ * `run`, at most `limit` at a time, and NOT AT ALL once `abandoned()` says the reader has stopped.
+ *
+ * The second half is what keeps a lying `total_count` from costing anything: a listing that claims
+ * a million rows and then ends on page two must not go on firing the 998 requests queued behind it.
+ */
+function bounded(
+  limit: number,
+  abandoned: () => boolean,
+): <T>(run: () => Promise<T>) => Promise<T | undefined> {
+  let active = 0;
+  const waiting: (() => void)[] = [];
+  return <T>(run: () => Promise<T>) =>
+    new Promise<T | undefined>((resolve, reject) => {
+      const start = () => {
+        if (abandoned()) {
+          resolve(undefined);
+          waiting.shift()?.();
+          return;
+        }
+        active += 1;
+        // Through an executor, so a call that throws synchronously is a rejection like any other.
+        new Promise<T>((answered) => answered(run()))
+          .then(resolve, reject)
+          .finally(() => {
+            active -= 1;
+            waiting.shift()?.();
+          });
+      };
+      if (active < limit) start();
+      else waiting.push(start);
+    });
+}
 
 /**
  * ONE LISTING READ TO ITS END, as a stream of items.
@@ -365,25 +435,63 @@ type Listing = {
  *
  * THE INCOMPLETENESS THROW IS THE LAST THING THIS YIELDS, after every item, so a caller that folds
  * items as they arrive still never sees a short listing finish as a whole one.
+ *
+ * FETCHING AHEAD ({@link Listing.concurrency}) CHANGES WHEN A PAGE IS ASKED FOR, NEVER HOW IT IS
+ * READ. Page one is asked for alone; its `total_count` names the offsets that should exist, and
+ * those are requested at once under the bound. The answers are then consumed IN OFFSET ORDER by
+ * exactly the loop below, so every rule above still holds page by page: a short page still ends the
+ * listing (the pages fetched past it are discarded unread and the queued ones never fire), a total
+ * that UNDER-reports still reads on sequentially from where the prefetch ran out, and `seen < total`
+ * still throws. A page ahead that FAILED fails the listing when the loop reaches it, and not before.
+ * Without a readable total on page one there is nothing to fetch ahead of, and it reads sequentially.
  */
 async function* pagedItems(listing: Listing): AsyncGenerator<unknown> {
   let seen = 0;
   let total: number | undefined;
   let ended = false;
-  for (let index = 0; index < listing.maxPages; index += 1) {
-    const answer = await listing.page(seen);
-    const items = sentItemsOf(answer);
-    if (!Array.isArray(items)) throw new Error(listing.malformed);
-    yield* items;
-    seen += items.length;
-    total = highestTotal(
-      total,
-      reportedTotalOf(answer, listing.unreadableTotal),
-    );
-    if (items.length < listing.pageSize) {
-      ended = true;
-      break;
+  let stopped = false;
+  const ahead = new Map<number, Promise<unknown>>();
+  try {
+    for (let index = 0; index < listing.maxPages; index += 1) {
+      const fetched = ahead.get(seen);
+      ahead.delete(seen);
+      const answer = await (fetched ?? listing.page(seen));
+      const items = sentItemsOf(answer);
+      if (!Array.isArray(items)) throw new Error(listing.malformed);
+      yield* items;
+      seen += items.length;
+      total = highestTotal(
+        total,
+        reportedTotalOf(answer, listing.unreadableTotal),
+      );
+      if (items.length < listing.pageSize) {
+        ended = true;
+        break;
+      }
+      if (
+        index === 0 &&
+        total !== undefined &&
+        (listing.concurrency ?? 1) > 1
+      ) {
+        const slot = bounded(listing.concurrency ?? 1, () => stopped);
+        // `floor`, not `ceil - 1`: a total that is an exact multiple of the page size still needs
+        // the EMPTY page after it, because a short page — never the total — is what ends a listing.
+        const last = Math.min(
+          Math.floor(total / listing.pageSize),
+          listing.maxPages - 1,
+        );
+        for (let page = 1; page <= last; page += 1) {
+          const offset = page * listing.pageSize;
+          const pending = slot(() => listing.page(offset));
+          // Observed here so a page fetched past the end — or past a failure the loop throws on
+          // first — never surfaces as an unhandled rejection. The loop still awaits the original.
+          pending.catch(() => undefined);
+          ahead.set(offset, pending);
+        }
+      }
     }
+  } finally {
+    stopped = true;
   }
   if (!ended) throw new Error(listing.unending);
   if (total !== undefined && seen < total) {
@@ -554,11 +662,12 @@ async function listApps(client: Arcade): Promise<BrokerApp[]> {
   };
   const counts = new Map<string, Tally>();
   for await (const item of pagedItems({
-    pageSize: CATALOGUE_PAGE_SIZE,
+    pageSize: DIRECTORY_PAGE_SIZE,
     maxPages: CATALOGUE_MAX_PAGES,
+    concurrency: DIRECTORY_CONCURRENCY,
     page: (offset) =>
       vendorCall("the app catalogue listing", () =>
-        client.tools.list({ limit: CATALOGUE_PAGE_SIZE, offset }),
+        client.tools.list({ limit: DIRECTORY_PAGE_SIZE, offset }),
       ),
     malformed:
       "Arcade did not answer with a tool list, so its app catalogue could not be read.",
