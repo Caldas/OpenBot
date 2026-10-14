@@ -1154,6 +1154,52 @@ describe("a consent whose account context has moved on", () => {
     expect((await attemptRow())?.outcome).toBe("unreconciled");
   });
 
+  /*
+   * B6a: A REVOKE THAT THROWS IS AN OUTCOME NOBODY KNOWS, NOT AN ANSWER OF `false`.
+   *
+   * The seam deletes every connection it found and only then throws if any delete failed, so this
+   * throw arrives with part of the withdrawal already done at the vendor. The route used to read
+   * it as `false` in a bare `catch` and say nothing: the attempt went `unreconciled`, the rows here
+   * stood, and an operator had no way to learn that this deployment and the vendor may now
+   * disagree about whether the connection exists.
+   */
+  test("a revoke that withdrew part and then threw clears nothing, and leaves an operator a line", async () => {
+    await giveAttempt({ authId: MINTED, ageMinutes: 1 });
+    await switchToShared();
+    await hold(TOOLKIT, ACTOR);
+    await hold(siblingApp(), ACTOR);
+    revokeAnswer = async () => {
+      throw new Error("Arcade revoke failed for 1 of 3 connections.");
+    };
+
+    const [response, said] = await heard(() =>
+      verify(ACTOR, "?flow_id=flow-abc"),
+    );
+    await expectRefusal(response, "context-changed");
+
+    // NOT READ AS A WITHDRAWAL: nothing cleared, nothing claimed on the trail, kept as unknown.
+    expect(await rowsFor([TOOLKIT, siblingApp()], ACTOR)).toEqual(
+      [TOOLKIT, siblingApp()].sort(),
+    );
+    expect(await disconnectsFor([TOOLKIT, siblingApp()])).toEqual([]);
+    expect((await attemptRow())?.outcome).toBe("unreconciled");
+
+    // AND SAID OUT LOUD, with what an operator needs to find the disagreement and settle it.
+    const line = lines(said).find((text) =>
+      text.includes("arcade-context-withdrawal-unknown"),
+    );
+    expect(line).toBeDefined();
+    expect(line).toContain(`"authorizationId":"${MINTED}"`);
+    // Quoted as the field, because the sibling's name carries TOOLKIT as its prefix.
+    expect(line).toContain(`"app":"${TOOLKIT}"`);
+    // CONTAINED RATHER THAN EQUAL: siblings are read off every row this identity holds, and earlier
+    // cases in this file leave theirs until `afterAll`.
+    expect(
+      (JSON.parse(line ?? "{}") as { siblings?: string[] }).siblings,
+    ).toContain(siblingApp());
+    expect(line).toContain("Arcade revoke failed for 1 of 3 connections.");
+  });
+
   test("a sibling set this deployment could not resolve stops the revoke rather than widening it", async () => {
     await giveAttempt({ authId: MINTED, ageMinutes: 1 });
     await switchToShared();
