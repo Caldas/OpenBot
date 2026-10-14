@@ -190,10 +190,40 @@ async function vendorCall<T>(step: string, run: () => Promise<T>): Promise<T> {
 }
 
 /**
- * Page size for the PER-TOOLKIT action listings, `grantsFor` and `authProvidersNamedBy`. A short page ends it, never `total_count`. The whole-directory listing behind
- * `listApps` does NOT use this: see {@link DIRECTORY_PAGE_SIZE}.
+ * Page size for the PER-TOOLKIT action listings, `grantsFor` and `authProvidersNamedBy`. A short
+ * page ends it, never `total_count`. The whole-directory listing behind `listApps` does NOT use
+ * this: see {@link DIRECTORY_PAGE_SIZE}.
+ *
+ * THE MEASURED WORST CASE, so the next person does not re-scan the API: across Arcade's directory
+ * (8,320 tools, 129 toolkits) the largest toolkit is **`GithubApi`, 818 actions** — then
+ * `PosthogApi` 766, `DatadogApi` 588, `ZohoBooksApi` 511, `HubspotCrmApi` 453. At 100 a page
+ * costs ~1.19 s, so `GithubApi` read SEQUENTIALLY was 9 pages, ~10.7 s, past the 10 s
+ * `VENDOR_CALL_TIMEOUT_MS` that wraps the grants screen and Disconnect alike: neither could load.
+ * Under {@link CATALOGUE_CONCURRENCY} it is page one, then the other 8 in one wave, ~2.4 s.
+ *
+ * KEPT AT 100 RATHER THAN RAISED TO THE DIRECTORY'S 1000, deliberately. Latency, not size,
+ * dominates (~1.19 s at 100, ~1.8 s at 1000), so two waves of 100 cost about what one page of
+ * 1000 does. At 1000 every toolkit Arcade publishes would be ONE page, and the paths that make a
+ * per-toolkit read trustworthy — a short page ending it, `seen < total` judged across pages, a
+ * provider disagreeing with itself past page one — would stop being exercised by any real toolkit
+ * while still being the only defence when one grows. At 100, every toolkit over 100 actions
+ * crosses page boundaries on every read, so the completeness check stays a live check.
  */
 const CATALOGUE_PAGE_SIZE = 100;
+
+/**
+ * How many per-toolkit action pages are in flight at once after page one has said how many there
+ * are, through the same opt-in {@link Listing.concurrency} the directory uses.
+ *
+ * EIGHT, because it covers `GithubApi` (818 actions → 8 pages after the first) in ONE wave while
+ * still bounding what a lying `total_count` can fire. The deadline arithmetic is
+ * `~1.19 s × (1 + ⌈remaining / 8⌉)`: under 10 s up to 56 remaining pages, a toolkit of ~5,700
+ * actions, for the grants screen. Disconnect spends ~3 more sequential calls after this listing
+ * (auth providers, connections, the DELETE; ~1.2 s each, not measured separately), which leaves
+ * room for 32 remaining pages, a toolkit of ~3,300 actions — four times `GithubApi`. Past that is
+ * the number to revisit.
+ */
+const CATALOGUE_CONCURRENCY = 8;
 /** A runaway guard, not a bound. */
 const CATALOGUE_MAX_PAGES = 1000;
 
@@ -379,7 +409,8 @@ type Listing = {
   unreadableTotal: (shown: string) => string;
   /**
    * How many pages may be in flight at once AFTER PAGE ONE. Absent or 1 is the strictly sequential
-   * read every listing but `listApps` uses. Above 1, page one's `total_count` decides which further
+   * read the connection and auth-provider listings use. `listApps` and the per-toolkit action
+   * listings (`grantsFor`, `authProvidersNamedBy`) turn it on. Above 1, page one's `total_count` decides which further
    * offsets are fetched ahead, at most this many at a time; see {@link pagedItems}.
    */
   concurrency?: number;
@@ -1240,6 +1271,7 @@ async function grantsFor(
   for await (const item of pagedItems({
     pageSize: CATALOGUE_PAGE_SIZE,
     maxPages: CATALOGUE_MAX_PAGES,
+    concurrency: CATALOGUE_CONCURRENCY,
     page: (offset) =>
       vendorCall(`the action listing for ${toolkit}`, () =>
         client.tools.list({
@@ -1394,6 +1426,7 @@ async function authProvidersNamedBy(
   for await (const item of pagedItems({
     pageSize: CATALOGUE_PAGE_SIZE,
     maxPages: CATALOGUE_MAX_PAGES,
+    concurrency: CATALOGUE_CONCURRENCY,
     page: (offset) =>
       vendorCall(`the action listing for ${toolkit}`, () =>
         client.tools.list({ toolkit, limit: CATALOGUE_PAGE_SIZE, offset }),
