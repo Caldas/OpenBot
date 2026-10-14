@@ -653,14 +653,14 @@ const ALLOW: Allowed[] = [
   },
   {
     file: "server/tests/arcade-sibling-collateral.test.ts",
-    line: 392,
+    line: 417,
     shape: "b",
     finding: "NEW (round 2 did not find this)",
     why: "expect(row(t.gmail)?.payload.endedWith).toBeUndefined();",
   },
   {
     file: "server/tests/arcade-sibling-collateral.test.ts",
-    line: 396,
+    line: 421,
     shape: "b",
     finding: "NEW (round 2 did not find this)",
     why: "expect(row(t.slack)?.payload.endedWith).toBeUndefined();",

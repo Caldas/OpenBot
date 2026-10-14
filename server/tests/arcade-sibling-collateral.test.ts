@@ -91,14 +91,18 @@ function run() {
   apps.push(names.gmail, names.calendar, names.slack);
   return names;
 }
-async function server(app: string, mode: "personal" | "shared") {
+async function server(
+  app: string,
+  mode: "personal" | "shared",
+  authScheme = "OAUTH2",
+) {
   await database.insert(mcpServers).values({
     id: app,
     title: app,
     vendor: "Arcade",
     url: `arcade://${app}`,
     provenance: "arcade",
-    authScheme: "OAUTH2",
+    authScheme,
     accountMode: mode,
   });
 }
@@ -302,6 +306,27 @@ describe("removing an app", () => {
     expect(trail[0]?.payload).toMatchObject({
       vendorRevocationRequested: false,
     });
+  });
+
+  /*
+   * RULE 1 OF `clearEndedSiblings`, on the third act that cascades. Calendar shares Gmail's identity
+   * and auth provider, so `resolveSiblings` names it — but this deployment holds a KEY for it, and
+   * the one OAuth revoke a removal asks for never ended a key. Its row is the only way left to
+   * reach that live account, so it stands, and the trail claims nothing about it.
+   */
+  test("a KEY sibling's row SURVIVES the removal, and nothing is written about it", async () => {
+    const t = run();
+    await server(t.gmail, "personal");
+    await server(t.calendar, "personal", "API_KEY");
+    await hold(t.gmail, t.person);
+    await hold(t.calendar, t.person);
+
+    await store.removeServer(t.gmail, "admin");
+
+    expect(await rowsFor([t.gmail, t.calendar])).toEqual([t.calendar]);
+    expect(
+      (await trailFor([t.gmail, t.calendar])).map((event) => event.app),
+    ).toEqual([t.gmail]);
   });
 
   test("a partial vendor failure throws and leaves every row standing", async () => {
