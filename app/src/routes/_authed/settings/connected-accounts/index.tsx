@@ -243,18 +243,50 @@ export function connectedAccountSections(
 
 function RouteComponent() {
   const { connected: outcome, authorized, linked } = Route.useSearch();
-  const authorizationNotice = authorizationNoticeFor(authorized);
-  /* Read once, then dropped from the URL, so a refresh does not repeat the news. */
-  const [arrival] = React.useState(() => linkedNotice(linked));
+  /*
+   * ALL THREE READ ONCE HERE, AND ALL THREE DROPPED FROM THE URL BELOW — not just `?linked=`.
+   *
+   * Every parameter this screen accepts is a report of something that has already happened: the
+   * Composio callback's `?connected=`, the brokered verifier's `?authorized=` and the GitHub
+   * account-link callback's `?linked=`. A report is news exactly once. Left in the address bar it
+   * is read again on every reload and on every back-navigation, so a failure that is minutes old
+   * is redrawn as though it had just happened — somebody is told again that their account could
+   * not be connected, or that there is no authorization in progress, about an attempt they have
+   * since finished successfully. Only `?linked=` was ever cleaned, which is how the other two came
+   * to replay.
+   *
+   * THE SNAPSHOT IS WHAT THE PAGE DRAWS FROM, and it is why the strip can be unconditional. Read
+   * live off the search, the notice would vanish the instant the parameter did; held here, the
+   * sentence outlives the URL it arrived in. That is what `?linked=` was already doing, and the
+   * other two now do it for the same reason rather than by accident.
+   */
+  const [arrival] = React.useState(() => ({
+    outcome,
+    authorizationNotice: authorizationNoticeFor(authorized),
+    linked: linkedNotice(linked),
+  }));
   /* The same cached list the Linked accounts section reads, so a Disconnect there retracts a success here. */
   const links = useQuery(linkedAccountsQueryOptions());
-  const notice = visibleLinkedNotice(arrival, links.data);
+  const notice = visibleLinkedNotice(arrival.linked, links.data);
   const navigate = Route.useNavigate();
+  /*
+   * ONE NAVIGATE FOR ALL THREE, never one per parameter. `search` replaces the whole object, so two
+   * effects each dropping their own key race: whichever lands second rebuilds from a snapshot taken
+   * before the first, and puts the key the first had just removed back.
+   */
   React.useEffect(() => {
-    if (linked !== undefined) {
-      navigate({ search: ({ linked: _l, ...rest }) => rest, replace: true });
+    if (
+      outcome === undefined &&
+      authorized === undefined &&
+      linked === undefined
+    ) {
+      return;
     }
-  }, [linked, navigate]);
+    navigate({
+      search: ({ connected: _c, authorized: _a, linked: _l, ...rest }) => rest,
+      replace: true,
+    });
+  }, [outcome, authorized, linked, navigate]);
   const [search, setSearch] = React.useState("");
   const plugins = useQuery(pluginsPageQueryOptions());
   const connections = useQuery(connectionsQueryOptions());
@@ -359,7 +391,7 @@ function RouteComponent() {
        * came back to now reads "Connected", which is the same news told by the thing it is news
        * about. `?linked=` is different and says both outcomes, through `linkedNotice` below.
        */}
-      {outcome === "failed" ? (
+      {arrival.outcome === "failed" ? (
         <p className="text-destructive text-sm" role="alert">
           That account could not be connected. Nothing was saved — try again.
         </p>
@@ -380,9 +412,9 @@ function RouteComponent() {
        * because three of its refusals have no app to name, and a notice that sometimes appears one
        * level in and sometimes here would be a notice people learn to look for in two places.
        */}
-      {authorizationNotice ? (
+      {arrival.authorizationNotice ? (
         <p className="text-destructive text-sm" role="alert">
-          {authorizationNotice}
+          {arrival.authorizationNotice}
         </p>
       ) : null}
       {/*
