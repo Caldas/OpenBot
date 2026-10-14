@@ -6,11 +6,13 @@ import { join } from "node:path";
 import {
   type AppliedMigration,
   type FolderMigration,
+  type MigrationsJournal,
   migrationsOutOfReach,
   migratorHighWaterMark,
   outOfReachRefusal,
   readMigrationFolder,
 } from "../src/db/migration-reach";
+import { MIGRATIONS_JOURNAL } from "../src/db/apply-migrations";
 
 /**
  * The check that `migration-journal.test.ts` cannot make.
@@ -197,6 +199,7 @@ describe("the row the migrator reads", () => {
       migrationsOutOfReach(folder, database),
       folder,
       database,
+      MIGRATIONS_JOURNAL,
     );
 
     expect(text).toContain("1 applied row has a NULL created_at");
@@ -218,6 +221,7 @@ describe("the refusal", () => {
     migrationsOutOfReach(folder, database),
     folder,
     database,
+    MIGRATIONS_JOURNAL,
   );
 
   test("names the migration that cannot be reached", () => {
@@ -234,6 +238,67 @@ describe("the refusal", () => {
 
   test("says that nothing was applied", () => {
     expect(text).toContain("Nothing has been applied.");
+  });
+});
+
+describe("the refusal, for a journal kept somewhere other than the default", () => {
+  /*
+   * The repair instructions are SQL an operator pastes into psql. They must name the table the
+   * check read — never a spelling of the default that the configuration no longer guarantees.
+   */
+  const elsewhere: MigrationsJournal = {
+    migrationsSchema: "c4_journal",
+    migrationsTable: "applied_migrations",
+  };
+  const folder = [
+    migration("0000_first", 1000, "a"),
+    migration("0001_from_main", 2000, "main"),
+    migration("0002_branch_renumbered", 4000, "renumbered"),
+  ];
+
+  test("tells the operator to record a skipped migration in that table", () => {
+    const database = [applied("a", 1000), applied("branch-as-shipped", 3000)];
+    const text = outOfReachRefusal(
+      migrationsOutOfReach(folder, database),
+      folder,
+      database,
+      elsewhere,
+    );
+
+    expect(text).toContain(
+      'insert into "c4_journal"."applied_migrations" (hash, created_at)',
+    );
+    expect(text).not.toContain("__drizzle_migrations");
+  });
+
+  test("tells the operator to repair a NULL created_at in that table", () => {
+    const database = [
+      applied("a", 1000),
+      applied("main", 2000),
+      applied("hand-written", null),
+    ];
+    const text = outOfReachRefusal(
+      migrationsOutOfReach(folder, database),
+      folder,
+      database,
+      elsewhere,
+    );
+
+    expect(text).toContain("1 applied row has a NULL created_at");
+    expect(text).toContain('update "c4_journal"."applied_migrations" set');
+    expect(text).not.toContain("__drizzle_migrations");
+  });
+
+  test("quotes a name that would otherwise need it", () => {
+    const database = [applied("a", 1000), applied("branch-as-shipped", 3000)];
+    const text = outOfReachRefusal(
+      migrationsOutOfReach(folder, database),
+      folder,
+      database,
+      { migrationsSchema: "Ops", migrationsTable: 'odd"name' },
+    );
+
+    expect(text).toContain('insert into "Ops"."odd""name" (hash, created_at)');
   });
 });
 

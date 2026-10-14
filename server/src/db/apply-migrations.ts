@@ -14,6 +14,7 @@ import { migrate } from "drizzle-orm/postgres-js/migrator";
 import type { Sql, TransactionSql } from "postgres";
 import {
   type AppliedMigration,
+  type MigrationsJournal,
   migrationsOutOfReach,
   outOfReachRefusal,
   readMigrationFolder,
@@ -27,11 +28,13 @@ import {
  * different tables the check would read an absent table, see nothing applied, and wave every
  * migration through — the refusal silently switched off. So both are handed this one object, and
  * nothing else in the server spells the name.
+ *
+ * The same object reaches the refusal's repair SQL (`outOfReachRefusal`), so the table an operator
+ * is told to fix is the table the check read. The type is declared in `./migration-reach` and the
+ * value here: that module is the dependency, not the dependent, and importing this value into it
+ * would close a cycle.
  */
-export type MigrationsJournal = {
-  migrationsSchema: string;
-  migrationsTable: string;
-};
+export type { MigrationsJournal };
 
 export const MIGRATIONS_JOURNAL: MigrationsJournal = {
   migrationsSchema: "drizzle",
@@ -122,7 +125,7 @@ export async function applyMigrations(
     const outOfReach = migrationsOutOfReach(folder, applied);
     if (outOfReach.length > 0) {
       throw new MigrationsOutOfReachError(
-        outOfReachRefusal(outOfReach, folder, applied),
+        outOfReachRefusal(outOfReach, folder, applied, journal),
       );
     }
 
