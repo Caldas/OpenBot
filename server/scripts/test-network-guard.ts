@@ -41,6 +41,25 @@
  * `DATABASE_URL`, because that is how the Postgres driver reaches the test database and that host is
  * deployment configuration, not necessarily loopback.
  *
+ * AND RAW SOCKETS ARE JUDGED BY THE ADDRESS THEY REACH, because some suites' SUBJECT is the socket
+ * layer. `agent-computer`'s egress filter has to prove it pins the address it checked, falls back
+ * to the next one, and gives up on one that never answers, and it can only prove that by opening
+ * sockets at `rebind.example.test`, `dual.example.test` and `10.255.255.1`. None of those can be a
+ * vendor, and the rule that admits them says why — not a list of the hosts a suite happens to use:
+ *  - a LITERAL address the public internet does not route (RFC 1918 private, the RFC 5737/3849
+ *    documentation ranges, IPv6 unique-local). Link-local is excluded on purpose: 169.254.169.254 is
+ *    the cloud metadata service, which hands out credentials.
+ *  - a name under a top-level domain RFC 6761 reserves so public DNS never answers it (`.test`,
+ *    `.invalid`, `.example`) — and ONLY with its lookup wrapped, because a `lookup` option or
+ *    `/etc/hosts` can map a reserved name to any address. The wrapped lookup lets the connection
+ *    proceed only if every address it answers is one a literal would be let through to, so a name
+ *    is never the way round the address rule.
+ * This is at `net.Socket#connect` only, where a lookup can be checked. Every other entry point
+ * (`fetch`, `http(s).request`/`get`, `http2`, `WebSocket`) stays loopback-only, and
+ * `Bun.connect`/UDP take the same literal-address rule but no names.
+ * Why not a named opt-out like `OPENBOT_LIVE_*`: `bun run test:ci` runs every file in ONE process,
+ * so a flag one suite set would unguard every file after it.
+ *
  * WHAT IS NOT GUARDED, AND WHY — none of these is how any code in this repository talks to a vendor:
  * `Bun.SQL` (native; it IS the database path, and its connection never surfaces to JavaScript);
  * `Bun.S3Client`/`Bun.redis` (native clients this repository does not use); a `fetch` given an
@@ -57,6 +76,7 @@
  */
 
 import dgram from "node:dgram";
+import dns from "node:dns";
 import http from "node:http";
 import http2 from "node:http2";
 import https from "node:https";
@@ -157,9 +177,130 @@ function socketConnectHost(args: unknown[]): string | null {
   return typeof second === "string" ? second : "localhost";
 }
 
+/**
+ * Addresses no vendor can be behind, because the public internet does not route them: RFC 1918
+ * private space, the RFC 5737 / RFC 3849 documentation ranges, and IPv6 unique-local space
+ * (RFC 4193). Loopback is judged by `isLoopback`. Link-local (169.254/16, fe80::/10) is
+ * deliberately NOT here: 169.254.169.254 is the cloud metadata service, which hands out credentials.
+ */
+const unroutable = new net.BlockList();
+unroutable.addSubnet("10.0.0.0", 8, "ipv4");
+unroutable.addSubnet("172.16.0.0", 12, "ipv4");
+unroutable.addSubnet("192.168.0.0", 16, "ipv4");
+unroutable.addSubnet("192.0.2.0", 24, "ipv4");
+unroutable.addSubnet("198.51.100.0", 24, "ipv4");
+unroutable.addSubnet("203.0.113.0", 24, "ipv4");
+unroutable.addSubnet("fc00::", 7, "ipv6");
+unroutable.addSubnet("2001:db8::", 32, "ipv6");
+
+/** A LITERAL address that is loopback or that the public internet does not route. Never a name. */
+function isUnroutableAddress(host: string): boolean {
+  const bare = host.replace(/^\[|\]$/g, "").toLowerCase();
+  const family = net.isIP(bare);
+  if (family === 0) return false;
+  return (
+    isLoopback(bare) || unroutable.check(bare, family === 6 ? "ipv6" : "ipv4")
+  );
+}
+
+/**
+ * A name under a top-level domain RFC 6761 reserves so that public DNS never answers for it:
+ * `.test`, `.invalid`, `.example` (`.localhost` is loopback already).
+ *
+ * BEING RESERVED IS NOT ENOUGH ON ITS OWN, so no entry point lets such a name through bare:
+ * `/etc/hosts`, a local resolver, or a `lookup` option the caller hands in can map any name to any
+ * address. A special-use name is let through only at `net.Socket#connect`, where its lookup is
+ * replaced by `checkedLookup`, which judges the ADDRESS it resolves to by the same rule as a literal.
+ */
+function isSpecialUseName(host: string): boolean {
+  return net.isIP(host) === 0 && /\.(test|invalid|example)\.?$/i.test(host);
+}
+
 function guardSocketHost(host: string | null, label: string): void {
-  if (host === null || isLoopback(host) || isDatabaseHost(host)) return;
+  if (
+    host === null ||
+    isLoopback(host) ||
+    isDatabaseHost(host) ||
+    isUnroutableAddress(host)
+  )
+    return;
   throw refuse(`${label} ${host}`);
+}
+
+type LookupCallback = (
+  error: Error | null,
+  address?: string | Array<{ address: string; family: number }>,
+  family?: number,
+) => void;
+type Lookup = (
+  hostname: string,
+  options: object | LookupCallback,
+  callback?: LookupCallback,
+) => void;
+
+/**
+ * The caller's `lookup` (or the system resolver), passed on only when every address it answers is
+ * one `guardSocketHost` would let a literal through to. Otherwise the socket gets the refusal as its
+ * connection error and never dials the address.
+ */
+function checkedLookup(lookup: Lookup | undefined): Lookup {
+  const resolve = lookup ?? (dns.lookup as unknown as Lookup);
+  return (hostname, options, callback) => {
+    const done = (
+      typeof options === "function" ? options : callback
+    ) as LookupCallback;
+    resolve(
+      hostname,
+      typeof options === "function" ? {} : options,
+      (error, address, family) => {
+        if (error) return done(error);
+        const answered = Array.isArray(address)
+          ? address.map((entry) => entry.address)
+          : [String(address)];
+        const far = answered.find(
+          (candidate) => !isUnroutableAddress(candidate),
+        );
+        if (far !== undefined)
+          return done(refuse(`socket ${hostname} resolved to ${far}`));
+        done(null, address, family);
+      },
+    );
+  };
+}
+
+/**
+ * `net.Socket#connect` arguments aimed at a special-use name, rewritten with the lookup checked.
+ * The overloads a name arrives in — `(options, cb)`, `(port, host, cb)`, and the pre-normalized
+ * `[options, cb]` array Node's own `net.connect` passes — are covered. `null` for any other shape,
+ * which `guardSocketHost` then refuses like any other name.
+ */
+function withCheckedLookup(args: unknown[]): unknown[] | null {
+  const [first, second] = args;
+  if (Array.isArray(first)) {
+    // The normalized array is tagged by the runtime (a copy is not recognised as one and is
+    // rejected as missing arguments), so it is rewritten in place rather than rebuilt.
+    const inner = withCheckedLookup(first);
+    if (!inner) return null;
+    first.splice(0, first.length, ...inner);
+    return args;
+  }
+  if (first && typeof first === "object") {
+    const options = first as { lookup?: Lookup };
+    return [
+      { ...options, lookup: checkedLookup(options.lookup) },
+      ...args.slice(1),
+    ];
+  }
+  if (
+    (typeof first === "number" || /^\d+$/.test(String(first))) &&
+    typeof second === "string"
+  ) {
+    return [
+      { port: Number(first), host: second, lookup: checkedLookup(undefined) },
+      ...args.slice(2),
+    ];
+  }
+  return null;
 }
 
 type Callable = (...args: unknown[]) => unknown;
@@ -261,7 +402,12 @@ if (!liveRun) {
     net.Socket.prototype,
     "connect",
     function (this: net.Socket, ...args: unknown[]) {
-      guardSocketHost(socketConnectHost(args), "socket");
+      const host = socketConnectHost(args);
+      if (host !== null && isSpecialUseName(host) && !isDatabaseHost(host)) {
+        const checked = withCheckedLookup(args);
+        if (checked) return originalSocketConnect.apply(this, checked);
+      }
+      guardSocketHost(host, "socket");
       return originalSocketConnect.apply(this, args);
     },
   );

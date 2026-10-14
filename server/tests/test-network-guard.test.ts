@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import dgram from "node:dgram";
-import http from "node:http";
+import http, { request as namedHttpRequest } from "node:http";
 import http2 from "node:http2";
 import https, { get as namedHttpsGet } from "node:https";
 import net from "node:net";
@@ -45,16 +45,27 @@ async function plant(
         ? `response ${value.status} ${value.headers.get("x-openbot-test-network-guard") ?? "unguarded"}`
         : "returned";
   } catch (error) {
-    outcome = error instanceof Error ? error.message : String(error);
+    outcome = `threw: ${error instanceof Error ? error.message : String(error)}`;
   }
   return { outcome, refused: record.slice(before) };
 }
 
 const refusedCall = "Tests do not use the network";
-const refusedByProxy = "response 403 refused";
+
+/**
+ * What a caller of a NATIVE fetch sees when the refusing proxy turns it away. That text is not the
+ * guard's: over https the runtime reports the proxy's 403 itself, and how it words it differs by
+ * platform and version (macOS bun 1.4.2 hands back the guard's own 403 response; CI's Linux runner
+ * throws "Proxy refused to open a tunnel: 403 Forbidden"). So the outcome is pinned only as far as
+ * the guard owns it: EITHER the guard's own 403, carrying its header, OR a throw — never a response
+ * the guard did not write. A call that had really been dialled ends in such a response (the red at
+ * the C7 base was "response 404 unguarded"). That the GUARD stopped it is then asserted on the
+ * guard's record, which its proxy writes only when the request was handed to it.
+ */
+const refusedByProxy = /^(response 403 refused|threw: .+)$/s;
 
 /** Each entry point, the call it plants, the outcome the caller sees and the target recorded. */
-const entryPoints: Array<[string, () => unknown, string, string]> = [
+const entryPoints: Array<[string, () => unknown, string | RegExp, string]> = [
   [
     "globalThis.fetch",
     () => fetch(`https://${FAR}/x`),
@@ -189,7 +200,8 @@ describe("the test network guard refuses a host that is not loopback, through", 
   test.each(entryPoints)("%s", async (_name, call, seen, target) => {
     const { outcome, refused } = await plant(call);
 
-    expect(outcome).toContain(seen);
+    // A string is matched as a substring, a pattern as itself.
+    expect(outcome).toMatch(seen);
     expect(refused).toEqual([target]);
   });
 });
@@ -248,18 +260,21 @@ describe("the test network guard lets the suite reach what the suite owns", () =
   });
 
   /**
-   * The database is the one far host a raw socket may reach, because it is deployment
-   * configuration rather than a vendor. `.invalid` never resolves, so the connection fails in DNS
-   * — and the point is that it got as far as DNS instead of being refused.
+   * The database is the one far NAME a raw socket may reach without its lookup being checked,
+   * because it is deployment configuration rather than a vendor. `home.arpa` (RFC 8375) never
+   * resolves in public DNS, so the connection fails in DNS — and the point is that it got as far as
+   * DNS instead of being refused. Not `.invalid`: that is a special-use name the guard lets through
+   * on its own terms, so a case aimed at one could not tell whether the database allowance exists.
    */
   test("the configured database host, through a raw socket", async () => {
     const configured = process.env.TEST_DATABASE_URL;
-    process.env.TEST_DATABASE_URL = "postgres://u:p@db.openbot.invalid:5432/x";
+    process.env.TEST_DATABASE_URL =
+      "postgres://u:p@db.openbot.home.arpa:5432/x";
     try {
       const { outcome, refused } = await plant(
         () =>
           new Promise<void>((_resolve, reject) => {
-            net.connect(5432, "db.openbot.invalid").on("error", reject);
+            net.connect(5432, "db.openbot.home.arpa").on("error", reject);
           }),
       );
 
@@ -270,6 +285,141 @@ describe("the test network guard lets the suite reach what the suite owns", () =
       else process.env.TEST_DATABASE_URL = configured;
     }
   });
+});
+
+/**
+ * A suite whose SUBJECT is the socket layer — `agent-computer`'s egress filter, which proves it
+ * pins the address it checked, falls back, and gives up on one that never answers — has to open
+ * sockets at addresses that are not loopback. The guard lets through only what cannot be a vendor:
+ * a literal address the public internet does not route, and a reserved special-use name (RFC 6761)
+ * ONLY when what it resolves to is such an address. Each allowance is planted next to the far
+ * address it must still refuse, so widening it into "anything goes" turns these red.
+ */
+describe("the test network guard judges a socket by the address it reaches", () => {
+  /** A `lookup` that answers one address, in both shapes the runtime asks for (Bun asks `all`). */
+  function answering(address: string): net.LookupFunction {
+    return ((
+      _host: string,
+      options: { all?: boolean } | undefined,
+      callback: (...args: unknown[]) => void,
+    ) =>
+      options?.all
+        ? callback(null, [{ address, family: 4 }])
+        : callback(null, address, 4)) as unknown as net.LookupFunction;
+  }
+
+  /** Settles on connect, on a short wait (an unroutable address may hang), or rejects on error. */
+  function dial(open: () => net.Socket): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const socket = open();
+      const timer = setTimeout(() => {
+        socket.destroy();
+        resolve("pending");
+      }, 200);
+      socket.once("connect", () => {
+        clearTimeout(timer);
+        const reached = `connected ${socket.remoteAddress}`;
+        socket.destroy();
+        resolve(reached);
+      });
+      socket.once("error", (error) => {
+        clearTimeout(timer);
+        socket.destroy();
+        reject(error);
+      });
+    });
+  }
+
+  test("an unroutable private address is let through; a public one and the metadata service are not", async () => {
+    const privately = await plant(() =>
+      dial(() => net.connect({ host: "10.255.255.1", port: 9 })),
+    );
+    expect(privately.outcome).not.toContain(refusedCall);
+    expect(privately.refused).toEqual([]);
+
+    const publicly = await plant(() =>
+      dial(() => net.connect({ host: "93.184.215.14", port: 80 })),
+    );
+    expect(publicly.outcome).toContain(refusedCall);
+    expect(publicly.refused).toEqual(["socket 93.184.215.14"]);
+
+    const metadata = await plant(() =>
+      dial(() => net.connect({ host: "169.254.169.254", port: 80 })),
+    );
+    expect(metadata.outcome).toContain(refusedCall);
+    expect(metadata.refused).toEqual(["socket 169.254.169.254"]);
+  });
+
+  test("a .test name is let through when its lookup answers loopback", async () => {
+    const listener = net.createServer((socket) => socket.end());
+    await new Promise<void>((resolve) =>
+      listener.listen(0, "127.0.0.1", resolve),
+    );
+    const { port } = listener.address() as net.AddressInfo;
+    try {
+      let reached = "";
+      const { refused } = await plant(async () => {
+        reached = await dial(() =>
+          net.connect({
+            host: "pinned.example.test",
+            port,
+            lookup: answering("127.0.0.1"),
+          }),
+        );
+      });
+
+      expect(reached).toBe("connected 127.0.0.1");
+      expect(refused).toEqual([]);
+    } finally {
+      listener.close();
+    }
+  });
+
+  /*
+   * A reserved name is only reserved in PUBLIC DNS: a `lookup` option (or /etc/hosts) can map it to
+   * any address at all, which is exactly how a test could smuggle a vendor's address past a
+   * name-based allowance. Planted through the socket and through a named `node:http` import, which
+   * the request-layer patch does not reach and which therefore meets only the socket guard.
+   */
+  const smuggle = answering("93.184.215.14");
+
+  test.each<[string, () => Promise<unknown>]>([
+    [
+      "net.connect",
+      () =>
+        dial(() =>
+          net.connect({
+            host: "smuggled.example.test",
+            port: 80,
+            lookup: smuggle,
+          }),
+        ),
+    ],
+    [
+      "a named import of http.request",
+      () =>
+        new Promise((resolve, reject) => {
+          namedHttpRequest({
+            host: "smuggled.example.test",
+            port: 80,
+            lookup: smuggle,
+          })
+            .on("response", () => resolve("answered"))
+            .on("error", reject)
+            .end();
+        }),
+    ],
+  ])(
+    "a .test name whose lookup answers a public address is refused, through %s",
+    async (_name, call) => {
+      const { outcome, refused } = await plant(call);
+
+      expect(outcome).toContain(refusedCall);
+      expect(refused).toEqual([
+        "socket smuggled.example.test resolved to 93.184.215.14",
+      ]);
+    },
+  );
 });
 
 /**
