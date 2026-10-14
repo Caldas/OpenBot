@@ -13,6 +13,7 @@ import type { PgColumn } from "drizzle-orm/pg-core";
 import type { Database } from "./db/client";
 import { auditEvents } from "./db/schema";
 import { parsePageLimit } from "./paging";
+import type { AuditInitiator } from "@openbot/toolkit/initiator";
 
 const sensitiveKeys = new Set([
   "access_token",
@@ -569,14 +570,7 @@ export const auditEventTypes = [
 
 export type AuditEventType = (typeof auditEventTypes)[number];
 
-/** What caused a row, where `actorUserId` is only whose authority it borrowed. */
-export type AuditInitiator =
-  | { kind: "person" }
-  | { kind: "deployment" }
-  | { kind: "routine"; id: string }
-  | { kind: "responsibility"; id: string }
-  | { kind: "memory"; id: string }
-  | { kind: "handoff"; id: string; origin?: AuditInitiator };
+export type { AuditInitiator };
 
 export const PERSON_INITIATOR: AuditInitiator = { kind: "person" };
 
@@ -716,6 +710,20 @@ export async function recordAuditEvent(
     ...event,
     payload: redactAuditPayload(event.payload) as Record<string, unknown>,
   });
+}
+
+/**
+ * Where code that should not hold the store writes to the trail.
+ *
+ * A sink rather than the store, so that code never touches the database. Written through
+ * `recordAuditEvent`, which redacts the payload the same way every other write does.
+ */
+export type AuditSink = {
+  record: (event: AuditEventInput) => Promise<void>;
+};
+
+export function auditSink(store: AuditStore): AuditSink {
+  return { record: (event) => recordAuditEvent(store, event) };
 }
 
 function initiatorColumns(initiator: AuditInitiator | undefined) {
