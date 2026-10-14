@@ -178,6 +178,17 @@ function build(
      * the only way to ask is to put the row in its hand.
      */
     attemptAs?: { holder?: string; userId?: string | null };
+    /**
+     * What the COMPLETION does, and the two values are not the same failure.
+     *
+     * `rolls-back` throws instead of writing — the transaction never ran, so nothing exists.
+     * `commits-then-throws` runs the real transaction to completion and THEN rejects, which is a
+     * connection lost on the way back from a COMMIT the server already applied: the grant is
+     * written down and the caller is told only that something failed. The route may not answer
+     * those two the same way, and no broken `database` handle can pose the second — a handle that
+     * breaks the transaction rolls it back, which is the first.
+     */
+    completion?: "rolls-back" | "commits-then-throws";
   } = {},
 ) {
   const handle = options.database ?? database;
@@ -229,7 +240,21 @@ function build(
               : ({ ...row, ...options.attemptAs } as typeof row);
           },
         }
-      : pluginStore;
+      : options.completion
+        ? {
+            ...pluginStore,
+            completeAuthorizationAttempt: async (
+              input: Parameters<
+                typeof pluginStore.completeAuthorizationAttempt
+              >[0],
+            ) => {
+              if (options.completion === "commits-then-throws") {
+                await pluginStore.completeAuthorizationAttempt(input);
+              }
+              throw completionFailure();
+            },
+          }
+        : pluginStore;
   args[29] =
     "brokerBag" in options ? options.brokerBag : { broker, provider: "arcade" };
   return createApp(...args);
@@ -1455,6 +1480,193 @@ describe("a return leg that completes", () => {
     expect(mentionsOf(events, EMAIL)).toEqual([]);
     expect(mentionsOf(connections, TOKEN)).toEqual([]);
     expect(mentionsOf(connections, EMAIL)).toEqual([]);
+  });
+});
+
+/**
+ * THE THROW A COMPLETION REALLY FAILS WITH, SHAPED AS DRIZZLE SHAPES IT.
+ *
+ * Not a bare `new Error("boom")`, because the thing the log line has to be careful about is exactly
+ * what a bare error does not carry. drizzle wraps a failed statement as an error whose OWN message
+ * is `Failed query: <the statement>` plus `params: <every bound value>`, with the driver's
+ * complaint on `cause` — and the values bound by this particular statement are the granted scopes
+ * and the account. This one carries the suite's live access token and the person's address in the
+ * same places, so a log line that quoted `.message` would print both, and `reasonWithoutStatement`
+ * is the only reason it does not.
+ */
+function completionFailure(): Error {
+  return Object.assign(
+    new Error(
+      `Failed query: insert into "brokered_connections" ... params: ${TOKEN}, ${EMAIL}`,
+    ),
+    {
+      query: 'insert into "brokered_connections" ...',
+      params: [TOKEN, EMAIL],
+      cause: new Error("canceling statement due to statement timeout"),
+    },
+  );
+}
+
+/**
+ * Everything the deployment said while the request ran, AS THE ARGUMENTS THEMSELVES.
+ *
+ * Not `args.map(String).join(" ")`, for the reason `harvest` gives at length: a value logged inside
+ * an object flattens to `[object Object]`, which is the shape a leak hides in.
+ */
+async function heard<T>(work: () => T | Promise<T>): Promise<[T, unknown[][]]> {
+  const said: unknown[][] = [];
+  const before = globalThis.console;
+  const hear = (...args: unknown[]) => said.push(args);
+  globalThis.console = {
+    ...before,
+    log: hear,
+    info: hear,
+    warn: hear,
+    error: hear,
+    debug: hear,
+  } as typeof console;
+  try {
+    return [await work(), said];
+  } finally {
+    globalThis.console = before;
+  }
+}
+
+/** Every line the run produced, as the JSON each one is written as. */
+const lines = (said: unknown[][]): string[] =>
+  said.map((args) => args.map((arg) => String(arg)).join(" "));
+
+/**
+ * A COMPLETION THAT COULD NOT REPORT ITSELF, WHICH IS TWO DIFFERENT FACTS AND WAS ONE ANSWER.
+ *
+ * This leg is the only one in this file where a grant can be LIVE AT THE VENDOR while this
+ * deployment holds nothing — the person consented at the vendor before anything here was asked.
+ * The handler's blanket `catch` answered `not-recorded` for every throw inside it and logged
+ * nothing at all, so the two halves of that were both wrong at once: a completion that HAD
+ * committed was reported to the person as not recorded, and a completion that had genuinely been
+ * lost left an operator no trace to act on.
+ */
+describe("a completion the deployment could not report", () => {
+  test("one that rolled back refuses as not-recorded AND leaves an operator a line", async () => {
+    await giveAttempt({ authId: MINTED, ageMinutes: 1 });
+
+    const [response, said] = await heard(() =>
+      verify(ACTOR, "?flow_id=flow-abc", { completion: "rolls-back" }),
+    );
+
+    await expectRefusal(response, "not-recorded");
+    // The sentence is true, and these two are what make it so.
+    await expectNothingWritten();
+    const row = await attemptRow();
+    expect(row?.completedAt).toBeNull();
+
+    /*
+     * AND IT WAS SAID OUT LOUD. The vendor's grant is live with nothing here recording it, and the
+     * `ar_…` is what lets an operator find that flow at the vendor and end it — the same thing
+     * `arcade-mint-not-recorded` carries at the other end of this lifecycle.
+     */
+    const line = lines(said).find((text) =>
+      text.includes("arcade-completion-not-recorded"),
+    );
+    expect(line).toBeDefined();
+    expect(line).toContain(MINTED);
+    expect(line).toContain(ACTION);
+    expect(line).toContain(APP);
+    // The driver's complaint, which is the useful half and names nothing anybody sent.
+    expect(line).toContain("canceling statement due to statement timeout");
+  });
+
+  /**
+   * AND NOT ONE WORD OF THE VENDOR'S IN IT. The error this completion fails with carries the live
+   * access token and the person's address where drizzle puts them, which is the one shape this
+   * route's logging has to survive; the status reply behind it carries them too.
+   */
+  test("the line it leaves carries no token, no address and no scope list", async () => {
+    await giveAttempt({ authId: MINTED, ageMinutes: 1 });
+    statusAnswer = async () =>
+      ({
+        status: "completed",
+        userId: ACTOR,
+        scopes: ["gmail.read"],
+        token: TOKEN,
+        context: { token: TOKEN },
+        user_info: { email: EMAIL },
+      }) as never;
+
+    const [response, said] = await heard(() =>
+      verify(ACTOR, "?flow_id=flow-abc", { completion: "rolls-back" }),
+    );
+
+    await expectRefusal(response, "not-recorded");
+    expect(
+      lines(said).find((text) =>
+        text.includes("arcade-completion-not-recorded"),
+      ),
+    ).toBeDefined();
+    expect(mentionsOf(said, TOKEN)).toEqual([]);
+    expect(mentionsOf(said, EMAIL)).toEqual([]);
+    expect(mentionsOf(await asDelivered(response), TOKEN)).toEqual([]);
+  });
+
+  /**
+   * THE FALSE NEGATIVE, WHICH IS THE HALF THAT COSTS THE PERSON SOMETHING.
+   *
+   * The transaction committed and the call rejected anyway — a connection lost on the way back
+   * from a COMMIT the server had already applied. The grant is live at the vendor AND written down
+   * here. Told `not-recorded`, this person starts over and mints a second consent at the vendor
+   * against a connection they already hold; the route has to ask the row the completion serializes
+   * on instead of reading the throw as a verdict.
+   */
+  test("one that committed and then threw lands the person, and never says not-recorded", async () => {
+    await giveAttempt({ authId: MINTED, ageMinutes: 1 });
+
+    const [response, said] = await heard(() =>
+      verify(ACTOR, "?flow_id=flow-abc", { completion: "commits-then-throws" }),
+    );
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe(LANDING);
+    expect(response.headers.get("location")).not.toContain("authorized=");
+
+    // Because it IS recorded, which is the whole of why the sentence above would have been a lie.
+    const { connections, events } = await written();
+    expect({ connections: connections.length, events: events.length }).toEqual({
+      connections: 1,
+      events: 1,
+    });
+    const row = await attemptRow();
+    expect(row?.outcome).toBe("completed");
+
+    // And an operator is told, because a write that cannot report itself is still worth knowing.
+    const line = lines(said).find((text) =>
+      text.includes("arcade-completion-unacknowledged"),
+    );
+    expect(line).toBeDefined();
+    expect(line).toContain(MINTED);
+    expect(mentionsOf(said, TOKEN)).toEqual([]);
+  });
+
+  /**
+   * AND THE BLANKET `catch` SPEAKS TOO. It stands over the reads that happen before the completion,
+   * and it used to swallow every one of them in silence — a `Location` for the person and nothing
+   * whatever for whoever has to work out why this route started refusing everybody. Its line says
+   * which side of the completion it came from, because that is the one thing the person's refusal
+   * code cannot distinguish.
+   */
+  test("a throw before the completion is logged as well as answered", async () => {
+    await giveAttempt({ authId: MINTED, ageMinutes: 1 });
+
+    const [response, said] = await heard(() =>
+      verify(ACTOR, "?flow_id=flow-abc", { attemptReadThrows: true }),
+    );
+
+    await expectRefusal(response, "not-recorded");
+    const line = lines(said).find((text) =>
+      text.includes("arcade-verify-failed"),
+    );
+    expect(line).toBeDefined();
+    expect(line).toContain('"recorded":false');
+    await expectNothingWritten();
   });
 });
 

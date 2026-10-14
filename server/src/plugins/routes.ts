@@ -3079,6 +3079,15 @@ export function createPluginRoutes(
      */
     const flowId = (context.req.query("flow_id") ?? "").trim();
 
+    /**
+     * WHETHER THE COMPLETION TRANSACTION IS KNOWN TO HAVE COMMITTED, and the one thing the two
+     * `catch`es below have to agree about. Declared out here, ahead of the `try`, because the
+     * blanket `catch` has to be able to tell a throw over a live, recorded grant from a throw over
+     * nothing at all — which is the distinction it used to answer `not-recorded` for both halves
+     * of. Set in exactly one place: the completion's own `catch` below.
+     */
+    let recorded = false;
+
     /*
      * EVERYTHING FROM HERE IS IN ONE `try`, FOR THE REASON `/oauth/callback` BELOW GIVES FOR ITS
      * OWN: so it is the whole body rather than each call. A blanket `catch` is a promise about the
@@ -3097,9 +3106,10 @@ export function createPluginRoutes(
      * THE STATED EXCEPTION IS UNTOUCHED BY THIS. The 403 for a session with no role RETURNS, and a
      * `catch` sees throws and not returns, so it keeps its JSON body.
      *
-     * The inner `try`s below take the vendor's throws first, so no refusal code changes here. The
-     * completion transaction is all-or-nothing, so a throw out of it has written neither the
-     * connection row nor its audit entry.
+     * The inner `try`s below take the vendor's throws first, so no refusal code changes here. AND
+     * THE COMPLETION NOW HAS ONE OF ITS OWN, which is not a hedge against this `catch` but the
+     * thing this `catch` cannot do: it is the only step on this leg that can leave a grant RECORDED
+     * on the way out, so it is the only one that can say whether `not-recorded` is true. See it.
      */
     try {
       let signedIn = false;
@@ -3390,15 +3400,6 @@ export function createPluginRoutes(
       const authProvider = await withVendorDeadline(() =>
         composio.broker.authProviderOf(fresh.toolkit),
       ).catch(() => null);
-      await store.completeAuthorizationAttempt({
-        actorId,
-        authId,
-        toolkit: fresh.toolkit,
-        account: fresh.account,
-        action: attempt.action,
-        scopes: settled.scopes,
-        authProvider: authProvider ?? "",
-      });
 
       /*
        * AND THE LANDING COMES FROM THE ATTEMPT ROW (D18), NEVER FROM `next_uri`. The vendor refuses
@@ -3416,14 +3417,114 @@ export function createPluginRoutes(
        *
        * `connectedAccountsUrlFor` with `{ serverId }` answers a query-less path, so appending
        * `?action=` here cannot produce a second `?`.
+       *
+       * BUILT BEFORE THE WRITE RATHER THAN AFTER IT, so that the only thing standing between a
+       * committed grant and the person's browser is the redirect itself. Both reads are off the
+       * attempt row and neither calls anybody.
        */
-      return context.redirect(
-        `${connectedAccountsUrlFor(connect?.appUrl, {
-          serverId: attempt.serverId,
-        })}?action=${encodeURIComponent(attempt.action)}`,
-        303,
+      const landing = `${connectedAccountsUrlFor(connect?.appUrl, {
+        serverId: attempt.serverId,
+      })}?action=${encodeURIComponent(attempt.action)}`;
+
+      /*
+       * THE COMPLETION HAS ITS OWN `catch`, AND IT IS THE ONLY PLACE ON THIS LEG THAT MAY ANSWER
+       * `not-recorded`.
+       *
+       * THE DEFECT IT CLOSES, FIRST HALF: the blanket `catch` below used to answer `not-recorded`
+       * for every throw in this handler INCLUDING ONE RAISED AFTER THIS TRANSACTION HAD COMMITTED.
+       * The grant is live at the vendor and the row is written here, and the person was told it was
+       * not recorded — so they start over, mint a second consent against a connection they already
+       * have, and the one sentence this leg exists to get right is the one it got backwards.
+       *
+       * THE TWO ARE NOT TOLD APART BY WHETHER THE CALL THREW. The transaction is all-or-nothing
+       * ({@link PluginStore.completeAuthorizationAttempt}), but "the call rejected" and "the work
+       * rolled back" are different facts: a connection lost on the way back from a COMMIT the
+       * server already applied rejects here over a grant that IS written down. So the row the
+       * transaction serializes on is ASKED
+       * ({@link PluginStore.authorizationAttemptCompleted}) rather than inferred from the throw,
+       * and that answer — not the throw — decides which sentence the person gets. A probe that
+       * cannot be reached either reads as not recorded, which is the reading that sends somebody
+       * back to try again rather than away believing in a grant that is not there; the completion
+       * is idempotent on `completed_at IS NULL`, so a retry over a grant that did land writes
+       * nothing twice.
+       *
+       * SECOND HALF: IT IS LOGGED, which the blanket `catch` did not do at all. This is the one leg
+       * where a vendor grant can be LIVE with nothing here recording it, and it was also the one
+       * leg that left an operator no trace of that happening — every sibling on this route logs,
+       * and this is the same line `arcade-mint-not-recorded` writes at the other end of the same
+       * lifecycle, for the same reason: the `ar_…` is what lets an operator find that flow at the
+       * vendor and end it.
+       *
+       * WHAT IS IN THE LINE IS EXACTLY WHAT IS SAFE TO PUT THERE. The authorization id, the app and
+       * the action: the first is the handle the mint log already carries, and the other two are
+       * this deployment's own catalogue names. NOT the `authorization.url`, which is the bearer
+       * capability whoever opens it attaches the account with and which this handler never holds a
+       * copy of anyway; NOT the status reply, which carries a LIVE PROVIDER ACCESS TOKEN and the
+       * person's profile behind D31's narrowing; NOT the granted scopes and NOT the vendor user id,
+       * which name the person and buy an operator nothing the id does not. The error goes through
+       * {@link reasonWithoutStatement}, because a `DrizzleQueryError`'s own message is the failed
+       * statement and every value bound to it — which here includes the scope list and the account.
+       */
+      try {
+        await store.completeAuthorizationAttempt({
+          actorId,
+          authId,
+          toolkit: fresh.toolkit,
+          account: fresh.account,
+          action: attempt.action,
+          scopes: settled.scopes,
+          authProvider: authProvider ?? "",
+        });
+        recorded = true;
+      } catch (error) {
+        recorded = await store
+          .authorizationAttemptCompleted({ actorId, authId })
+          .catch(() => false);
+        console.error(
+          JSON.stringify({
+            type: recorded
+              ? "arcade-completion-unacknowledged"
+              : "arcade-completion-not-recorded",
+            server: attempt.serverId,
+            action: attempt.action,
+            authorizationId: authId,
+            note: recorded
+              ? "A per-action consent was written down and the write then failed to report itself. The attempt row says it committed, so the person was sent on to the page that says so and nothing needs redoing."
+              : "A person completed a per-action consent at the vendor and this deployment could not write it down. The authorization named here is LIVE at the vendor with nothing here recording it; the person was told so, and the attempt row stands until its TTL.",
+            error: reasonWithoutStatement(error),
+          }),
+        );
+        if (!recorded) return refusedWith("not-recorded");
+      }
+
+      return context.redirect(landing, 303);
+    } catch (error) {
+      /*
+       * AND THE BLANKET `catch` IS NO LONGER WHERE A LOST COMPLETION GOES QUIET. It stands over the
+       * reads that happen BEFORE the completion — the guard's session and role reads, the attempt
+       * read, and the refusals' own string building — so `not-recorded` is true of everything that
+       * reaches it: the completion above answers for itself, under its own `catch`, and never falls
+       * through to here still thinking it might have landed.
+       *
+       * `recorded` IS LOGGED RATHER THAN ASSUMED FALSE. The only step left after the completion is
+       * the redirect, and the sole way it can throw is a `Location` this deployment's own `appUrl`
+       * made unencodable — which would equally defeat the refusal built below, so there is no
+       * honest second answer to give here and the flag is what makes the claim checkable in a
+       * deployment rather than only in this comment.
+       *
+       * LOGGED AT ALL, which is the second half of what this leg was missing: every sibling on this
+       * route reports a failure it swallowed, and this one reported nothing. With the same
+       * restraint as the completion's own line above and nothing of the vendor's in it, through
+       * {@link reasonWithoutStatement} for the reason given there.
+       */
+      console.error(
+        JSON.stringify({
+          type: "arcade-verify-failed",
+          recorded,
+          note: "A check on the verifier raised instead of answering. The person was sent back to the list with a failure.",
+          error: reasonWithoutStatement(error),
+        }),
       );
-    } catch {
       return refusedWith("not-recorded");
     }
   });
