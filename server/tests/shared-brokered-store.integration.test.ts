@@ -235,6 +235,95 @@ describe("a shared app", () => {
     expect(rows).toEqual([{ connectedBy: "admin-b" }]);
   });
 
+  /*
+   * THE SUPERSEDE IS CONDITIONAL, AND THAT IS ITS OWN GUARD. A confirm or re-check that names no
+   * administrator must not blank out the one an earlier connect recorded.
+   */
+  test("a write that names no administrator keeps the one already recorded", async () => {
+    const store = freshStore();
+    await store.recordBrokeredConnection({
+      toolkit: app,
+      account: { holder: "deployment", vendorUserId: VENDOR_ID },
+      connectedBy: "admin-a",
+      verified: true,
+      probeAction: null,
+    });
+    await store.recordBrokeredConnection({
+      toolkit: app,
+      account: { holder: "deployment", vendorUserId: VENDOR_ID },
+      verified: false,
+      probeAction: null,
+    });
+    const rows = await database
+      .select({ connectedBy: brokeredConnections.connectedBy })
+      .from(brokeredConnections)
+      .where(eq(brokeredConnections.app, app));
+    expect(rows).toEqual([{ connectedBy: "admin-a" }]);
+  });
+
+  /*
+   * THE ROW NAMES THE IDENTITY THE LATEST CONNECTION WAS MADE UNDER. Calls go out under the row's
+   * `vendor_user_id`, so a reconnect under a new identity that rewrote the verdict and kept the old
+   * id sent every later call to the account the verdict was not about.
+   */
+  test.each(["deployment", "person"] as const)(
+    "a %s reconnect under a NEW vendor identity moves the row to it",
+    async (holder) => {
+      const store = freshStore();
+      const as = (vendorUserId: string) =>
+        holder === "deployment"
+          ? { holder, vendorUserId }
+          : { holder, userId: asker, vendorUserId };
+      await store.recordBrokeredConnection({
+        toolkit: app,
+        account: as(`old-${suite}`),
+        connectedBy: "admin-a",
+        verified: true,
+        probeAction: null,
+      });
+      await store.recordBrokeredConnection({
+        toolkit: app,
+        account: as(`new-${suite}`),
+        connectedBy: "admin-b",
+        verified: true,
+        probeAction: null,
+      });
+      const rows = await database
+        .select({ vendorUserId: brokeredConnections.vendorUserId })
+        .from(brokeredConnections)
+        .where(eq(brokeredConnections.app, app));
+      expect(rows).toEqual([{ vendorUserId: `new-${suite}` }]);
+    },
+  );
+
+  /*
+   * AND A RE-CHECK NEVER RE-POINTS IT. The `only` branch records a check of a connection that
+   * exists; it is not evidence of a grant under any identity, so it may not move the row's.
+   */
+  test("a re-check write under another identity leaves the row's identity alone", async () => {
+    const store = freshStore();
+    await store.recordBrokeredConnection({
+      toolkit: app,
+      account: { holder: "deployment", vendorUserId: VENDOR_ID },
+      connectedBy: "admin-a",
+      verified: true,
+      probeAction: null,
+    });
+    const { wrote } = await store.recordBrokeredConnection({
+      toolkit: app,
+      account: { holder: "deployment", vendorUserId: `other-${suite}` },
+      verified: false,
+      probeAction: "GITHUB_LIST_ISSUES",
+      only: "a row that is still there",
+    });
+    expect(wrote).toBe(true);
+    const rows = await database
+      .select({ vendorUserId: brokeredConnections.vendorUserId })
+      .from(brokeredConnections)
+      .where(eq(brokeredConnections.app, app));
+    expect(rows).toEqual([{ vendorUserId: VENDOR_ID }]);
+  });
+
   test("removing the app revokes the deployment account too", async () => {
     const store = freshStore();
     await seedShared(store, true);

@@ -5493,12 +5493,26 @@ export function createPluginStore(options: PluginStoreOptions) {
         })
         // Editing keeps the owner it already had. Whose a skill is, is not something a re-save
         // should quietly change, and the route has already checked this person may edit it.
+        // `installed_by` is left alone too: it records who first installed it, not who last saved.
         .onConflictDoUpdate({
           target: skills.slug,
           set: {
             title: input.title,
             summary: input.summary,
             instructions: input.instructions,
+            /*
+             * WHERE THE TEXT NOW COMES FROM, WRITTEN BESIDE THE TEXT.
+             *
+             * CRITERION. A save through here leaves `origin` saying what it says on an insert.
+             *
+             * REASON. `origin = 'catalogue'` is the condition the package seed (`tenant-package.ts`,
+             * `setWhere`) overwrites a skill on at every boot. Leaving it standing after somebody
+             * edited a shipped skill here kept the row eligible, so the next boot silently replaced
+             * their edit with the package's text — the exact outcome that seed's own comment says
+             * it exists to prevent ("rather than the package silently replacing something somebody
+             * wrote").
+             */
+            origin: input.origin ?? "yours",
             updatedAt: new Date(),
           },
         });
@@ -6518,6 +6532,11 @@ export function createPluginStore(options: PluginStoreOptions) {
          * AN UPDATE AND NEVER AN INSERT, and `returning` is how "there was a row" is ANSWERED rather
          * than assumed. An update that matches nothing is not a failure — it is the row having been
          * deleted while the vendor was being asked — and the caller has a sentence for that.
+         *
+         * `vendor_user_id` IS DELIBERATELY NOT IN THIS `set`. This branch records a CHECK of a
+         * connection that already exists, never a connection; it may not re-point the row at a
+         * different vendor identity, because only a connect or a confirm (the upsert below) is
+         * evidence of a grant held under the identity it names.
          */
         const written = await database
           .update(brokeredConnections)
@@ -6527,6 +6546,20 @@ export function createPluginStore(options: PluginStoreOptions) {
         return { verifiedAt, wrote: written.length > 0 };
       }
 
+      /*
+       * THE VENDOR IDENTITY THIS WRITE'S EVIDENCE IS ABOUT, WRITTEN ON BOTH BRANCHES OF THE UPSERT.
+       *
+       * CRITERION. After this upsert the row names `input.account.vendorUserId`, whatever it named
+       * before.
+       *
+       * REASON. Every caller of the upsert has just heard from the vendor about the account held
+       * under THIS id — a consent, or the vendor confirming it holds an account — and
+       * `connectionTokenFor` sends calls out under the ROW's `vendor_user_id`, never a recomputed
+       * one. A conflict arm that rewrote `verified`/`verified_at` and left the old id standing
+       * wrote a verdict about one account onto a row naming another, and every later call landed
+       * in the account the evidence was not about. The insert always set it; the arms did not.
+       */
+      const connectedAs = input.account.vendorUserId;
       await database
         .insert(brokeredConnections)
         .values({
@@ -6567,7 +6600,7 @@ export function createPluginStore(options: PluginStoreOptions) {
                   brokeredConnections.userId,
                 ],
                 targetWhere: sql`${brokeredConnections.holder} = 'person'`,
-                set,
+                set: { ...set, vendorUserId: connectedAs },
               }
             : {
                 target: [brokeredConnections.provider, brokeredConnections.app],
@@ -6577,10 +6610,15 @@ export function createPluginStore(options: PluginStoreOptions) {
                 // which `set` otherwise never said, leaving the row crediting whoever
                 // connected it the first time. Added only when this call names a
                 // `connectedBy` at all, so a re-check or a confirm that passes none does not
-                // blank out the administrator an earlier connect already recorded.
+                // blank out the administrator an earlier connect already recorded. That
+                // condition is the point: do NOT make this unconditional.
                 set: input.connectedBy
-                  ? { ...set, connectedBy: input.connectedBy ?? null }
-                  : set,
+                  ? {
+                      ...set,
+                      vendorUserId: connectedAs,
+                      connectedBy: input.connectedBy,
+                    }
+                  : { ...set, vendorUserId: connectedAs },
               },
         );
       return { verifiedAt, wrote: true };
@@ -6887,7 +6925,10 @@ export function createPluginStore(options: PluginStoreOptions) {
                     brokeredConnections.userId,
                   ],
                   targetWhere: sql`${brokeredConnections.holder} = 'person'`,
-                  set,
+                  // The identity the grant was just made under, for `recordBrokeredConnection`'s
+                  // reason: calls go out under the row's id, so a re-consent that left the old one
+                  // standing sent them to an account this consent says nothing about.
+                  set: { ...set, vendorUserId: input.account.vendorUserId },
                 }
               : {
                   target: [
@@ -6895,7 +6936,11 @@ export function createPluginStore(options: PluginStoreOptions) {
                     brokeredConnections.app,
                   ],
                   targetWhere: sql`${brokeredConnections.holder} = 'deployment'`,
-                  set: { ...set, connectedBy },
+                  set: {
+                    ...set,
+                    vendorUserId: input.account.vendorUserId,
+                    connectedBy,
+                  },
                 },
           );
 

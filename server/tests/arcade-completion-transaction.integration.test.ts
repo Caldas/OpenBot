@@ -313,6 +313,57 @@ describe("completeAuthorizationAttempt", () => {
     expect(connections[0]?.connectedBy).toBe(second);
   });
 
+  /*
+   * THE ROW NAMES THE IDENTITY THE LATEST CONSENT WAS GIVEN UNDER. Calls go out under the row's
+   * `vendor_user_id` (`connectionTokenFor` reads it back rather than recomputing it), so a
+   * re-consent under a new identity that rewrote `verified`/`verified_at` and left the old id
+   * standing sent every later call to an account this consent says nothing about. Both holders,
+   * because both conflict arms used to omit it.
+   */
+  test.each(["deployment", "person"] as const)(
+    "a %s re-consent under a NEW vendor identity moves the row to it",
+    async (holder) => {
+      const a = await actor(`reid-${holder}`);
+      const app = toolkit(`reid-${holder}`);
+      const as = (vendorUserId: string): AccountRef =>
+        holder === "deployment"
+          ? { holder, vendorUserId }
+          : { holder, userId: a, vendorUserId };
+
+      const consent = async (authId: string, ref: AccountRef) => {
+        const claimed = await store.claimAuthorizationAttempt({
+          actorId: a,
+          serverId,
+          action: "Google.SendEmail",
+          account: ref,
+        });
+        if (!claimed.claimed) throw new Error("claim failed");
+        const minted = await store.recordAuthorizationMint({
+          actorId: a,
+          createdAt: claimed.attempt.createdAt,
+          authId,
+        });
+        if (!minted) throw new Error("mint failed");
+        await store.completeAuthorizationAttempt({
+          actorId: a,
+          authId,
+          toolkit: app,
+          account: ref,
+          action: "Google.SendEmail",
+          scopes: ["gmail.send"],
+          authProvider: "google",
+        });
+      };
+
+      await consent(`ar_reid_${holder}_1`, as(`old-${app}`));
+      await consent(`ar_reid_${holder}_2`, as(`new-${app}`));
+
+      const connections = await connectionsFor(app);
+      expect(connections.length).toBe(1);
+      expect(connections[0]?.vendorUserId).toBe(`new-${app}`);
+    },
+  );
+
   test("two CONCURRENT calls write exactly one connection and one audit event, and the loser answers as the winner would", async () => {
     const a = await actor("race");
     const app = toolkit("race");
