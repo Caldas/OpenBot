@@ -394,9 +394,22 @@ export type AuthConfigOutcome = "created" | "standing" | "not-needed";
  * when it is created, so every action in a toolkit shares one state and one scope list; N identical
  * entries is the honest rendering of a toolkit-wide grant, not a stub standing in for a missing
  * answer.
+ *
+ * `authorized` SAYS WHY THE ACTION IS USABLE, BECAUSE TWO DIFFERENT FACTS ANSWER IT. `held` is an
+ * authorization this account holds — a consent somebody gave, which a later consent screen is
+ * talking about. `not-required` is the vendor publishing no authorization for the action at all
+ * (Arcade's `Apollo`): it is usable, and no approval ever withheld it or will ever grant it. Both
+ * are `authorized` because both can be called; they are told apart because the consent copy's "approving this
+ * approves all N" counts only the first, and an action nobody has to approve is not something an
+ * approval covers. REQUIRED, not optional: an absent field would quietly read as one of the two.
  */
 export type GrantState =
-  | { action: string; state: "authorized"; scopes: string[] }
+  | {
+      action: string;
+      state: "authorized";
+      scopes: string[];
+      authorization: "held" | "not-required";
+    }
   | { action: string; state: "needs-consent"; scopes: string[] }
   | { action: string; state: "needs-operator"; missing: string[] }
   | { action: string; state: "unknown"; reason: string };

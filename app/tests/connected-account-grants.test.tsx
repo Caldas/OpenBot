@@ -237,11 +237,13 @@ const GMAIL: GrantState[] = [
     action: "Gmail.ListEmails",
     state: "authorized",
     scopes: ["gmail.readonly"],
+    authorization: "held",
   },
   {
     action: "Gmail.ListThreads",
     state: "authorized",
     scopes: ["gmail.readonly"],
+    authorization: "held",
   },
   { action: "Gmail.SendEmail", state: "needs-consent", scopes: ["gmail.send"] },
   {
@@ -324,6 +326,7 @@ test("unknown offers Retry and never a speculative Authorize", async () => {
         action: "Gmail.ListEmails",
         state: "authorized",
         scopes: ["gmail.readonly"],
+        authorization: "held",
       },
     ],
   });
@@ -385,9 +388,19 @@ test("an all-or-nothing app renders as ONE group containing everything", async (
     provider: "arcade",
     connected: true,
     grants: [
-      { action: "Github.A", state: "authorized", scopes: [] },
+      {
+        action: "Github.A",
+        state: "authorized",
+        scopes: [],
+        authorization: "held",
+      },
       { action: "Github.B", state: "needs-consent", scopes: [] },
-      { action: "Github.C", state: "authorized", scopes: [] },
+      {
+        action: "Github.C",
+        state: "authorized",
+        scopes: [],
+        authorization: "held",
+      },
     ],
   });
   const view = renderScreen();
@@ -406,8 +419,18 @@ test("authorized actions are listed first, and the unauthorized ones follow with
     connected: true,
     grants: [
       { action: "Github.B", state: "needs-consent", scopes: [] },
-      { action: "Github.C", state: "authorized", scopes: [] },
-      { action: "Github.A", state: "authorized", scopes: [] },
+      {
+        action: "Github.C",
+        state: "authorized",
+        scopes: [],
+        authorization: "held",
+      },
+      {
+        action: "Github.A",
+        state: "authorized",
+        scopes: [],
+        authorization: "held",
+      },
       { action: "Github.D", state: "unknown", reason: "Try again." },
     ],
   });
@@ -429,6 +452,7 @@ test("past the first ten unauthorized actions the rest wait behind the search", 
       action: "Gmail.ListEmails",
       state: "authorized",
       scopes: ["gmail.readonly"],
+      authorization: "held",
     },
     ...Array.from({ length: 12 }, (_, index): GrantState => {
       const name = String.fromCharCode(97 + index);
@@ -616,6 +640,45 @@ test("pressing Authorize renders consentCopy's sentence and redirects nowhere ye
       JSON.stringify({ action: "Gmail.SendEmail" }),
     ]),
   );
+});
+
+test("on screen, the N an approval approves leaves out every action that needs no authorization", async () => {
+  // An all-unscoped app where two actions wait on the approval, one is held, and three need none.
+  const grants: GrantState[] = [
+    { action: "Tk.A", state: "needs-consent", scopes: [] },
+    { action: "Tk.B", state: "needs-consent", scopes: [] },
+    { action: "Tk.C", state: "authorized", scopes: [], authorization: "held" },
+    ...["Tk.X", "Tk.Y", "Tk.Z"].map(
+      (action): GrantState => ({
+        action,
+        state: "authorized",
+        scopes: [],
+        authorization: "not-required",
+      }),
+    ),
+  ];
+  const covered = grants.filter(
+    (grant) =>
+      grant.state === "needs-consent" ||
+      (grant.state === "authorized" && grant.authorization === "held"),
+  ).length;
+  // The fixture only discriminates if counting everything would give a different number.
+  expect(covered).not.toBe(grants.length);
+  install({ provider: "arcade", connected: true, grants });
+  const view = renderScreen();
+  await waitFor(() => row(view, "Tk.A"));
+  fireEvent.click(row(view, "Tk.A").querySelector("button") as HTMLElement);
+  const panel = await view.findByRole("group", {
+    name: /Before you authorize/,
+  });
+  expect(panel.textContent).toContain(
+    `approving this approves all ${covered}.`,
+  );
+  expect(row(view, "Tk.X").textContent).toContain("Needs no authorization.");
+  const together = view.container.querySelector(
+    '[data-grant-group="whole-app"]',
+  );
+  expect(together?.querySelectorAll("[data-action]").length).toBe(covered);
 });
 
 test("the consent copy never promises that only the named action becomes usable", async () => {

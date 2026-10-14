@@ -93,7 +93,14 @@ export function matchingApps(apps: ComposioApp[]): ComposioApp[] {
   return [...apps].sort((left, right) => left.name.localeCompare(right.name));
 }
 
-/** One action of a provider's app, as far as consent is concerned: its name and the scopes it requests. */
+/**
+ * One action of a provider's app, as far as consent is concerned: its name and the scopes it requests.
+ *
+ * A LIST OF THESE IS THE SET AN APPROVAL COVERS AND NOTHING WIDER — `consentActionsFrom` in
+ * `grants.ts` builds it through `coveredByApproval`, and an action needing no authorization is never
+ * in it. So the "N" in "approving this approves all N" below is `actions.length` because, and only
+ * because, every entry is something approving genuinely approves.
+ */
 export type ConsentAction = { name: string; scopes: readonly string[] };
 
 export type ConsentCopy = {

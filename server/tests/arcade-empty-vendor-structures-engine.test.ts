@@ -178,7 +178,12 @@ describe("a secrets requirement that is not a list is unreadable, not satisfied"
     const { broker } = createArcadeClient("never-dialled");
 
     expect(await broker.grantsFor({ account, toolkit: "Gmail" })).toEqual([
-      { action: "Gmail.Send", state: "authorized", scopes: [] },
+      {
+        action: "Gmail.Send",
+        state: "authorized",
+        scopes: [],
+        authorization: "held",
+      },
     ]);
   });
 

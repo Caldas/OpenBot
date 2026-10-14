@@ -187,7 +187,12 @@ describe("whose identity is asked about", () => {
   test("a personal app asks upstream as the viewer", async () => {
     const n = await run("personal");
     answer = async () => [
-      { action: "Gmail.ListEmails", state: "authorized", scopes: ["a"] },
+      {
+        action: "Gmail.ListEmails",
+        state: "authorized",
+        scopes: ["a"],
+        authorization: "held",
+      },
     ];
     const response = await grants(n.viewer, "user", n.id);
     expect(response.status).toBe(200);

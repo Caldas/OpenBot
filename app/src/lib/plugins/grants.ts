@@ -9,7 +9,17 @@ import type { ConsentAction } from "./enablement-notes";
  * `app/` never imports from `server/`; the route's own docblock is the contract.
  */
 export type GrantState =
-  | { action: string; state: "authorized"; scopes: string[] }
+  | {
+      action: string;
+      state: "authorized";
+      scopes: string[];
+      /**
+       * `held`: this account holds an authorization for it. `not-required`: the provider publishes
+       * no authorization for it at all, so it is usable and no approval ever touches it. See
+       * {@link coveredByApproval}, the one place this is turned into what an approval covers.
+       */
+      authorization: "held" | "not-required";
+    }
   | { action: string; state: "needs-consent"; scopes: string[] }
   | { action: string; state: "needs-operator"; missing: string[] }
   | { action: string; state: "unknown"; reason: string };
@@ -82,13 +92,39 @@ export function couldNotRead(
   );
 }
 
-/** The actions the consent copy reasons about: those that name a permission or could be asked for. */
+/**
+ * Whether approving at this app is what makes `grant` usable — THE ONE DEFINITION OF THE SET THE
+ * CONSENT COPY COUNTS.
+ *
+ * WHAT A PERSON CONSENTS TO IS THE AUTHORIZATION, so an action belongs here exactly when that
+ * authorization is what stands between it and being called: one somebody still has to approve
+ * (`needs-consent`), or one already approved and held (`authorized`, `held`). The "N" in "approving
+ * this approves all N" is the size of this set and of nothing else.
+ *
+ * AN ACTION THAT NEEDS NO AUTHORIZATION IS NOT IN IT. It is usable before anybody approves anything
+ * and stays usable if they refuse, so telling a person that approving "approves" it inflates what
+ * they are being asked to agree to by actions nothing ever withheld. That inflation is not
+ * hypothetical: when the server began reading an absent authorization block as `authorized` rather
+ * than `unknown`, every such action silently joined this count. So the decision is made HERE, on the
+ * field that says why an action is authorized, and never on `state` alone.
+ *
+ * `needs-operator` and `unknown` are not in it either: whether an approval would reach them cannot
+ * be read off the answer, so they are left out of the number rather than guessed into it.
+ */
+export function coveredByApproval(
+  grant: GrantState,
+): grant is Extract<GrantState, { state: "authorized" | "needs-consent" }> {
+  if (grant.state === "needs-consent") return true;
+  return grant.state === "authorized" && grant.authorization === "held";
+}
+
+/** The actions the consent copy reasons about: exactly those {@link coveredByApproval} admits. */
 export function consentActionsFrom(
   grants: readonly GrantState[],
 ): ConsentAction[] {
   const actions: ConsentAction[] = [];
   for (const grant of grants) {
-    if (grant.state === "authorized" || grant.state === "needs-consent") {
+    if (coveredByApproval(grant)) {
       actions.push({ name: grant.action, scopes: grant.scopes });
     }
   }
@@ -98,10 +134,17 @@ export function consentActionsFrom(
 export type GrantGroup = {
   /** The permissions every action in the group requires; empty for the whole-app and no-permission groups. */
   scopes: string[];
-  /** "whole-app" when no action in the app names a permission; "none" for actions that name none. */
+  /**
+   * "whole-app" when no action in the app names a permission, holding every action one approval
+   * covers; "none" for actions that name none — always including those that need no authorization.
+   */
   kind: "scoped" | "whole-app" | "none";
   grants: GrantState[];
 };
+
+function isNotRequired(grant: GrantState): boolean {
+  return grant.state === "authorized" && grant.authorization === "not-required";
+}
 
 function scopesOf(grant: GrantState): string[] {
   return grant.state === "authorized" || grant.state === "needs-consent"
@@ -133,9 +176,19 @@ export function groupGrants(grants: readonly GrantState[]): GrantGroup[] {
       left.action.localeCompare(right.action),
   );
   if (!anyScoped) {
-    return ordered.length > 0
-      ? [{ scopes: [], kind: "whole-app", grants: ordered }]
-      : [];
+    // "Everything in this app, approved together" is a claim about what one approval covers, so an
+    // action that needs no authorization is drawn outside it — the same set the consent copy's
+    // count leaves out (see {@link coveredByApproval}), so the heading and the number agree.
+    const needsNone = ordered.filter(isNotRequired);
+    const together = ordered.filter((grant) => !isNotRequired(grant));
+    const groups: GrantGroup[] = [];
+    if (together.length > 0) {
+      groups.push({ scopes: [], kind: "whole-app", grants: together });
+    }
+    if (needsNone.length > 0) {
+      groups.push({ scopes: [], kind: "none", grants: needsNone });
+    }
+    return groups;
   }
   const groups = new Map<string, GrantGroup>();
   for (const grant of ordered) {

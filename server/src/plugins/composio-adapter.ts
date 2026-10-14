@@ -3165,12 +3165,19 @@ export function buildComposioClient(
         limit: LISTING_LIMIT,
       });
       // A fresh array per entry: one shared list would let a caller mutating its first grant's
-      // scopes rewrite every other grant in the answer.
-      return published.map((action) => ({
-        action: action.slug,
-        state,
-        scopes: [...scopes],
-      }));
+      // scopes rewrite every other grant in the answer. An authorized entry is always `held`: it is
+      // authorized only because this person holds an account, which is a consent they gave.
+      return published.map(
+        (action): GrantState =>
+          state === "authorized"
+            ? {
+                action: action.slug,
+                state,
+                scopes: [...scopes],
+                authorization: "held",
+              }
+            : { action: action.slug, state, scopes: [...scopes] },
+      );
     },
     /**
      * The catalogue, from memory where this process asked for it less than ten minutes ago.
