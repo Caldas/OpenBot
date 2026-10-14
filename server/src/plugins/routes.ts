@@ -2982,8 +2982,18 @@ export function createPluginRoutes(
    * Cancel THIS actor's authorization attempt, so somebody who closed the consent tab need not wait
    * out the fifteen-minute TTL. Answers `{ cancelled }`: whether an attempt was removed.
    *
-   * CANCELLING WHEN NO ATTEMPT EXISTS IS NOT AN ERROR — the attempt may have expired, completed or
-   * been cancelled already, and the person's intent (no attempt standing) is met either way.
+   * CANCELLING WHEN NO ATTEMPT EXISTS IS NOT AN ERROR — the attempt may have expired, failed or
+   * been cancelled already, and the person's intent (nothing in flight, nothing connected) is met.
+   *
+   * A CONSENT THAT COMPLETED UNDER THE CANCEL IS THE ONE CASE WHERE THAT INTENT IS NOT MET, AND IT
+   * IS ANSWERED 409 RATHER THAN `{ cancelled: true }` OR `{ cancelled: false }`. The attempt is read
+   * and then discarded, and a completion can commit between the two. `discardAuthorizationAttempt`
+   * refuses a settled row, so the record of that consent survives; but the account IS connected
+   * now, and neither boolean says so — `true` would be a lie and `false` reads as "there was nothing
+   * to cancel". The person asked for nothing to be connected and something was, so they are told
+   * which, in an error a client cannot mistake for success, and pointed at the one thing that undoes
+   * it: disconnecting. Any other settled outcome (failed, unreconciled, withdrawn) connected nothing,
+   * so it is the ordinary `{ cancelled: false }`.
    *
    * MATCHED ON `(actor_id, created_at)`, NEVER ON `auth_id`: an attempt whose mint never completed
    * has no `auth_id` and is exactly the one most worth cancelling, and `created_at` is what stops
@@ -3041,6 +3051,21 @@ export function createPluginRoutes(
         actorId,
         createdAt: attempt.createdAt,
       });
+      if (
+        !cancelled &&
+        (await store.settledAuthorizationOutcome({
+          actorId,
+          createdAt: attempt.createdAt,
+        })) === "completed"
+      ) {
+        return context.json(
+          {
+            error:
+              "That authorization finished before it could be cancelled, so the account is connected. Disconnect it if you did not mean to connect it.",
+          },
+          409,
+        );
+      }
       return context.json({ cancelled });
     }
     const resolved = await brokeredAccountFor(context, serverId);

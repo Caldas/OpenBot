@@ -6781,6 +6781,20 @@ export function createPluginStore(options: PluginStoreOptions) {
      * Delete one attempt, matched on `(actor_id, created_at)` SO IT CAN NEVER DELETE A NEWER
      * ATTEMPT BY THE SAME ACTOR. Matching on `auth_id` would be wrong: an attempt whose mint never
      * completed has none, and that is exactly the one most worth cancelling.
+     *
+     * CONDITIONAL ON `completed_at IS NULL`, THE SAME RULE {@link closeAuthorizationAttempt} AND
+     * THE COMPLETION HOLD, BECAUSE A SETTLED ATTEMPT IS A RECORD AND NOT A DRAFT. `(actor_id,
+     * created_at)` does not stop naming a row when the row settles, and every caller of this reads
+     * the attempt FIRST and deletes it AFTER. Unconditional, a completion committing in that gap
+     * was erased outright — the one row saying this person's consent went through, with the grant
+     * live at the vendor, the `brokered_connections` row written and `mcp.account_connected` on
+     * the trail — and the cancel route then answered `{ cancelled: true }` for a consent that had
+     * succeeded. The DELETE waits on the completion's row lock and re-evaluates this condition
+     * against the committed row, so the guard holds under the race and not merely before it.
+     *
+     * `false` therefore means one of three things — no row under that key, a row under a different
+     * `created_at`, or a row that has settled — and all three are "nothing was discarded". A caller
+     * that must tell the third apart asks {@link settledAuthorizationOutcome}.
      */
     async discardAuthorizationAttempt(input: {
       actorId: string;
@@ -6789,9 +6803,36 @@ export function createPluginStore(options: PluginStoreOptions) {
     }): Promise<boolean> {
       const deleted = await database
         .delete(pendingAuthorizations)
-        .where(attemptNamed(input.actorId, input.createdAt))
+        .where(
+          and(
+            attemptNamed(input.actorId, input.createdAt),
+            isNull(pendingAuthorizations.completedAt),
+          ),
+        )
         .returning({ actorId: pendingAuthorizations.actorId });
       return deleted.length > 0;
+    },
+
+    /**
+     * How the attempt named by `(actor_id, created_at)` ended, or null while it has not ended, or
+     * when no row carries that key.
+     *
+     * FOR THE ONE CALLER THAT HAS TO SAY WHY A DISCARD REFUSED: the cancel route, which must not
+     * answer a person whose consent COMPLETED while they were cancelling it as though nothing had
+     * happened. Named through {@link attemptNamed} like the discard it explains, so it can only
+     * report the attempt that discard was aimed at and never a newer one by the same actor. Once
+     * settled, a row keeps that `created_at` until a new claim takes the key and rewrites it, so a
+     * reading after the refused DELETE answers for the same attempt the DELETE refused.
+     */
+    async settledAuthorizationOutcome(input: {
+      actorId: string;
+      createdAt: Date | string;
+    }): Promise<PendingAuthorization["outcome"]> {
+      const [row] = await database
+        .select({ outcome: pendingAuthorizations.outcome })
+        .from(pendingAuthorizations)
+        .where(attemptNamed(input.actorId, input.createdAt));
+      return row?.outcome ?? null;
     },
 
     /**
