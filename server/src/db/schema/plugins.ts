@@ -461,10 +461,20 @@ export const brokeredConnections = pgTable(
  * setting it, and a second return finds it set. `auth_id` is what binds a callback to this attempt;
  * an attempt holding null can never complete.
  *
- * BOTH COLUMNS THAT NAME A PERSON CARRY THE FOREIGN KEY, AND BOTH CASCADE. `actor_id` and
- * `user_id` are `users.id`, and a column that names a table without a key is a column the database
- * will let drift: a deleted person left attempt rows pointing at nobody, and the verifier's
- * "find the attempt for this session" would then be matching a key no session can ever present.
+ * THE ROW IS THE ACTOR'S, AND ONLY `actor_id` CARRIES THE KEY TO `users`. `actor_id` is `users.id`,
+ * and a column that names a table without a key is a column the database will let drift: a deleted
+ * person left attempt rows pointing at nobody, and the verifier's "find the attempt for this
+ * session" would then be matching a key no session can ever present.
+ *
+ * `user_id` IS NOT A SECOND PERSON. It is whose account the attempt is for, and for a `person`
+ * attempt that is the actor and nobody else — `accountRefFor` answers a Personal app with
+ * `{ userId: actorId }`, and nothing lets one person consent into another's account. So the database
+ * holds `user_id IS NULL OR user_id = actor_id` (`pending_authorizations_user_is_actor_check`), and
+ * through that CHECK `user_id` names a person exactly when `actor_id` does. It carried a cascading
+ * key of its own from `0060` to `0062`, and with nothing making the two columns equal that key let a
+ * row name two people and die with EITHER: deleting one person took an attempt a DIFFERENT person
+ * had started. An attempt is evidence of somebody's consent in progress, and the one person whose
+ * deletion may end it is the one who started it.
  *
  * CASCADE RATHER THAN RESTRICT, AND THIS ROW IS NOT THE AUDIT TRAIL. An attempt is in-flight
  * working state with a fifteen-minute life and at most one row per actor, holding no grant and no
@@ -478,7 +488,8 @@ export const brokeredConnections = pgTable(
  *
  * `server_id`'s key gets an index of its own. A foreign key is not indexed by postgres on the
  * referencing side, so deleting one `mcp_servers` row made the cascade scan this table, and so did
- * every lookup by server. `user_id` gets one for the same reason, now that it too is a key.
+ * every lookup by server. `actor_id` is the primary key and indexed by it; `user_id`, no longer a
+ * key and read by nothing, has none.
  */
 export const pendingAuthorizations = pgTable(
   "pending_authorizations",
@@ -496,9 +507,8 @@ export const pendingAuthorizations = pgTable(
      * at runtime and the row this attempt is reconciled into is held to that pair.
      */
     holder: text("holder").$type<"person" | "deployment">().notNull(),
-    userId: text("user_id").references(() => users.id, {
-      onDelete: "cascade",
-    }),
+    /** Always the actor or `null`; see `pending_authorizations_user_is_actor_check` below. */
+    userId: text("user_id"),
     vendorUserId: text("vendor_user_id").notNull(),
     authId: text("auth_id"),
     createdAt: createdAt(),
@@ -547,8 +557,21 @@ export const pendingAuthorizations = pgTable(
       "pending_authorizations_completion_check",
       sql`(${table.completedAt} IS NULL) = (${table.outcome} IS NULL)`,
     ),
+    /**
+     * A `person` attempt is for the actor's own account, so the row names one person, not two.
+     *
+     * HERE AND NOT ONLY IN `accountRefFor`, because this is what keeps a cascade on `users` from
+     * reaching a row somebody else started — the guarantee is the database's or it is nobody's: a
+     * hand-run INSERT, a restore, or the next writer does not pass through `accountRefFor`. The
+     * `IS NULL` arm is the `deployment` attempt, whose shape `pending_authorizations_holder_check`
+     * already decides; spelled out so this CHECK says what it admits rather than leaning on a NULL
+     * comparison passing.
+     */
+    check(
+      "pending_authorizations_user_is_actor_check",
+      sql`${table.userId} IS NULL OR ${table.userId} = ${table.actorId}`,
+    ),
     index("pending_authorizations_server_idx").on(table.serverId),
-    index("pending_authorizations_user_idx").on(table.userId),
   ],
 );
 

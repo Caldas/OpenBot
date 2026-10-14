@@ -435,6 +435,13 @@
       "when": 1791943598343,
       "tag": "0061_settle_brokered_account_mode",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1791994602603,
+      "tag": "0062_pending_authorization_user_is_actor",
+      "breakpoints": true
     }
   ]
 }

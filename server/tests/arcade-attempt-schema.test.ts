@@ -12,8 +12,8 @@ const suite = randomUUID().slice(0, 8);
 const serverId = `arcade-attempt-${suite}`;
 
 /*
- * The three actors the cases below claim under, seeded as real people because `actor_id` and
- * `user_id` now carry the key to `users` that they always claimed in the docblock. Named up here so
+ * The three actors the cases below claim under, seeded as real people because `actor_id` now carries
+ * the key to `users` it always claimed in the docblock (and `user_id` is held equal to it). Named up here so
  * `afterAll` can delete them, and so the cascade takes the attempts with them.
  */
 const actors = [`live-${suite}`, `expired-${suite}`, `done-${suite}`];
