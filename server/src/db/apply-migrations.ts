@@ -11,7 +11,7 @@
  */
 import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
-import type { Sql } from "postgres";
+import type { Sql, TransactionSql } from "postgres";
 import {
   type AppliedMigration,
   migrationsOutOfReach,
@@ -46,7 +46,7 @@ export const MIGRATIONS_JOURNAL: MigrationsJournal = {
  * from a database that cannot be read.
  */
 async function appliedMigrations(
-  client: Sql,
+  client: TransactionSql,
   { migrationsSchema, migrationsTable }: MigrationsJournal,
 ): Promise<AppliedMigration[]> {
   const [present] = await client<{ table: string | null }[]>`
@@ -71,20 +71,83 @@ export class MigrationsOutOfReachError extends Error {
   }
 }
 
+/**
+ * One lock per database for every run of this function, whatever journal it carries.
+ *
+ * A constant rather than anything derived from the folder: the runs that must not overlap are
+ * precisely the ones whose folders differ. Advisory locks are scoped to the database, so two
+ * databases on one server never wait on each other.
+ */
+const MIGRATION_LOCK = "openbot:apply-migrations";
+
+/**
+ * Check, then migrate, with nothing able to commit in between.
+ *
+ * THE GAP THIS CLOSES. The reach check reads the journal table; the migrator then reads it AGAIN to
+ * find its high-water mark. Run as two steps, a second migrator could commit between
+ * those reads — and if it carries a different journal (an operator's `db:migrate` from a checkout,
+ * or a second release's Job started while the first is still running) its stamp can land above a
+ * migration this run still has pending. The check passed before that stamp existed; the migrator
+ * reads it afterwards, walks past the migration, and the run reports success over a table that is
+ * not there: the exact outcome the check exists to prevent, arrived at through the gap between the
+ * two reads. A rival with the SAME journal (a Job pod the controller started twice) is the lesser
+ * case: both read the same mark, both run the same SQL, and one dies on a duplicate `CREATE`.
+ *
+ * So both run inside one transaction that first takes a transaction-scoped advisory lock. Every
+ * other run of this function queues behind it and, once admitted, checks a table the previous run
+ * has already committed. The lock goes with the transaction — on commit, on the refusal's rollback,
+ * or when the connection dies — so there is no unlock to forget and no session to leak it into.
+ *
+ * WHAT IT DOES NOT COVER. A migrator that is not this function (`drizzle-kit migrate`, or an image
+ * built before this lock) does not take it, and can still interleave. Every path this repository
+ * runs goes through here; see `scripts/migrate.ts`.
+ */
 export async function applyMigrations(
   client: Sql,
   migrationsFolder: string,
   journal: MigrationsJournal = MIGRATIONS_JOURNAL,
 ): Promise<void> {
   const folder = await readMigrationFolder(migrationsFolder);
-  const applied = await appliedMigrations(client, journal);
 
-  const outOfReach = migrationsOutOfReach(folder, applied);
-  if (outOfReach.length > 0) {
-    throw new MigrationsOutOfReachError(
-      outOfReachRefusal(outOfReach, folder, applied),
-    );
-  }
+  await client.begin(async (tx) => {
+    await tx`select pg_advisory_xact_lock(hashtextextended(${MIGRATION_LOCK}, 0))`;
 
-  await migrate(drizzle(client), { migrationsFolder, ...journal });
+    const applied = await appliedMigrations(tx, journal);
+    const outOfReach = migrationsOutOfReach(folder, applied);
+    if (outOfReach.length > 0) {
+      throw new MigrationsOutOfReachError(
+        outOfReachRefusal(outOfReach, folder, applied),
+      );
+    }
+
+    await migrate(drizzle(withinTransaction(client, tx)), {
+      migrationsFolder,
+      ...journal,
+    });
+  });
+}
+
+/**
+ * The open transaction, in the shape `drizzle()` takes a client in.
+ *
+ * Drizzle's migrator reads its high-water mark and runs the migrations through the client it is
+ * given, and opens its own transaction with `client.begin`. A postgres.js transaction has no
+ * `begin` — only `savepoint` — and no `options`, which `drizzle()` writes its type parsers into. So
+ * this hands it exactly those three things: `unsafe` and `savepoint` from the transaction, so every
+ * statement the migrator sends is inside the lock, and `options` from the pool the transaction
+ * belongs to, which is where postgres.js reads parsers from. Its transaction becomes a savepoint in
+ * ours, with the same all-or-nothing effect it always had.
+ *
+ * If a later drizzle-orm reaches for anything else on its client, it fails here with a TypeError at
+ * the first migration rather than migrating outside the lock — and
+ * `tests/migration-reach.integration.test.ts` runs exactly this path.
+ */
+function withinTransaction(client: Sql, tx: TransactionSql): Sql {
+  const adapter = {
+    options: client.options,
+    unsafe: tx.unsafe.bind(tx),
+    begin: <T>(fn: (sql: TransactionSql) => T | Promise<T>) => tx.savepoint(fn),
+  };
+  // The cast is the claim above: drizzle uses these three members and no others.
+  return adapter as unknown as Sql;
 }
