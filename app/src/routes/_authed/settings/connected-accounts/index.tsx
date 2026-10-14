@@ -36,6 +36,7 @@ import {
   ItemTitle,
 } from "@/components/ui/item";
 import { linkedAccountsQueryOptions } from "@/lib/identity/queries";
+import { keyedLookup } from "@/lib/lookup";
 import {
   connectionsQueryOptions,
   type PluginServer,
@@ -156,7 +157,9 @@ export const AUTHORIZATION_NOTICES: ReadonlyMap<string, string> = new Map([
 export function authorizationNoticeFor(
   authorized: string | undefined,
 ): string | null {
-  return authorized ? (AUTHORIZATION_NOTICES.get(authorized) ?? null) : null;
+  return authorized
+    ? (keyedLookup(AUTHORIZATION_NOTICES, authorized) ?? null)
+    : null;
 }
 
 /** The same marks the admin connector list uses: these are the same vendors seen from your side. */
@@ -170,8 +173,11 @@ const MARKS: ReadonlyMap<
 
 /* A Map for the same reason the notices above are one: a lookup answers with what was put in it and
  * nothing a plain object would have inherited, so a catalogue key called `toString` draws the
- * fallback mark rather than handing React `Object.prototype.toString` to render as a component. */
-const markFor = (key: string) => MARKS.get(key) ?? IconPlug;
+ * fallback mark rather than handing React `Object.prototype.toString` to render as a component.
+ * The read goes through `keyedLookup` so the rule has one home rather than one comment per page;
+ * see `app/src/lib/lookup.ts`. The `?? IconPlug` stays here, because what a missing key draws is
+ * this page's decision. */
+const markFor = (key: string) => keyedLookup(MARKS, key) ?? IconPlug;
 
 /**
  * Whether a row came through a broker. A deployment only ever holds rows from one provider, so the
