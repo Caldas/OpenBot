@@ -192,7 +192,11 @@ function startEngine(shape: Shape): Engine {
         return Response.json({
           items: [
             { id: "google-openbot", provider_id: "google", type: "oauth2" },
-            { id: "arcade-microsoft", provider_id: "microsoft", type: "oauth2" },
+            {
+              id: "arcade-microsoft",
+              provider_id: "microsoft",
+              type: "oauth2",
+            },
           ],
           offset: 0,
           limit,
@@ -206,7 +210,9 @@ function startEngine(shape: Shape): Engine {
         const providers = providersFor(shape);
         const page =
           offset === 0
-            ? Array.from({ length: 4 }, (_, n) => toolRow(toolkit, n, providers))
+            ? Array.from({ length: 4 }, (_, n) =>
+                toolRow(toolkit, n, providers),
+              )
             : [];
         return Response.json({
           items: page,
@@ -224,7 +230,8 @@ function startEngine(shape: Shape): Engine {
   // never bound a port would otherwise send every request of this file to a nonsense address and
   // the invariant below would "hold" for the wrong reason.
   const { port } = server;
-  if (port === undefined) throw new Error("the stub vendor did not bind a port");
+  if (port === undefined)
+    throw new Error("the stub vendor did not bind a port");
   return { port, requests, stop: () => server.stop(true) };
 }
 
