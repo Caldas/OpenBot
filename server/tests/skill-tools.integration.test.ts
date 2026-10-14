@@ -71,10 +71,16 @@ beforeAll(async () => {
   await database
     .insert(mcpTools)
     .values([
-      { serverId: server, name: "search", description: "Find things." },
+      {
+        serverId: server,
+        name: "search",
+        vendorName: "search",
+        description: "Find things.",
+      },
       {
         serverId: server,
         name: "delete_everything",
+        vendorName: "delete_everything",
         description: "Do not.",
       },
     ])

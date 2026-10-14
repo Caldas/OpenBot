@@ -222,6 +222,7 @@ beforeAll(async () => {
     [personalApp, sharedApp, otherApp, movedApp].map((serverId) => ({
       serverId,
       name: ACTION,
+      vendorName: ACTION,
     })),
   );
 });

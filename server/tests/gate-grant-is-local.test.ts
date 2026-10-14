@@ -112,6 +112,7 @@ async function seed(app: string, mode: "shared" | "personal") {
   await database.insert(mcpTools).values({
     serverId: app,
     name: "GITHUB_LIST_ISSUES",
+    vendorName: "GITHUB_LIST_ISSUES",
     description: "List issues.",
     effect: "read",
     version: "1",

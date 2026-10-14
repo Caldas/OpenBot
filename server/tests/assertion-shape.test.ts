@@ -583,7 +583,7 @@ const ALLOW: Allowed[] = [
   },
   {
     file: "server/tests/plugin-user-credential.integration.test.ts",
-    line: 364,
+    line: 369,
     shape: "a",
     finding: "round 2 — plugin-user-credential.integration.test.ts:361",
     why: 'describe("a person who has not connected", () => { test("is refused, and told to connect rather than told it b',

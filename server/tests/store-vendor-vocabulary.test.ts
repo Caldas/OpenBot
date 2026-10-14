@@ -163,6 +163,7 @@ describe("the re-check retry names the active vendor", () => {
     await database.insert(mcpTools).values({
       serverId: id,
       name: `${toolkit}.WhoAmI`,
+      vendorName: `${toolkit}.WhoAmI`,
       description: "Says who the key belongs to.",
       effect: "read",
       version: "1.0",
@@ -228,6 +229,7 @@ describe("the brokered-credential invariant names the active vendor", () => {
     await database.insert(mcpTools).values({
       serverId: id,
       name: action,
+      vendorName: action,
       description: "Reads something.",
       effect: "read",
       version: "1.0",

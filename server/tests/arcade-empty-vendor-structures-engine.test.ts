@@ -100,7 +100,12 @@ describe("an empty behavior object is the vendor saying nothing, not saying safe
     engine([toolRow("EmptyBehavior", { behavior: {} })]);
 
     expect(await listed()).toMatchObject([
-      { name: "Gmail.EmptyBehavior", effect: "write", destructive: true },
+      {
+        name: "EmptyBehavior",
+        vendorName: "Gmail.EmptyBehavior",
+        effect: "write",
+        destructive: true,
+      },
     ]);
   });
 
@@ -108,7 +113,12 @@ describe("an empty behavior object is the vendor saying nothing, not saying safe
     engine([toolRow("Idempotent", { behavior: { idempotent: true } })]);
 
     expect(await listed()).toMatchObject([
-      { name: "Gmail.Idempotent", effect: "write", destructive: true },
+      {
+        name: "Idempotent",
+        vendorName: "Gmail.Idempotent",
+        effect: "write",
+        destructive: true,
+      },
     ]);
   });
 
@@ -137,9 +147,24 @@ describe("an empty behavior object is the vendor saying nothing, not saying safe
     ]);
 
     expect(await listed()).toMatchObject([
-      { name: "Gmail.Read", effect: "read", destructive: false },
-      { name: "Gmail.Write", effect: "write", destructive: false },
-      { name: "Gmail.Delete", effect: "write", destructive: true },
+      {
+        name: "Read",
+        vendorName: "Gmail.Read",
+        effect: "read",
+        destructive: false,
+      },
+      {
+        name: "Write",
+        vendorName: "Gmail.Write",
+        effect: "write",
+        destructive: false,
+      },
+      {
+        name: "Delete",
+        vendorName: "Gmail.Delete",
+        effect: "write",
+        destructive: true,
+      },
     ]);
   });
 });
@@ -197,6 +222,59 @@ describe("a secrets requirement that is not a list is unreadable, not satisfied"
         state: "needs-operator",
         missing: ["GITHUB_SERVER_URL"],
       },
+    ]);
+  });
+});
+
+/**
+ * THE DEFECT: EVERY ARCADE ACTION WAS UNCALLABLE BY EVERY MODEL, AND NOTHING SAID SO.
+ *
+ * Arcade's listing answers `qualified_name` — `Gmail.ListEmails` — and `mcp_tools.name` used to be
+ * recorded as exactly that. `toolNameFor` then spliced it into `mcp__arcade-Gmail__Gmail.ListEmails`
+ * and the model API refused the request: a tool name may only match `^[a-zA-Z0-9_-]+$`, and the dot
+ * does not. Because a request carries EVERY tool together, one granted Arcade action failed the
+ * WHOLE call — `Invalid 'tools[47].name'` — so a Bot holding one Arcade tool could not answer
+ * anything at all.
+ *
+ * It survived every test in this tree because no test ever asked whether the name it recorded was a
+ * name a model could be offered. These do.
+ */
+describe("an Arcade action is recorded under a name a model may be offered", () => {
+  test("the toolkit prefix is dropped, and the vendor's own spelling is kept beside it", async () => {
+    engine([toolRow("ListEmails", { behavior: { read: true } })]);
+
+    expect(await listed()).toMatchObject([
+      { name: "ListEmails", vendorName: "Gmail.ListEmails" },
+    ]);
+  });
+
+  test("every listed name is one the model API accepts", async () => {
+    engine([
+      toolRow("ListEmails", null),
+      toolRow("SendEmail", null),
+      toolRow("TrashEmail", null),
+    ]);
+
+    /*
+     * THE PATTERN ITSELF, not a sample of names somebody thought of. This is the whole of what the
+     * model API will take, and `name` is spliced into a tool name unchanged — so a listing that
+     * passes here is a request that is not refused for its names.
+     */
+    for (const tool of await listed()) {
+      expect(tool.name).toMatch(/^[a-zA-Z0-9_-]+$/);
+    }
+  });
+
+  test("a qualified name that is not this toolkit's is left whole", async () => {
+    /*
+     * ONLY THE VENDOR'S OWN PREFIX IS REMOVED. A listing that qualifies an action with some other
+     * name is not something to repair by guessing: the name is kept as it stands and the guard in
+     * `storableTools` is what refuses it, by name, where it has a provenance.
+     */
+    engine([{ ...toolRow("Other", null), qualified_name: "Elsewhere.Other" }]);
+
+    expect(await listed()).toMatchObject([
+      { name: "Elsewhere.Other", vendorName: "Elsewhere.Other" },
     ]);
   });
 });

@@ -166,6 +166,34 @@ export const mcpTools = pgTable(
       .notNull()
       .references(() => mcpServers.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
+    /**
+     * THE VENDOR'S OWN SPELLING OF THIS ACTION, which is not always a name a model may be offered.
+     *
+     * `name` is this deployment's identifier for the action: half of the `<serverId>/<name>` ref a
+     * grant is written against, and the half of `mcp__<serverId>__<name>` a model is offered. A
+     * model tool name must match `^[a-zA-Z0-9_-]+$`, so `name` must too.
+     *
+     * THE TWO USED TO BE ONE COLUMN, AND ARCADE IS WHERE THAT BROKE. Its listing answers
+     * `qualified_name` — `Gmail.ListEmails` — and the dot is legal at the vendor and illegal in a
+     * tool name, so every Arcade action this deployment recorded produced an offered name the model
+     * API rejects outright. Not the one tool: the request carries every tool together, so a single
+     * granted Arcade action failed the whole call with `Invalid 'tools[47].name'`, and no Arcade
+     * tool had ever been callable by any model.
+     *
+     * STORED RATHER THAN RECONSTRUCTED. `Gmail.ListEmails` is `<toolkit>.<action>` and the toolkit
+     * is already the server id, so the vendor's spelling LOOKS derivable from `name` — but that is a
+     * rule about the shape of today's listing, not a promise the vendor makes, and the one thing
+     * that must never be guessed is the string an action is executed by. It is also what the
+     * per-action authorization flow speaks end to end (`grantsFor`, the Authorize button, the
+     * attempt row, `?action=`, the vendor's own `authorize({ action })`) and what this deployment's
+     * refusal sentences quote back, so it is a fact the row has to hold.
+     *
+     * EQUAL TO `name` FOR EVERY OTHER TRANSPORT, and that is not a placeholder. Composio's
+     * `GMAIL_FETCH_EMAILS` and an MCP server's names are already offerable as they stand, so there
+     * are no two spellings to keep apart and the column says so. Migration 0063 backfilled it that
+     * way for the same reason.
+     */
+    vendorName: text("vendor_name").notNull(),
     description: text("description").notNull().default(""),
     /** The tool's own JSON Schema, passed to the model unchanged. */
     inputSchema: jsonb("input_schema").notNull().default({}),

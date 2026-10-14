@@ -614,6 +614,7 @@ export function storableTools(serverId: string, listed: ListedTool[]) {
     {
       serverId: string;
       name: string;
+      vendorName: string;
       description: string;
       inputSchema: Record<string, unknown>;
       effect: "read" | "write" | null;
@@ -624,10 +625,35 @@ export function storableTools(serverId: string, listed: ListedTool[]) {
 
   for (const tool of listed) {
     const name = tool.name.replaceAll(NUL, "");
+    /*
+     * THE GUARD THAT MAKES THE OFFERED NAME OFFERABLE, placed at the one seam every transport's
+     * listing passes through on its way into the database.
+     *
+     * A model tool name may only match `^[a-zA-Z0-9_-]+$`, and `name` is spliced into one by
+     * {@link toolNameFor}. Nothing used to check: Arcade's dotted `qualified_name` was recorded
+     * whole and the refusal arrived much later and somewhere else entirely — as a 400 on the model
+     * request naming `tools[47]`, with no mention of the app, the action or the refresh that
+     * recorded it. A person reading that has nothing to act on.
+     *
+     * SO IT REFUSES HERE, WHERE THE NAME HAS A PROVENANCE. `refreshTools` runs this before its
+     * transaction and maps a throw to "nothing was refreshed and the actions already recorded are
+     * kept", so an app that starts publishing an unofferable name keeps working with what it had
+     * and says what is wrong on its own page.
+     */
+    if (!OFFERABLE_TOOL_NAME.test(name)) {
+      throw new PluginInvariantError(
+        `${serverId} published an action named "${name}", which cannot be offered to a model: a tool name may only use letters, digits, underscores and hyphens. Nothing was refreshed and the actions already recorded for this app are kept.`,
+      );
+    }
     if (byName.has(name)) continue;
     byName.set(name, {
       serverId,
       name,
+      /*
+       * The vendor's spelling where the transport drew a distinction, and the same string where it
+       * did not — which is the whole of what absence means here. See {@link ListedTool.vendorName}.
+       */
+      vendorName: (tool.vendorName ?? name).replaceAll(NUL, ""),
       /*
        * Defaulted where the COLUMN has a default, because that is what the previous mapping leaned
        * on: it passed these two straight through, so a transport handing back undefined got the
@@ -721,6 +747,16 @@ export const INVALID_CLIENT = "invalid_client";
  * the advisory lock that serialises the client path.
  */
 export type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
+
+/**
+ * THE ONLY SHAPE A MODEL TOOL NAME MAY TAKE, as the model API enforces it: `^[a-zA-Z0-9_-]+$`.
+ *
+ * Declared here beside {@link toolNameFor}, which is the function that has to satisfy it, and
+ * applied in {@link storableTools}, which is the one door every transport's listing goes through.
+ * The prefix and separator this module splices in are themselves made of these characters, so a
+ * `name` that passes is an offered name that passes.
+ */
+export const OFFERABLE_TOOL_NAME = /^[a-zA-Z0-9_-]+$/;
 
 /**
  * A tool name the model can actually call.

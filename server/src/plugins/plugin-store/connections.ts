@@ -730,7 +730,15 @@ export function connectionMethods(context: StoreContext) {
       // property of whichever plan the server happened to pick.
       const actions = await database
         .select({
-          name: mcpTools.name,
+          /*
+           * THE VENDOR'S SPELLING, BECAUSE THIS NAME IS CALLED RATHER THAN DISPLAYED. The pair this
+           * answers goes to the transport directly (see `probeConnection`), and a transport answers
+           * only to the name its own listing gave. {@link IDENTITY_ACTION} is written in that same
+           * vocabulary — `_GET_ME`, `_WHOAMI` — so it is matched against this for the same reason.
+           * Identical to `name` on every transport this path actually reaches. See
+           * {@link mcpTools.vendorName}.
+           */
+          name: mcpTools.vendorName,
           inputSchema: mcpTools.inputSchema,
           effect: mcpTools.effect,
           destructive: mcpTools.destructive,

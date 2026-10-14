@@ -94,6 +94,7 @@ beforeAll(async () => {
     .values({
       serverId,
       name: toolName,
+      vendorName: toolName,
       description: "Search the notes.",
       inputSchema: {
         type: "object",

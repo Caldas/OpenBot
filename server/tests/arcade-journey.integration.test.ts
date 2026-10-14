@@ -532,6 +532,9 @@ async function toolRows(serverId: string) {
     await database
       .select({
         name: mcpTools.name,
+        /* Both spellings, because the split between them is the thing under test: `name` is what a
+           grant and an offered tool name are built from, `vendorName` what Arcade is called by. */
+        vendorName: mcpTools.vendorName,
         effect: mcpTools.effect,
         destructive: mcpTools.destructive,
       })
@@ -735,14 +738,44 @@ describe("an Arcade deployment, from the picker to the disconnect", () => {
 
     expect(await toolRows(MAIL_ROW)).toEqual([
       // NOTHING SAID, SO IT FAILS CLOSED: an unannotated action is approved like a deletion.
-      { name: `${MAIL}.DraftEmail`, effect: "write", destructive: true },
-      { name: `${MAIL}.ListEmails`, effect: "read", destructive: false },
-      { name: `${MAIL}.SendEmail`, effect: "write", destructive: false },
-      { name: `${MAIL}.TrashEmail`, effect: "write", destructive: true },
+      {
+        name: "DraftEmail",
+        vendorName: `${MAIL}.DraftEmail`,
+        effect: "write",
+        destructive: true,
+      },
+      {
+        name: "ListEmails",
+        vendorName: `${MAIL}.ListEmails`,
+        effect: "read",
+        destructive: false,
+      },
+      {
+        name: "SendEmail",
+        vendorName: `${MAIL}.SendEmail`,
+        effect: "write",
+        destructive: false,
+      },
+      {
+        name: "TrashEmail",
+        vendorName: `${MAIL}.TrashEmail`,
+        effect: "write",
+        destructive: true,
+      },
     ]);
     expect(await toolRows(DIARY_ROW)).toEqual([
-      { name: `${DIARY}.DeleteEvent`, effect: "write", destructive: true },
-      { name: `${DIARY}.ListEvents`, effect: "read", destructive: false },
+      {
+        name: "DeleteEvent",
+        vendorName: `${DIARY}.DeleteEvent`,
+        effect: "write",
+        destructive: true,
+      },
+      {
+        name: "ListEvents",
+        vendorName: `${DIARY}.ListEvents`,
+        effect: "read",
+        destructive: false,
+      },
     ]);
   });
 

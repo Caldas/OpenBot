@@ -83,12 +83,14 @@ beforeAll(async () => {
     {
       serverId: server,
       name: "read_documents",
+      vendorName: "read_documents",
       effect: "read",
       inputSchema: {},
     },
     {
       serverId: server,
       name: "write_document",
+      vendorName: "write_document",
       effect: "write",
       inputSchema: {},
     },

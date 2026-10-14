@@ -442,6 +442,13 @@
       "when": 1791994602603,
       "tag": "0062_pending_authorization_user_is_actor",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1792012124232,
+      "tag": "0063_mcp_tool_vendor_name",
+      "breakpoints": true
     }
   ]
 }

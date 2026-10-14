@@ -435,7 +435,12 @@ beforeAll(async () => {
     .onConflictDoNothing();
   await database
     .insert(mcpTools)
-    .values({ serverId, name: toolName, description: "Search files." })
+    .values({
+      serverId,
+      name: toolName,
+      vendorName: toolName,
+      description: "Search files.",
+    })
     .onConflictDoNothing();
   /*
    * A second tool on the SAME server, granted to nobody.
@@ -450,6 +455,7 @@ beforeAll(async () => {
     .values({
       serverId,
       name: siblingToolName,
+      vendorName: siblingToolName,
       description: "A tool on the same server that nobody was granted.",
     })
     .onConflictDoNothing();
@@ -1177,6 +1183,7 @@ describe("a grant on a tool the vendor no longer lists", () => {
       .values({
         serverId,
         name: withdrawnName,
+        vendorName: withdrawnName,
         description: "Listed by the vendor when the grant was made.",
       })
       .onConflictDoNothing();
@@ -1544,6 +1551,7 @@ describe("refresh token rotation", () => {
       .values({
         serverId: rotationServerId,
         name: rotationToolName,
+        vendorName: rotationToolName,
         description: "Search pages.",
       })
       .onConflictDoNothing();
@@ -2604,6 +2612,7 @@ describe("a dynamic client the vendor has evicted", () => {
       .values({
         serverId: dynamicServerId,
         name: dynamicToolName,
+        vendorName: dynamicToolName,
         description: "Search pages.",
       })
       .onConflictDoNothing();
@@ -4125,6 +4134,7 @@ async function seedComposioGmail(
   await database.insert(mcpTools).values({
     serverId: "gmail",
     name: "GMAIL_FETCH_EMAILS",
+    vendorName: "GMAIL_FETCH_EMAILS",
     description: "Fetch emails.",
     effect: "read",
     version: options.version === undefined ? "20260903_00" : options.version,
@@ -4996,6 +5006,7 @@ test("an action's effect, destructive marker and version round-trip", async () =
     {
       serverId: "gmail",
       name: "GMAIL_FETCH_EMAILS",
+      vendorName: "GMAIL_FETCH_EMAILS",
       description: "Fetch emails.",
       effect: "read",
       destructive: false,
@@ -5004,6 +5015,7 @@ test("an action's effect, destructive marker and version round-trip", async () =
     {
       serverId: "gmail",
       name: "GMAIL_DELETE_MESSAGE",
+      vendorName: "GMAIL_DELETE_MESSAGE",
       description: "Delete a message.",
       effect: "write",
       destructive: true,
@@ -5051,6 +5063,7 @@ test("an action listed before these columns existed reads as unclassified and un
   await database.insert(mcpTools).values({
     serverId: "notion",
     name: "notion-fetch",
+    vendorName: "notion-fetch",
     description: "Fetch a page.",
   });
 
@@ -5604,6 +5617,7 @@ describe("a row that resolves to two servers at once", () => {
     await database.insert(mcpTools).values({
       serverId: "notion",
       name: "notion-fetch",
+      vendorName: "notion-fetch",
       description: "Fetch a page.",
     });
     await database.insert(agents).values({
@@ -7765,6 +7779,7 @@ test("a destructive action says so in the list the screens read", async () => {
   await database.insert(mcpTools).values({
     serverId: "gmail",
     name: "GMAIL_DELETE_MESSAGE",
+    vendorName: "GMAIL_DELETE_MESSAGE",
     description: "Delete a message.",
     effect: "write",
     destructive: true,
@@ -7910,6 +7925,7 @@ describe("a vault read that fails on a query of this deployment's own", () => {
     await database.insert(mcpTools).values({
       serverId: faultServerId,
       name: faultToolName,
+      vendorName: faultToolName,
       description: "Do something.",
     });
     await faultStore.grant("mcp", faultRef, faultBotId, "admin@openbot.local");

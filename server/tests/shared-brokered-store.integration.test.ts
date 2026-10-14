@@ -92,6 +92,7 @@ async function seedShared(
   await database.insert(mcpTools).values({
     serverId: app,
     name: "GITHUB_LIST_ISSUES",
+    vendorName: "GITHUB_LIST_ISSUES",
     description: "List issues.",
     effect: "read",
     version: "1",
@@ -460,6 +461,7 @@ describe("a duplicate row at an app's url", () => {
     await database.insert(mcpTools).values({
       serverId: duplicate,
       name: "GITHUB_LIST_ISSUES",
+      vendorName: "GITHUB_LIST_ISSUES",
       description: "List issues.",
       effect: "read",
       version: "1",
@@ -600,6 +602,7 @@ describe("a duplicate row at an app's url", () => {
     await database.insert(mcpTools).values({
       serverId: duplicate,
       name: "GITHUB_CREATE_ISSUE",
+      vendorName: "GITHUB_CREATE_ISSUE",
       description: "Create an issue.",
       effect: "write",
       version: "1",

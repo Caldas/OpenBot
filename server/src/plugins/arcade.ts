@@ -449,9 +449,17 @@ export async function listTools(connection: {
   return raw.flatMap((item) => {
     const tool = record(item);
     if (!tool || typeof tool.qualified_name !== "string") return [];
+    const offerable = offerableName(tool.qualified_name, toolkit);
+    if (offerable === null) return [];
     return [
       {
-        name: tool.qualified_name,
+        name: offerable,
+        /*
+         * WHAT THE VENDOR IS CALLED BY, kept beside the name this deployment records rather than in
+         * place of it. `execute` sends this and the refusal sentences in this file quote it; the
+         * model is offered `name`. See {@link ListedTool.vendorName}.
+         */
+        vendorName: tool.qualified_name,
         description:
           typeof tool.description === "string" ? tool.description : "",
         inputSchema: inputSchemaOf(tool.input),
@@ -460,6 +468,31 @@ export async function listTools(connection: {
       },
     ];
   });
+}
+
+/**
+ * The part of an Arcade `qualified_name` this deployment records as the action's name, or null when
+ * the listing offers nothing that can be one.
+ *
+ * ARCADE QUALIFIES EVERY ACTION WITH ITS TOOLKIT — `Gmail.ListEmails` — and the toolkit is already
+ * the server id, so carrying the prefix would spell the app twice in every ref and every offered
+ * name. More to the point the dot is ILLEGAL in a model tool name (`^[a-zA-Z0-9_-]+$`), which is
+ * the defect this function exists to close: recorded whole, the qualified name went into
+ * `mcp__arcade-Gmail__Gmail.ListEmails` and the model API refused the entire request, every tool in
+ * it, on the first granted Arcade action.
+ *
+ * ONLY THE VENDOR'S OWN PREFIX IS REMOVED, and only when the remainder stands on its own. Anything
+ * else — a differently-qualified name, a second dot, a character no tool name may carry — is left
+ * for the guard in `storableTools` to refuse by name, because a listing this does not recognise is
+ * not something to repair by guessing. Dropped here rather than refused outright for the one case
+ * the vendor's own schema permits and this deployment can do nothing with: an empty remainder.
+ */
+function offerableName(qualifiedName: string, toolkit: string): string | null {
+  const prefix = `${toolkit}.`;
+  const bare = qualifiedName.toLowerCase().startsWith(prefix.toLowerCase())
+    ? qualifiedName.slice(prefix.length)
+    : qualifiedName;
+  return bare.trim().length === 0 ? null : bare;
 }
 
 /** What this deployment says when Arcade's listing could not be read. Never the vendor's words. */

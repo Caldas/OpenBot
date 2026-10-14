@@ -130,10 +130,22 @@ export function skillMethods(context: StoreContext) {
     /**
      * Whether this server publishes an action named EXACTLY this.
      *
-     * One indexed read on `mcp_tools`' `(server_id, name)` key, and deliberately not `listServers`,
-     * which materialises every tool and every grant in the deployment to answer. The comparison is
-     * `=` on the stored text and so CASE-SENSITIVE: Arcade names are dotted and case-sensitive and
-     * are never normalized, and `Gmail.SendEmail` is not `gmail.sendemail`.
+     * One indexed read on `mcp_tools`, and deliberately not `listServers`, which materialises every
+     * tool and every grant in the deployment to answer. The comparison is `=` on the stored text and
+     * so CASE-SENSITIVE: Arcade names are dotted and case-sensitive and are never normalized, and
+     * `Gmail.SendEmail` is not `gmail.sendemail`.
+     *
+     * ASKED OF `vendor_name`, WHICH IS THE NAME THE QUESTION IS ABOUT. Every caller of this reaches
+     * it holding an action out of the per-action authorization flow, and that flow speaks the
+     * vendor's spelling from end to end: `grantsFor` lists what Arcade reports, the Authorize button
+     * sends that back, the attempt row stores it, `?action=` carries it home and `authorize({
+     * action })` is refused by the vendor under any other spelling. Asking `name` — this
+     * deployment's own identifier, which for Arcade is the qualified name with its toolkit removed —
+     * would make this gate answer false for every action that exists, and `/servers/:id/authorize`
+     * would refuse the whole flow with "does not publish an action by that name".
+     *
+     * The two columns hold the same string for every other transport, so no other provider's gate
+     * moves. See {@link mcpTools.vendorName}.
      */
     async serverPublishesAction(
       serverId: string,
@@ -141,9 +153,11 @@ export function skillMethods(context: StoreContext) {
     ): Promise<boolean> {
       if (!serverId || !action) return false;
       const [row] = await database
-        .select({ name: mcpTools.name })
+        .select({ name: mcpTools.vendorName })
         .from(mcpTools)
-        .where(and(eq(mcpTools.serverId, serverId), eq(mcpTools.name, action)))
+        .where(
+          and(eq(mcpTools.serverId, serverId), eq(mcpTools.vendorName, action)),
+        )
         .limit(1);
       return row !== undefined;
     },

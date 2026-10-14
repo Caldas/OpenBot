@@ -814,6 +814,7 @@ async function publishProbe(serverId: string): Promise<void> {
   await database.insert(mcpTools).values({
     serverId,
     name: PROBE_ACTION,
+    vendorName: PROBE_ACTION,
     description: "Says who the key belongs to.",
     effect: "read",
     version: PROBE_VERSION,

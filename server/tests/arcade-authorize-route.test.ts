@@ -210,6 +210,7 @@ beforeAll(async () => {
     [personalApp, sharedApp, composioApp].map((serverId) => ({
       serverId,
       name: ACTION,
+      vendorName: ACTION,
     })),
   );
 });

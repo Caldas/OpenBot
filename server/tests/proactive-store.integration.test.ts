@@ -71,6 +71,7 @@ beforeAll(async () => {
   await database.insert(mcpTools).values({
     serverId: server,
     name: "list_issues",
+    vendorName: "list_issues",
     effect: "read",
     inputSchema: {},
   });

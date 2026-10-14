@@ -370,6 +370,7 @@ describe("granting a shared app's action", () => {
     await database.insert(mcpTools).values({
       serverId: app,
       name: "GITHUB_CREATE_ISSUE",
+      vendorName: "GITHUB_CREATE_ISSUE",
       description: "x",
       effect: "write",
       version: "1",

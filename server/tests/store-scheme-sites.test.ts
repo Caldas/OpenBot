@@ -184,6 +184,7 @@ async function probeOn(provider: BrokerProvider) {
   await database.insert(mcpTools).values({
     serverId,
     name: "GMAIL_GET_ME",
+    vendorName: "GMAIL_GET_ME",
     description: "Who this key belongs to",
     inputSchema: {},
     effect: "read",

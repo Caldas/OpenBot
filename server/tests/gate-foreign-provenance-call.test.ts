@@ -125,6 +125,7 @@ describe("a brokered row minted at the other broker", () => {
     await database.insert(mcpTools).values({
       serverId: foreign,
       name: "GITHUB_LIST_ISSUES",
+      vendorName: "GITHUB_LIST_ISSUES",
       description: "List issues.",
       effect: "read",
       version: "1",
