@@ -23,8 +23,12 @@
  * The scan-count assertion stops it passing vacuously against an empty walk.
  */
 import { expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  logicalLines,
+  sourceFiles,
+} from "../../server/tests/support/source-scan";
 
 const SRC_DIR = join(import.meta.dir, "../src");
 
@@ -39,28 +43,21 @@ const PATTERNS: RegExp[] = [
 // `arcade://` is a row url, not a dial. Blanked before matching.
 const ROW_URL = /arcade:\/\/\S*/g;
 
-function walk(dir: string): string[] {
-  const out: string[] = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...walk(full));
-    else if (/\.tsx?$/.test(entry.name)) out.push(full);
-  }
-  return out.sort();
-}
-
 test("no browser code under app/src dials Arcade", () => {
-  const files = walk(SRC_DIR);
+  // Enumeration and line-splitting come from the shared scanner, so the walk is recursive (a
+  // future `src/<dir>/` is scanned the day it lands) and a dial prettier wrapped across two
+  // physical lines is one line to the patterns. Comments are deliberately NOT stripped: a
+  // docblock naming `arcade.dev` is still this guard's business.
+  const files = sourceFiles(SRC_DIR, [".ts", ".tsx"]);
   expect(files.length).toBeGreaterThan(50);
   const offenders: string[] = [];
   for (const file of files) {
-    const lines = readFileSync(file, "utf8").split("\n");
-    lines.forEach((line, i) => {
-      const text = line.replace(ROW_URL, "");
-      if (PATTERNS.some((re) => re.test(text))) {
-        offenders.push(`${file.slice(SRC_DIR.length + 1)}:${i + 1}`);
+    for (const { line, text } of logicalLines(readFileSync(file, "utf8"))) {
+      const scanned = text.replace(ROW_URL, "");
+      if (PATTERNS.some((re) => re.test(scanned))) {
+        offenders.push(`${file.slice(SRC_DIR.length + 1)}:${line}`);
       }
-    });
+    }
   }
   expect(offenders).toEqual([]);
 });

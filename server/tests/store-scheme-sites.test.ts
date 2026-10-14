@@ -27,6 +27,7 @@ import {
   createPluginStore,
 } from "../src/plugins/store";
 import { TEST_POOL, testDatabaseUrl } from "./support/database";
+import { stripComments } from "./support/source-scan";
 
 const database = createDatabase(testDatabaseUrl(), TEST_POOL);
 const suite = randomUUID().slice(0, 8);
@@ -259,17 +260,10 @@ test("shared-use-store derives its scheme from BROKERED_PROFILE and nowhere else
     join(import.meta.dir, "../src/plugins/shared-use-store.ts"),
     "utf8",
   );
-  const code = source
-    .split("\n")
-    .filter((line) => {
-      const start = line.trimStart();
-      return !(
-        start.startsWith("*") ||
-        start.startsWith("//") ||
-        start.startsWith("/*")
-      );
-    })
-    .join("\n");
+  // The shared stripper, which blanks a comment where it stands instead of dropping the line it
+  // sits on: a trailing `// note` used to take its own code with it, so the assertion below could
+  // have failed on a line that carries the derivation it is looking for.
+  const code = stripComments(source);
   expect(code).toContain("BROKERED_PROFILE[provider].scheme");
   // The local derivation 4.5 could not avoid, now that the record is reachable.
   expect(code).not.toMatch(/\$\{provider\}:\/\//);

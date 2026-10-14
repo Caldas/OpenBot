@@ -19,8 +19,9 @@
  * respects strings before it is parsed.
  */
 import { expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
+import { sourceFiles, stripComments } from "./support/source-scan";
 
 const SERVER_DIR = resolve(import.meta.dir, "..");
 const TESTS_DIR = join(SERVER_DIR, "tests");
@@ -28,33 +29,12 @@ const TESTS_DIR = join(SERVER_DIR, "tests");
 /** The directive, in either comment form. A bare mention in prose does not match. */
 const DIRECTIVE = /(\/\/|\/\*)\s*@ts-expect-error\b/;
 
-/** JSONC to JSON: drop `//` and block comments, leaving string contents (and their slashes) alone. */
-function stripJsonComments(text: string): string {
-  let out = "";
-  let i = 0;
-  while (i < text.length) {
-    const c = text[i];
-    if (c === '"') {
-      let j = i + 1;
-      while (j < text.length && text[j] !== '"') j += text[j] === "\\" ? 2 : 1;
-      out += text.slice(i, j + 1);
-      i = j + 1;
-    } else if (c === "/" && text[i + 1] === "/") {
-      while (i < text.length && text[i] !== "\n") i++;
-    } else if (c === "/" && text[i + 1] === "*") {
-      const end = text.indexOf("*/", i + 2);
-      i = end === -1 ? text.length : end + 2;
-    } else {
-      out += c;
-      i++;
-    }
-  }
-  return out;
-}
-
 function readInclude(): string[] {
   const raw = readFileSync(join(SERVER_DIR, "tsconfig.json"), "utf8");
-  const include = JSON.parse(stripJsonComments(raw)).include;
+  // The shared stripper does the JSONC: it leaves string contents (and their slashes) alone, and
+  // blanks a comment in place rather than deleting it, which JSON.parse does not care about and a
+  // reader comparing the text to the file does.
+  const include = JSON.parse(stripComments(raw)).include;
   if (!Array.isArray(include)) throw new Error("tsconfig.json has no include");
   return include.map((p: string) => resolve(SERVER_DIR, p));
 }
@@ -64,18 +44,13 @@ function isCovered(file: string, include: string[]): boolean {
   return include.some((p) => file === p || file.startsWith(`${p}/`));
 }
 
-function walk(dir: string): string[] {
-  return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
-    const p = join(dir, e.name);
-    if (e.isDirectory()) return walk(p);
-    return e.name.endsWith(".ts") || e.name.endsWith(".tsx") ? [p] : [];
-  });
-}
-
 test("every test file carrying a ts-expect-error directive is named in tsconfig include", () => {
   const include = readInclude();
   const offenders: string[] = [];
-  for (const file of walk(TESTS_DIR).sort()) {
+  // The shared scanner's walk. Its comment stripper is used above for the JSONC and deliberately
+  // NOT here: the directive IS a comment, and it binds to the physical line below it, so this is
+  // the one scan that stays on physical lines rather than logical ones.
+  for (const file of sourceFiles(TESTS_DIR, [".ts", ".tsx"])) {
     if (isCovered(file, include)) continue;
     readFileSync(file, "utf8")
       .split("\n")

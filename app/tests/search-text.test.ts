@@ -13,13 +13,17 @@
  * long to survive a double. The guard at the bottom keeps the `typeof` form from coming back.
  */
 import { expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   parseSearchText,
   searchText,
   searchTextEntry,
 } from "@/lib/search-text";
+import {
+  logicalLines,
+  sourceFiles,
+} from "../../server/tests/support/source-scan";
 
 test("text is recovered from whatever the router parsed the value into", () => {
   expect(searchText("abc")).toBe("abc");
@@ -73,28 +77,20 @@ test("a parameter that is not there stays not there", () => {
 const ROUTES_DIR = join(import.meta.dir, "../src/routes");
 const DROPPED_STRING = /typeof\s+search\??\.\w+\s*===\s*["']string["']/;
 
-function walk(dir: string): string[] {
-  const out: string[] = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...walk(full));
-    else if (/\.tsx?$/.test(entry.name)) out.push(full);
-  }
-  return out.sort();
-}
-
 test("no route reads a search parameter by guarding on its parsed type", () => {
-  const files = walk(ROUTES_DIR);
+  // The walk and the line-splitting are the shared scanner's (server/tests/support): recursive,
+  // and LOGICAL lines — prettier wraps `typeof search.flowId ===` away from its `"string"`, and
+  // read one physical line at a time this guard would have reported green on the very shape it
+  // exists to catch.
+  const files = sourceFiles(ROUTES_DIR, [".ts", ".tsx"]);
   expect(files.length).toBeGreaterThan(10);
   const offenders: string[] = [];
   for (const file of files) {
-    readFileSync(file, "utf8")
-      .split("\n")
-      .forEach((line, index) => {
-        if (DROPPED_STRING.test(line)) {
-          offenders.push(`${file.slice(ROUTES_DIR.length + 1)}:${index + 1}`);
-        }
-      });
+    for (const { line, text } of logicalLines(readFileSync(file, "utf8"))) {
+      if (DROPPED_STRING.test(text)) {
+        offenders.push(`${file.slice(ROUTES_DIR.length + 1)}:${line}`);
+      }
+    }
   }
   expect(offenders).toEqual([]);
 });
