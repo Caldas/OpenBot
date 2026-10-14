@@ -179,10 +179,73 @@ function sentBody(answer: unknown): Record<string, unknown> | null {
   return page;
 }
 
-/** The `total_count` Arcade itself sent, or nothing. Read through {@link sentBody}, for its reason. */
-function reportedTotalOf(answer: unknown): number | undefined {
+/** A count's decimal spelling and nothing else: no sign, no exponent, no separator, no point. */
+const COUNT_TEXT = /^[0-9]+$/;
+
+/**
+ * A COUNT ARCADE SENT, READ AS THREE OUTCOMES AND NEVER TWO: the number, `undefined` for a field
+ * the vendor did not send, and `"unreadable"` for one it DID send in a shape this cannot read.
+ *
+ * THE THIRD OUTCOME IS THE WHOLE POINT. The previous reading was `typeof raw === "number" ? raw :
+ * undefined`, which folded "the vendor did not say" together with "the vendor said something this
+ * deployment cannot read" — and every caller treats the first as "there is nothing to cross-check
+ * against". Measured: a vendor that serves 100 of 250 connections and spells the claim
+ * `"total_count": "250"` had its truncation cross-check silently switched off, and `revoke`
+ * DELETED 100, ANSWERED `true`, AND LEFT 150 GRANTS LIVE with no signal anywhere that the
+ * withdrawal was partial. That is strictly worse than the `false`-with-no-DELETE defect this file
+ * is full of warnings about: that one is at least visibly wrong.
+ *
+ * A NUMERIC STRING IS A LEGITIMATE SPELLING AND IS COERCED. `"250"` is the vendor saying 250 — it
+ * is unambiguous, it is what a serializer that renders integers as text sends, and refusing it
+ * would take Disconnect permanently offline for a deployment whose vendor always spells it so,
+ * trading a silent partial for a hard failure with no way through. Coercing instead makes the
+ * cross-check FIRE, which is what actually protects the invariant: the 250-of-100 listing above
+ * now throws the `incomplete` sentence, no DELETE is spent, and the local row survives.
+ *
+ * EVERYTHING ELSE PRESENT REFUSES, and the strictness is deliberate, because a lenient parse is
+ * how this defect comes back. `"many"`, `null`, an object, `true`, `NaN`, `Infinity`, a negative,
+ * a fraction and `"1e3"` are all unreadable: anything that is not a plain non-negative decimal
+ * integer is a value whose meaning this deployment would be guessing at. `NaN` in particular was
+ * already slipping through the old `typeof` test and disabling the cross-check the same way a
+ * string did — `seen < NaN` is false — so the number branch checks the VALUE and not just the type.
+ *
+ * ABSENT STAYS ABSENT. `total_count` is optional on the wire and the listings here end on a short
+ * page, never on a total; a missing field must go on meaning "the vendor did not say" or every
+ * engine that omits it would refuse.
+ */
+function countOf(raw: unknown): number | "unreadable" | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw === "string") {
+    const text = raw.trim();
+    if (!COUNT_TEXT.test(text)) return "unreadable";
+    const parsed = Number(text);
+    return Number.isSafeInteger(parsed) ? parsed : "unreadable";
+  }
+  if (typeof raw !== "number") return "unreadable";
+  return Number.isSafeInteger(raw) && raw >= 0 ? raw : "unreadable";
+}
+
+/** What the vendor sent, written into a refusal without pasting an object into a sentence. */
+function shownValue(value: unknown): string {
+  if (typeof value === "string") return JSON.stringify(value);
+  if (value !== null && typeof value === "object") return "an object";
+  return String(value);
+}
+
+/**
+ * The `total_count` Arcade itself sent, or nothing. Read through {@link sentBody}, for its reason,
+ * and through {@link countOf}, for ITS reason: a total the vendor sent in a shape this cannot read
+ * THROWS the caller's own sentence rather than answering `undefined` and disabling the only
+ * cross-check that can tell a truncated listing from a whole one.
+ */
+function reportedTotalOf(
+  answer: unknown,
+  unreadable: (shown: string) => string,
+): number | undefined {
   const raw = sentBody(answer)?.total_count;
-  return typeof raw === "number" ? raw : undefined;
+  const count = countOf(raw);
+  if (count === "unreadable") throw new Error(unreadable(shownValue(raw)));
+  return count;
 }
 
 /**
@@ -219,6 +282,12 @@ type Listing = {
   malformed: string;
   unending: string;
   incomplete: (seen: number, total: number) => string;
+  /**
+   * What this deployment says when the vendor sent a `total_count` it cannot read. A sentence of
+   * its own rather than a reuse of `malformed`: the list itself was fine and the CLAIM ABOUT ITS
+   * LENGTH was not, and a reader sent looking for a broken list would find a well-formed one.
+   */
+  unreadableTotal: (shown: string) => string;
 };
 
 /**
@@ -226,7 +295,9 @@ type Listing = {
  *
  * PAGINATION ENDS ON A SHORT PAGE, never on `total_count`, which is optional on the wire; the
  * reported total is a CROSS-CHECK and is taken through {@link reportedTotalOf} and
- * {@link highestTotal} so that "the vendor did not say" can never read as "the vendor said zero".
+ * {@link highestTotal} so that "the vendor did not say" can never read as "the vendor said zero"
+ * — nor, through {@link countOf}, as "the vendor said something unreadable". A cross-check with no
+ * input is not a cross-check, and the listing it would have caught is the truncated one.
  *
  * THE SDK'S OWN AUTO-PAGINATION IS NOT USED by anything that goes through here, and that is the
  * point: `OffsetPage.nextPageRequestOptions` returns `null` the moment `total_count` is falsy, so
@@ -246,7 +317,10 @@ async function* pagedItems(listing: Listing): AsyncGenerator<unknown> {
     if (!Array.isArray(items)) throw new Error(listing.malformed);
     yield* items;
     seen += items.length;
-    total = highestTotal(total, reportedTotalOf(answer));
+    total = highestTotal(
+      total,
+      reportedTotalOf(answer, listing.unreadableTotal),
+    );
     if (items.length < listing.pageSize) {
       ended = true;
       break;
@@ -440,6 +514,8 @@ async function listApps(client: Arcade): Promise<BrokerApp[]> {
     unending: `Arcade's catalogue never ended after ${CATALOGUE_MAX_PAGES} pages, so it is not trusted.`,
     incomplete: (seen, total) =>
       `Arcade listed ${seen} of ${total} actions, so its app catalogue is incomplete.`,
+    unreadableTotal: (shown) =>
+      `Arcade reported its app catalogue's total_count as ${shown}, which is not a count, so whether the catalogue was listed in full could not be checked.`,
   })) {
     const toolkit = (
       item as { toolkit?: { name?: unknown; description?: unknown } } | null
@@ -556,6 +632,8 @@ async function authProviderInstances(
     unending: `Arcade's auth-provider list never ended after ${AUTH_PROVIDER_MAX_PAGES} pages, so it is not trusted.`,
     incomplete: (seen, total) =>
       `Arcade listed ${seen} of ${total} auth providers, so its configuration list is incomplete.`,
+    unreadableTotal: (shown) =>
+      `Arcade reported its auth-provider list's total_count as ${shown}, which is not a count, so whether the configurations of ${authProvider} were listed in full could not be checked.`,
   })) {
     const config = record(item);
     const instance = textOf(config?.id);
@@ -680,6 +758,8 @@ async function connectionsFor(
     unending: `Arcade's connection list never ended after ${CONNECTION_MAX_PAGES} pages, so it is not trusted.`,
     incomplete: (seen, total) =>
       `Arcade listed ${seen} of ${total} connections, so what this account holds at ${toolkit} could not be read in full.`,
+    unreadableTotal: (shown) =>
+      `Arcade reported its connection list's total_count as ${shown}, which is not a count, so whether what this account holds at ${toolkit} was listed in full could not be checked.`,
   })) {
     const row = item as ConnectionRow;
     const instance = textOf(row.provider_id)?.toLowerCase();
@@ -915,6 +995,8 @@ async function grantsFor(
     unending: `Arcade's action list for ${toolkit} never ended after ${CATALOGUE_MAX_PAGES} pages, so it is not trusted.`,
     incomplete: (seen, total) =>
       `Arcade listed ${seen} of ${total} actions for ${toolkit}, so what this account holds there could not be read in full.`,
+    unreadableTotal: (shown) =>
+      `Arcade reported the action list for ${toolkit} with a total_count of ${shown}, which is not a count, so whether what this account holds there was listed in full could not be checked.`,
   })) {
     grants.push(...grantStateOf(item));
   }
@@ -1007,6 +1089,8 @@ async function authProvidersNamedBy(
     unending: `Arcade's action list for ${toolkit} never ended after ${CATALOGUE_MAX_PAGES} pages, so the auth provider its connections are held under is not trusted.`,
     incomplete: (seen, total) =>
       `Arcade listed ${seen} of ${total} actions for ${toolkit}, so the auth provider its connections are held under could not be read in full.`,
+    unreadableTotal: (shown) =>
+      `Arcade reported the action list for ${toolkit} with a total_count of ${shown}, which is not a count, so whether the auth provider its connections are held under could be read in full is not known.`,
   })) {
     const authorization = record(record(item)?.requirements)?.authorization;
     const provider = textOf(record(authorization)?.provider_id);
@@ -1054,7 +1138,16 @@ export function createArcadeClient(apiKey: string): {
       // guard as dead as the totals the comment above describes, and a listing that answered no
       // items at all would refresh an app's actions down to none.
       const items = sentItemsOf(answer) as unknown[];
-      const total = reportedTotalOf(answer);
+      // AND A TOTAL THIS CANNOT READ REFUSES HERE TOO, rather than being dropped on the way out.
+      // The declared `total_count?: number` leaves the transport exactly two readings — a number
+      // to cross-check against, or "the vendor did not say" — so a value that is neither has
+      // nowhere honest to go: omitting it would switch off the transport's own
+      // `raw.length < total` check and commit a truncated refresh as a whole catalogue.
+      const total = reportedTotalOf(
+        answer,
+        (shown) =>
+          `Arcade reported the action listing for ${q.toolkit} with a total_count of ${shown}, which is not a count, so whether the listing is whole could not be checked. Nothing was refreshed and the actions already recorded for this app are kept.`,
+      );
       return total === undefined ? { items } : { items, total_count: total };
     },
     execute: async (r) =>
