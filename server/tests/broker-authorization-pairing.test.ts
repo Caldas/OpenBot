@@ -174,11 +174,26 @@ function unreachedIn(file: string): string[] {
   lines.forEach((line, at) => {
     const m = /^(\s*)grantIsLocal\s*:\s*(true|false)\s*[,}]/.exec(line);
     if (!m) return;
-    const { named } = blockAt(lines, at, m[1]!.length);
+    const { from, named } = blockAt(lines, at, m[1]!.length);
     // `{ key, grantIsLocal: true }` in a deployment config is not a broker.
     if (named("authorizations") < 0) return;
-    if (named("authorize") < 0)
-      out.push(`${file.slice(ROOT.length + 1)}:${at + 1}`);
+    if (named("authorize") >= 0) return;
+    /*
+     * A `stubBroker({ … })` WITHOUT an `authorize` IS NOT UNEXAMINED, it is unable to mint.
+     *
+     * This net exists because `literalsIn` anchors on `authorize`, so a hand-written literal that
+     * declared the pair without one would slip past unchecked and read as a pass. The factory
+     * inverts that risk: a member it is not given does not quietly answer a plausible shape, it
+     * RECORDS THE CALL AND THROWS. So an omitted `authorize` here cannot mint an id, there is no
+     * pairing to check, and flagging it would demand the caller write out a member whose whole
+     * purpose is to be absent.
+     *
+     * The exemption is narrow on purpose: a `stubBroker` call that DOES provide `authorize` still
+     * carries that member on its own line, so `literalsIn` finds and examines it exactly as it
+     * does any other literal. Only the cannot-mint case is skipped.
+     */
+    if (/\bstubBroker\s*\(/.test(lines[from - 1] ?? "")) return;
+    out.push(`${file.slice(ROOT.length + 1)}:${at + 1}`);
   });
   return out;
 }
