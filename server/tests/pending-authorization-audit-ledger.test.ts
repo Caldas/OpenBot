@@ -208,7 +208,7 @@ const CALL_SITES: Record<
         {
           name: "mint recorded (attempt bound to the vendor's authorization)",
           debt: "B5e",
-          note: "The binding the return leg is checked against is written without a trail row. B5d (the ignored `false`) sits on the same call.",
+          note: "The binding the return leg is checked against is written without a trail row. The `false` this call can answer is its own hand-listed transition in NON_WRITES.",
         },
       ],
     },
@@ -310,6 +310,14 @@ const NON_WRITES: Record<
     name: "cancel refused because the attempt had already completed",
     debt: "B2c",
     note: "The person asked to retract consent and the consent stood. The 409 tells them, and the trail records nothing about the request. The discard deleted nothing, so no write site exists for this guard to find.",
+  },
+  "mint that found its attempt already cancelled": {
+    file: "server/src/plugins/route-groups/connections.ts",
+    anchor:
+      "That authorization was cancelled before the app's vendor finished starting it",
+    name: "mint declined because the attempt was cancelled while the vendor was minting (B5d)",
+    waived:
+      "This branch ends no attempt: the attempt it would describe was already ended by the person's cancel, and that cancel filed `mcp.authorization_cancelled` for it. A second row would record the same withdrawal twice. What the branch adds is a refusal to hand out the consent url, and that url, like the `ar_...`, must never reach the trail.",
   },
 };
 
