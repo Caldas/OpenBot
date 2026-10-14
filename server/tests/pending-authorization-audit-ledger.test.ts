@@ -289,11 +289,11 @@ const CASCADES: Record<string, Transition> = {
     debt: "B5e",
     note: "`retireConnectionsFor` files rows for the connections it retires. An attempt that dies with its actor, possibly minted and live at the vendor, is not among them.",
   },
-  pending_authorizations_user_id_users_id_fk: {
-    name: "cascade delete when the attempt's person (user_id) is deleted",
-    debt: "B5e",
-    note: "The same as the actor key, and a separate key, because nothing makes `user_id` equal to `actor_id`.",
-  },
+  // `pending_authorizations_user_id_users_id_fk` was a third row here (debt B5e) until `0062`
+  // dropped it: with nothing making `user_id` equal `actor_id`, it let one person's deletion take an
+  // attempt a DIFFERENT person had started. `pending_authorizations_user_is_actor_check` now holds
+  // the equality and the actor key above is the only cascade from `users`. Removed with the key,
+  // and DEBT_CEILING lowered with it — not relabelled.
 };
 
 /**
@@ -318,7 +318,7 @@ const NON_WRITES: Record<
  * go DOWN. A fix that converts a row lowers it in the same diff. A new debt row has to raise it,
  * and that edit is the record that somebody decided to add one.
  */
-const DEBT_CEILING = 13;
+const DEBT_CEILING = 12;
 
 /*
  * ─── THE SCAN ────────────────────────────────────────────────────────────────────────────────

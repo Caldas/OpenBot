@@ -588,7 +588,7 @@ async function consent(serverRowId: string, actionName: string) {
 
 beforeAll(async () => {
   // The administrator walking this journey is a real `users` row, because the attempt rows minted
-  // along the way key to one on both `actor_id` and `user_id` and cascade from it.
+  // along the way key to one on `actor_id` (with `user_id` held equal to it) and cascade from it.
   await seedPeople(database, [ADMIN]);
   installVendor();
   const client = createArcadeClient("never-dialled");

@@ -131,8 +131,8 @@ function appAs(
 /**
  * An actor id for this suite, AND THE `users` ROW BEHIND IT.
  *
- * `pending_authorizations.actor_id` and `.user_id` key to `users` and cascade, so the attempt these
- * cases cancel cannot be minted for somebody who does not exist.
+ * `pending_authorizations.actor_id` keys to `users` and cascades (`.user_id` must equal it), so the
+ * attempt these cases cancel cannot be minted for somebody who does not exist.
  */
 const actors: string[] = [];
 const person = async (name: string) => {

@@ -18,23 +18,35 @@ const database = createDatabase(testDatabaseUrl(), TEST_POOL);
 const suite = randomUUID().slice(0, 8);
 const serverId = `arcade-constraints-${suite}`;
 
-/** An attempt row with every column legal, so each test varies exactly the one it is about. */
-const attempt = (overrides: Record<string, unknown>) => ({
-  actorId: `actor-${randomUUID().slice(0, 8)}`,
-  serverId,
-  action: "connect",
-  holder: "person" as const,
-  userId: `user-${suite}`,
-  vendorUserId: `v-${suite}`,
-  ...overrides,
-});
+/**
+ * An attempt row with every column legal, so each test varies exactly the one it is about.
+ *
+ * `userId` defaults to the actor, because a `person` attempt is for the actor's own account and the
+ * database holds that (`pending_authorizations_user_is_actor_check`). This fixture used to give
+ * every row one shared `user-${suite}` beside a fresh actor — a two-person row production never
+ * writes, and exactly the shape that let one person's deletion take another person's attempt.
+ */
+const attempt = (overrides: Record<string, unknown>) => {
+  const actorId =
+    (overrides.actorId as string | undefined) ??
+    `actor-${randomUUID().slice(0, 8)}`;
+  return {
+    actorId,
+    serverId,
+    action: "connect",
+    holder: "person" as const,
+    userId: actorId,
+    vendorUserId: `v-${suite}`,
+    ...overrides,
+  };
+};
 
 /**
  * Every person this file invented, so `afterAll` can take them away again.
  *
- * `actor_id` and `user_id` both key to `users` and both cascade, so the row a case is about cannot
- * be written until its person exists — and deleting the person afterwards is also what deletes the
- * attempt. Seeding happens inside {@link insert} rather than in `beforeAll` because the actor id is
+ * `actor_id` keys to `users` and cascades (and `user_id`, when set, must equal it), so the row a
+ * case is about cannot be written until its person exists — and deleting the person afterwards is
+ * also what deletes the attempt. Seeding happens inside {@link insert} rather than in `beforeAll` because the actor id is
  * generated per row, and a case that forgot to seed its own would otherwise be refused by the
  * foreign key and read as a CHECK that did not fire.
  */
@@ -175,7 +187,9 @@ describe("pending_authorizations holds its declared unions", () => {
   test("a deployment attempt carrying a user id is refused", async () => {
     expect(
       await refusedBy(() =>
-        insert({ holder: "deployment", userId: `user-${suite}` }),
+        // The actor's own id, so the user-is-actor CHECK is satisfied and only the holder pair can
+        // be what refuses.
+        insert({ holder: "deployment" }),
       ),
     ).toBe("pending_authorizations_holder_check");
   });
@@ -203,7 +217,7 @@ describe("pending_authorizations holds its declared unions", () => {
 
   test("the legal shapes are all still accepted", async () => {
     const action = `legal-${suite}`;
-    await insert({ action, holder: "person", userId: `user-${suite}` });
+    await insert({ action, holder: "person" });
     await insert({ action, holder: "deployment", userId: null });
     // Each ended shape carries its `completed_at`, because the pair is now held by a CHECK: an
     // outcome on its own is no longer one of the legal shapes, and this list says which are.
@@ -251,7 +265,9 @@ describe("pending_authorizations keys the people it names", () => {
 
   test("a user_id that is not a person is refused", async () => {
     // The actor IS a person here, so only the second column can be what refuses: a case that left
-    // both unseeded would pass on the actor key alone and say nothing about `user_id`.
+    // both unseeded would pass on the actor key alone and say nothing about `user_id`. Since `0062`
+    // what refuses it is the user-is-actor CHECK, not a key of its own: `user_id` names a person
+    // exactly when it names the actor, who is one.
     const actorId = `keyed-actor-${randomUUID().slice(0, 8)}`;
     await seedPeople(database, [actorId]);
     seeded.add(actorId);
@@ -260,11 +276,11 @@ describe("pending_authorizations keys the people it names", () => {
         attempt({
           actorId,
           userId: `ghost-owner-${randomUUID().slice(0, 8)}`,
-          // biome-ignore lint/suspicious/noExplicitAny: an id past the key is exactly what the FK is for.
+          // biome-ignore lint/suspicious/noExplicitAny: an id that names nobody is exactly what is being asked about.
         }) as any,
       ),
     );
-    expect(refusal).toBe("pending_authorizations_user_id_users_id_fk");
+    expect(refusal).toBe("pending_authorizations_user_is_actor_check");
   });
 
   test("deleting the person takes their in-flight attempt with them", async () => {
@@ -291,8 +307,21 @@ describe("pending_authorizations keys the people it names", () => {
    * `server_id` key `0057` added left every cascade from `mcp_servers` — and every lookup by server
    * — scanning this table. There is nothing about a missing index a functional test can observe, so
    * it is asked for by name.
+   *
+   * The keys are read from `pg_constraint` rather than listed, so a key added later is held to the
+   * same rule without anybody remembering this test — and the list is pinned too, so dropping or
+   * adding one is a visible edit. `user_id` lost its key (and its index) in `0062`; see the
+   * user-is-actor cases below.
    */
   test("every foreign key on the table has an index leading with its column", async () => {
+    const keys = await database.execute(sql`
+      SELECT a.attname AS column
+      FROM pg_constraint c
+      JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+      WHERE c.conrelid = 'pending_authorizations'::regclass AND c.contype = 'f'
+      ORDER BY a.attname
+    `);
+    const columns = keys.map((row) => String(row.column));
     const rows = await database.execute(sql`
       SELECT indexdef FROM pg_indexes
       WHERE schemaname = 'public' AND tablename = 'pending_authorizations'
@@ -302,10 +331,69 @@ describe("pending_authorizations keys the people it names", () => {
       definitions.some((definition) =>
         definition.includes(`USING btree (${column}`),
       );
-    expect({
-      actor_id: led("actor_id"),
-      server_id: led("server_id"),
-      user_id: led("user_id"),
-    }).toEqual({ actor_id: true, server_id: true, user_id: true });
+    expect(
+      Object.fromEntries(columns.map((column) => [column, led(column)])),
+    ).toEqual({ actor_id: true, server_id: true });
+  });
+});
+
+/**
+ * Whose deletion may take an attempt away: the person who STARTED it, and nobody else.
+ *
+ * The row is keyed by `actor_id` — one attempt per actor, by primary key — so it is the actor's.
+ * `user_id` is whose account the attempt is for, and for a `person` attempt that is always the
+ * actor too: `accountRefFor` answers a Personal app with `{ userId: actorId }`, and the only writer
+ * (`claimAuthorizationAttempt`) copies that ref. Before `0062` nothing in the DATABASE said so, and
+ * `user_id` carried a cascading key of its own — so a row naming two people died with EITHER of
+ * them, and one person's deletion destroyed an attempt somebody else had started.
+ *
+ * The first case is the observation itself, asked without a branch: try to write the two-person
+ * row, then — whatever the database did with it — give the actor their own attempt if the slot is
+ * still free (`ON CONFLICT DO NOTHING`), delete the OTHER person, and count what the actor has
+ * left. Against a schema that admits the two-person row, the actor's attempt is gone.
+ */
+describe("an attempt belongs to the person who started it", () => {
+  test("deleting one person never takes an attempt a different person started", async () => {
+    const actorId = `starter-${randomUUID().slice(0, 8)}`;
+    const otherId = `other-${randomUUID().slice(0, 8)}`;
+    await seedPeople(database, [actorId, otherId]);
+    seeded.add(actorId);
+    seeded.add(otherId);
+
+    await refusedBy(() =>
+      database
+        .insert(pendingAuthorizations)
+        // biome-ignore lint/suspicious/noExplicitAny: the two-person row is exactly what is being asked about.
+        .values(attempt({ actorId, userId: otherId }) as any),
+    );
+    await database
+      .insert(pendingAuthorizations)
+      // biome-ignore lint/suspicious/noExplicitAny: a legal attempt, written past the declared unions like every row here.
+      .values(attempt({ actorId, userId: actorId }) as any)
+      .onConflictDoNothing();
+
+    await database.execute(sql`delete from users where id = ${otherId}`);
+    seeded.delete(otherId);
+
+    const left = await database.execute(
+      sql`select count(*)::int as n from pending_authorizations where actor_id = ${actorId}`,
+    );
+    expect(left[0]?.n).toBe(1);
+  });
+
+  test("a person attempt for somebody other than its actor is refused", async () => {
+    const actorId = `starter-${randomUUID().slice(0, 8)}`;
+    const otherId = `other-${randomUUID().slice(0, 8)}`;
+    await seedPeople(database, [actorId, otherId]);
+    seeded.add(actorId);
+    seeded.add(otherId);
+    expect(
+      await refusedBy(() =>
+        database
+          .insert(pendingAuthorizations)
+          // biome-ignore lint/suspicious/noExplicitAny: the two-person row is exactly what is being asked about.
+          .values(attempt({ actorId, userId: otherId }) as any),
+      ),
+    ).toBe("pending_authorizations_user_is_actor_check");
   });
 });

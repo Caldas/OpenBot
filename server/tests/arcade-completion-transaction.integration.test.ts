@@ -123,8 +123,8 @@ const account = (actor: string): AccountRef => ({
 /**
  * An actor id for this suite, AND THE PERSON BEHIND IT.
  *
- * `pending_authorizations.actor_id` and `.user_id` key to `users` and cascade, so an attempt cannot
- * exist for somebody who does not. Seeded here so each case stays about the completion transaction
+ * `pending_authorizations.actor_id` keys to `users` and cascades (`.user_id` must equal it), so an
+ * attempt cannot exist for somebody who does not. Seeded here so each case stays about the completion transaction
  * rather than about the foreign key.
  */
 const people: string[] = [];

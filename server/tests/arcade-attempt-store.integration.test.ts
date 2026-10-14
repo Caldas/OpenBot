@@ -82,7 +82,7 @@ const age = (actorId: string, interval: string) =>
 /**
  * An actor id for this suite, AND THE PERSON BEHIND IT.
  *
- * `pending_authorizations.actor_id` and `.user_id` both key to `users` and both cascade, so an
+ * `pending_authorizations.actor_id` keys to `users` and cascades (`.user_id` must equal it), so an
  * attempt cannot be written for somebody who does not exist. Seeding here rather than in each case
  * keeps the cases about the store: a case that invented its own id would be refused by the foreign
  * key, and the refusal would read as the store failing to claim.
