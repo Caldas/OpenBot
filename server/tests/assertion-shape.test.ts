@@ -716,7 +716,7 @@ const ALLOW: Allowed[] = [
   },
   {
     file: "server/tests/headless-components.integration.test.ts",
-    line: 341,
+    line: 349,
     shape: "b",
     finding: "NEW (round 2 did not find this)",
     why: "expect(bar?.hidden).toBeUndefined();",
@@ -863,14 +863,14 @@ const ALLOW: Allowed[] = [
   },
   {
     file: "server/tests/routine-runner.test.ts",
-    line: 168,
+    line: 169,
     shape: "c",
     finding: "NEW (round 2 did not find this)",
     why: 'expect(recorded.finished).toEqual([ { runId: RUN_ID, status: "succeeded", error: undefined }, ]);',
   },
   {
     file: "server/tests/routine-runner.test.ts",
-    line: 271,
+    line: 272,
     shape: "c",
     finding: "NEW (round 2 did not find this)",
     why: 'expect(recorded.finished).toEqual([ { runId: RUN_ID, status: "succeeded", error: undefined }, ]);',
@@ -921,7 +921,7 @@ const ALLOW: Allowed[] = [
   },
   {
     file: "server/tests/enterprise-controls.integration.test.ts",
-    line: 58,
+    line: 59,
     shape: "e",
     finding: "NEW (round 2 did not find this)",
     why: "const stopped: string[] = []; — pushed to at :65, cleared at :718, read nowhere; the `.stopped` at :704 and :720 is the response's own field",

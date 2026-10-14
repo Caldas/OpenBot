@@ -229,7 +229,9 @@ describe("authorizations and authorizationId are declared as a pair", () => {
       coverage.some((p) => p.startsWith("src/plugins/arcade-adapter.ts")),
     ).toBe(true);
     expect(
-      coverage.some((p) => p.startsWith("src/plugins/composio-adapter.ts")),
+      coverage.some((p) =>
+        p.startsWith("src/plugins/composio-client/consent.ts"),
+      ),
     ).toBe(true);
     // A floor that notices this scan collapsing, not a count to keep up to date; it sits just under
     // what the tree holds today (28) rather than at a third of it.
