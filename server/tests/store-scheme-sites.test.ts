@@ -21,13 +21,13 @@ import {
 } from "../src/db/schema";
 import { BROKERED_PROFILE, type BrokerProvider } from "../src/plugins/access";
 import type { BrokerConnection } from "../src/plugins/broker";
-import type { ComposioBroker } from "../src/plugins/broker";
 import {
   CustomServerRefusedError,
   createPluginStore,
 } from "../src/plugins/store";
 import { TEST_POOL, testDatabaseUrl } from "./support/database";
 import { stripComments } from "./support/source-scan";
+import { stubBroker } from "./support/stub-broker";
 
 const database = createDatabase(testDatabaseUrl(), TEST_POOL);
 const suite = randomUUID().slice(0, 8);
@@ -55,46 +55,32 @@ afterAll(async () => {
 });
 
 /**
- * Every broker member this file does not expect production to reach, by the name it was asked as.
+ * The broker, built by `stubBroker`: every member this file does not provide THROWS AND RECORDS.
  *
- * EACH ONE THROWS AND RECORDS, because a throw is only as loud as the path that receives it: a
- * `catch` around the call swallows it and the test passes on a broker that was never there. That is
- * how three members of `ConnectedAppBroker` — `revokeAccount` among them — were absent from this
- * stub without a single test noticing. The check below reads the record after every test, so a
- * reach is a red whether or not production let the throw out.
+ * A throw is only as loud as the path that receives it: a `catch` around the call swallows it and
+ * the test passes on a broker that was never there. That is how three members of
+ * `ConnectedAppBroker` — `revokeAccount` among them — were absent from this stub without a single
+ * test noticing (round-2 C8a). The check below reads the record after every test, so a reach is a
+ * red whether or not production let the throw out. Only what these paths actually reach is
+ * provided; nothing here reads grants, lists, deletes, authorizes, checks, revokes, draws a connect
+ * form, connects with typed fields or undoes one account.
  */
-const reached: string[] = [];
-const unasked = (what: string) => async (): Promise<never> => {
-  reached.push(what);
-  throw new Error(`asked the broker to ${what}`);
-};
+const stub = stubBroker({
+  grantIsLocal: true,
+  // Nothing here reads it; declared because the seam requires a broker to SAY what it runs — see
+  // `ConnectedAppBroker.authorizations`.
+  authorizations: null,
+  // Nothing here asks what auth provider a connection is held under.
+  authProviderOf: async () => null,
+  ensureAuthConfig: async () => "created",
+  accountName: async () => null,
+});
 afterEach(() => {
-  expect(reached.splice(0)).toEqual([]);
+  stub.expectNothingUnprovidedReached();
 });
 
 function storeFor(provider: BrokerProvider) {
-  const broker: ComposioBroker = {
-    grantIsLocal: true,
-    // Nothing here asks what auth provider a connection is held under.
-    authProviderOf: async () => null,
-    // Nothing here reads either member; both are declared because the seam requires a broker to
-    // SAY what it runs — see `ConnectedAppBroker.authorizations`.
-    authorizations: null,
-    grantsFor: unasked("read grants"),
-    listApps: unasked("list"),
-    ensureAuthConfig: async () => "created",
-    deleteAuthConfig: unasked("delete"),
-    authorize: unasked("authorize"),
-    isConnected: unasked("check"),
-    revoke: unasked("revoke"),
-    // Nothing here draws a connect form, connects with typed fields or undoes one account. All three
-    // are declared so the stub is a `ConnectedAppBroker` rather than a partial one, and all three
-    // fail if reached.
-    connectionFields: unasked("read connection fields"),
-    connectWithFields: unasked("connect with typed fields"),
-    revokeAccount: unasked("revoke one account"),
-    accountName: async () => null,
-  };
+  const broker = stub.broker;
   return createPluginStore({
     brokerProvider: provider,
     database,
